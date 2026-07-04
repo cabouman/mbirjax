@@ -248,37 +248,26 @@ def sum_function_in_batches(function_to_sum, data_to_batch, batch_size, extra_ar
     data_to_batch = ensure_tuple(data_to_batch)
     extra_args = ensure_tuple(extra_args)
 
-    def add_one_batch(summed_and_fixed_data, batch_index):
+    def add_one_batch(summed_and_fixed_data, batched_data):
         """
-        Apply the externally defined function function_to_sum to one batch of data_to_batch
+        Apply the externally defined function function_to_sum to the data in the tuple batched_data
         and add the result to an existing result.  The existing result is the first element in the tuple
         summed_and_fixed_data.  Any remaining elements of summed_and_fixed_data are for additional arguments
-        to function_to_sum.  The batch is read as a WINDOW into the original (closed-over) arrays with
-        lax.dynamic_slice: the window start is traced and the size is static, so every scan step runs the
-        same program and the arrays are read in place.  The alternative -- pre-reshaping the input into
-        (num_batches, batch_size, ...) and scanning over it -- materializes a full copy of the batched
-        input on GPU (measured: an extra view-shard-sized temp reservation in the back projector, and
-        ~10% of the banded back projector's time just to write/read it; see
-        experiments/projector_batching/projector_batching_characterization.md section 4).  The batches
-        and their order are identical either way, so the summation is unchanged.
-        The primary functionality is summed_data += function_to_sum(*batch, *fixed_data)
+        to function_to_sum.  batched_data and fixed_data are unpacked before calling function_to sum. The
+         primary functionality is summed_data += function_to_sum(*batched_data, *fixed_data)
 
         Args:
             summed_and_fixed_data (tuple or list): The first element is an array of the shape returned by
-            function_to_sum.  This shape should not depend on the batch.  The remaining elements are
+            function_to_sum.  This shape should not depend on batched_data.  The remaining elements are
             extra arguments to be sent to function_to_sum.
-            batch_index (int scalar, traced): Which full batch to process (0-based, after the
-            initial batch).
+            batched_data (tuple or list):  The data for use in function_to_sum.
 
         Returns:
             tuple of ([summed_data, *fixed_data], None)
         """
         summed_data = summed_and_fixed_data[0]
         fixed_data = summed_and_fixed_data[1:]
-        start = initial_batch_size + batch_index * batch_size
-        batch = [jax.lax.dynamic_slice_in_dim(data, start, batch_size, axis=0)
-                 for data in data_to_batch]
-        output_to_add = function_to_sum(*batch, *fixed_data)
+        output_to_add = function_to_sum(*batched_data, *fixed_data)
         summed_data = jax.tree_util.tree_map(jnp.add, *(summed_data, output_to_add))
 
         return [summed_data, *fixed_data], None
@@ -296,11 +285,13 @@ def sum_function_in_batches(function_to_sum, data_to_batch, batch_size, extra_ar
     # Then deal with the batches if there are any
     if batch_size < num_input_points:
         num_batches = (num_input_points - initial_batch_size) // batch_size
+        output_shape = (num_batches, batch_size,)
+        data_batched = [jnp.reshape(data[initial_batch_size:], output_shape + data.shape[1:])
+                        for data in data_to_batch]
 
-        # Scan over batch INDICES; add_one_batch reads each batch as an in-place window
-        # (see its docstring for why this replaces the former input reshape).
+        # Set up a scan over the batches.
         initial_carry = [summed_output, *extra_args]
-        final_carry, _ = jax.lax.scan(add_one_batch, initial_carry, jnp.arange(num_batches))
+        final_carry, _ = jax.lax.scan(add_one_batch, initial_carry, data_batched)
 
         summed_output = final_carry[0]
 

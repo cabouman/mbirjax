@@ -1,20 +1,28 @@
 # Projector batching refactor — design (v2 drivers, parallel to v1)
 
-> **DECISION RECORD (2026-07-04, supersedes the plan below): v2 retired; its one measured
-> win extracted as a surgical patch to v1.**  Two consistent full-path runs showed v2 ~5%
-> slower end-to-end with identical peaks, and a ragged-shape run tripped the fp gate
-> (2.27e-04 vs 1e-4) because balanced sizing REGROUPS every sum — while the driver-level
-> data showed v2's only real win (the −10% band / −1×-sino temp reservation) comes entirely
-> from the WINDOWED `dynamic_slice` read, not from balanced sizing.  Balanced sizing itself
+> **DECISION RECORD (2026-07-04, supersedes the plan below): v2 retired; a surgical
+> windowed-read patch to v1 tried in its place.**  Two consistent full-path runs showed v2
+> ~5% slower end-to-end with identical peaks, and a ragged-shape run tripped the fp gate
+> (2.27e-04 vs 1e-4) because balanced sizing REGROUPS every sum.  Balanced sizing itself
 > solved a non-problem: v1's ragged tails were already zero-waste (the census's dramatic
 > numbers priced pad/overlap strategies v1 never used), and the flat vmap-width knee means
-> batch-size hygiene doesn't matter.  Final state: `projectors.py` restarted from
+> batch-size hygiene doesn't matter.  State after the pivot: `projectors.py` restarted from
 > `greg/shard_profiling` with ONE change — `sum_function_in_batches` reads its full batches
-> as `dynamic_slice` windows (same sizes, same order, same partials; only the input-reshape
-> copy is gone).  No side-by-side versions in the package; the old form is frozen in
-> `reference_batching.py` (this directory) for A/B measurement.  The v2 implementation and
-> its validation history live in git (`df91964`, `a550538`) and in the sections below,
-> kept as the record of what was measured and why each mechanism was kept or dropped.
+> as `dynamic_slice` windows (same sizes, order, partials; no input reshape).  The old form
+> is frozen in `reference_batching.py` (this directory) for A/B measurement; v2's history
+> lives in git (`df91964`, `a550538`) and the sections below.
+>
+> **CORRECTION (2026-07-04, old-vs-new H100 driver A/B): the attribution behind the patch
+> was WRONG.**  The windowed read alone is exactly time-neutral on GPU (new/old = 1.000 on
+> all 16 cells; back/band bit-identical, rel_max 0.0) — v2's −10% band win does NOT
+> reproduce, so it did not come from removing the input copy.  Best remaining explanation:
+> v2's balanced PIXEL width (1977 vs 2048) sped up the access-pattern-bound band kernel —
+> recorded as an open lead (a cheap pixel-batch sweep on the band driver, if band time ever
+> matters).  Whether the sino-sized temp reservation is actually removed by the patch is
+> being verified by a one-process GPU run of `transient_memory_probe.py`; if it is NOT
+> (i.e., XLA lowers both forms identically on GPU), the patch buys nothing measurable and
+> the right end state is pure shard_profiling v1 — the machinery is measured-optimal as it
+> stands, and the durable outputs of this episode are the measurements and this record.
 
 **Drafted 2026-07-03**, from `projector_batching_characterization.md` (structure + census +
 memory probe).  Scope: the **driver tier** in `mbirjax/projectors.py` only.  The host-tier
@@ -136,9 +144,12 @@ so the blast radius of the new code is exactly these six functions.
 - ~~v2 must remove the back driver's sino-sized GPU temp~~ — **CONFIRMED 2026-07-04**
   (Greg's H100 v1-vs-v2 run): back v2 temp const = **0.00× sino** at N ∈ {256, 512} (v1:
   1.00×) — at N=512/vb=128 that is 1077 MB vs 4969 MB of compiled temp reservation (memory_analysis, not a runtime peak) — AND back v2 is ~3%
-  faster across all vb (the copy's bandwidth).  Forward v1 ≡ v2 on GPU to 0.1 MB / timing
+  faster across all vb.  Forward v1 ≡ v2 on GPU to 0.1 MB / timing
   noise, confirming the hybrid's concat-axis mechanics are untouched.  Slope k: back 2.01
   v2 vs 1.76 v1 (minor, dwarfed by the const win); forward identical (1.04/1.27).
+  *[CORRECTION 2026-07-04: "the copy's bandwidth" attribution was falsified by the
+  old-vs-new A/B — the windowed read alone is time-neutral; see the decision record at the
+  top.  Which v2 mechanism produced the 0.00× const is part of the same open verification.]*
 
 ## 5. Risks / open points
 
