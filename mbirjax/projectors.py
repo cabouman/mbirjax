@@ -90,23 +90,11 @@ class Projectors:
         self._jit_sparse_forward_project = _jit_sparse_forward_project
         self._jit_sparse_back_project = _jit_sparse_back_project
 
-        # Both batching versions of each driver stay available side by side: v1 is the
-        # original fixed-batch machinery, v2 the balanced windowed batching (see the module
-        # comment on the v2 helpers).  _driver_version() reads the model attribute at CALL
-        # time -- like the view-parameter late binding above -- so flipping
-        # tomography_model.projector_batching_version switches versions on the next call
-        # with no rebuild, and a v1-vs-v2 comparison runs on one model with identical
-        # view params and placements.
-        def _driver_version(v1_driver, v2_driver):
-            version = getattr(self.tomography_model, 'projector_batching_version', 1)
-            return v2_driver if version == 2 else v1_driver
-
         # Public entry points keep the original signatures; they read the CURRENT
         # view-parameter array off this object at call time (late binding), so
         # set_view_parameters takes effect on the next call with no recompile.
         def sparse_forward_project_public(voxel_values, pixel_indices, owned_view_indices=()):
-            driver = _driver_version(_jit_sparse_forward_project, _jit_sparse_forward_project_v2)
-            return driver(
+            return _jit_sparse_forward_project(
                 self.view_params_array, voxel_values, pixel_indices,
                 fwd_kernel=forward_project_pixel_batch_to_one_view,
                 projector_params=projector_params,
@@ -115,8 +103,7 @@ class Projectors:
                 owned_view_indices=owned_view_indices)
 
         def sparse_back_project_public(sinogram, pixel_indices, coeff_power=1, owned_view_indices=()):
-            driver = _driver_version(_jit_sparse_back_project, _jit_sparse_back_project_v2)
-            return driver(
+            return _jit_sparse_back_project(
                 self.view_params_array, sinogram, pixel_indices,
                 back_kernel=back_project_one_view_to_pixel_batch,
                 projector_params=projector_params,
@@ -137,9 +124,7 @@ class Projectors:
         if back_project_one_view_to_band is not None:
             def sparse_back_project_band_public(sinogram, pixel_indices, g0, num_band_slices,
                                                 owned_view_indices=(), coeff_power=1):
-                driver = _driver_version(_jit_sparse_back_project_band,
-                                         _jit_sparse_back_project_band_v2)
-                return driver(
+                return _jit_sparse_back_project_band(
                     self.view_params_array, sinogram, pixel_indices, g0, num_band_slices,
                     back_band_kernel=back_project_one_view_to_band,
                     projector_params=projector_params,
@@ -263,26 +248,37 @@ def sum_function_in_batches(function_to_sum, data_to_batch, batch_size, extra_ar
     data_to_batch = ensure_tuple(data_to_batch)
     extra_args = ensure_tuple(extra_args)
 
-    def add_one_batch(summed_and_fixed_data, batched_data):
+    def add_one_batch(summed_and_fixed_data, batch_index):
         """
-        Apply the externally defined function function_to_sum to the data in the tuple batched_data
+        Apply the externally defined function function_to_sum to one batch of data_to_batch
         and add the result to an existing result.  The existing result is the first element in the tuple
         summed_and_fixed_data.  Any remaining elements of summed_and_fixed_data are for additional arguments
-        to function_to_sum.  batched_data and fixed_data are unpacked before calling function_to sum. The
-         primary functionality is summed_data += function_to_sum(*batched_data, *fixed_data)
+        to function_to_sum.  The batch is read as a WINDOW into the original (closed-over) arrays with
+        lax.dynamic_slice: the window start is traced and the size is static, so every scan step runs the
+        same program and the arrays are read in place.  The alternative -- pre-reshaping the input into
+        (num_batches, batch_size, ...) and scanning over it -- materializes a full copy of the batched
+        input on GPU (measured: an extra view-shard-sized temp reservation in the back projector, and
+        ~10% of the banded back projector's time just to write/read it; see
+        experiments/projector_batching/projector_batching_characterization.md section 4).  The batches
+        and their order are identical either way, so the summation is unchanged.
+        The primary functionality is summed_data += function_to_sum(*batch, *fixed_data)
 
         Args:
             summed_and_fixed_data (tuple or list): The first element is an array of the shape returned by
-            function_to_sum.  This shape should not depend on batched_data.  The remaining elements are
+            function_to_sum.  This shape should not depend on the batch.  The remaining elements are
             extra arguments to be sent to function_to_sum.
-            batched_data (tuple or list):  The data for use in function_to_sum.
+            batch_index (int scalar, traced): Which full batch to process (0-based, after the
+            initial batch).
 
         Returns:
             tuple of ([summed_data, *fixed_data], None)
         """
         summed_data = summed_and_fixed_data[0]
         fixed_data = summed_and_fixed_data[1:]
-        output_to_add = function_to_sum(*batched_data, *fixed_data)
+        start = initial_batch_size + batch_index * batch_size
+        batch = [jax.lax.dynamic_slice_in_dim(data, start, batch_size, axis=0)
+                 for data in data_to_batch]
+        output_to_add = function_to_sum(*batch, *fixed_data)
         summed_data = jax.tree_util.tree_map(jnp.add, *(summed_data, output_to_add))
 
         return [summed_data, *fixed_data], None
@@ -300,13 +296,11 @@ def sum_function_in_batches(function_to_sum, data_to_batch, batch_size, extra_ar
     # Then deal with the batches if there are any
     if batch_size < num_input_points:
         num_batches = (num_input_points - initial_batch_size) // batch_size
-        output_shape = (num_batches, batch_size,)
-        data_batched = [jnp.reshape(data[initial_batch_size:], output_shape + data.shape[1:])
-                        for data in data_to_batch]
 
-        # Set up a scan over the batches.
+        # Scan over batch INDICES; add_one_batch reads each batch as an in-place window
+        # (see its docstring for why this replaces the former input reshape).
         initial_carry = [summed_output, *extra_args]
-        final_carry, _ = jax.lax.scan(add_one_batch, initial_carry, data_batched)
+        final_carry, _ = jax.lax.scan(add_one_batch, initial_carry, jnp.arange(num_batches))
 
         summed_output = final_carry[0]
 
@@ -331,173 +325,6 @@ def ensure_tuple(var_args):
     # Assume var_args is a single item if it's neither a list nor a tuple
     else:
         return (var_args, )
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# v2 batching helpers: balanced windowed batching
-#
-# These are the v2 counterparts of concatenate_function_in_batches / sum_function_in_batches,
-# with the same call signatures and output contracts.  Two mechanical changes (see
-# experiments/projector_batching/batching_refactor_design.md for the full rationale and the
-# measurements behind it):
-#
-#   1. BALANCED batch sizes.  Instead of a fixed batch with a ragged remainder (which can be
-#      arbitrarily small), the batch size is reduced to the smallest value that covers the
-#      input in the same number of batches: num_batches = ceil(n / batch_size), then
-#      balanced_size = ceil(n / num_batches).  All full batches are equal, and the one
-#      partial batch (when the input does not divide evenly) is NEAR-FULL-SIZE rather than
-#      arbitrarily small.  Measured on H100: per-item projector time is flat in batch size
-#      down to half the cap, so balancing is free in time and makes ANY cap shape-safe.
-#
-#   2. WINDOWED reads via lax.dynamic_slice instead of jnp.reshape -- on the SUM axes only
-#      (sum_in_balanced_batches).  The v1 reshape of the batched input materializes a full
-#      copy of that input on GPU (measured: one extra view-shard-sized temp in the back
-#      projector); slicing one window per scan step reads the original array in place.  The
-#      CONCATENATE axes (map_in_balanced_batches) keep v1's reshape + lax.map mechanics --
-#      measured ~1.6x faster on CPU than the windowed form, and their batched inputs are
-#      small index/parameter arrays, so the reshape copy is negligible there (see that
-#      function's docstring).
-#
-# Like v1, the partial batch (if any) runs FIRST as a separate call, then lax.map / lax.scan
-# covers the equal full batches.  In the sum helper, an evenly divisible input skips the
-# partial call entirely -- the scan carry starts at zeros (shaped via jax.eval_shape, which
-# traces without compiling), one fewer inlined kernel than v1.
-# ──────────────────────────────────────────────────────────────────────────────
-def balanced_batch(num_input_points, batch_size):
-    """Compute a balanced batching of ``num_input_points`` items with batches <= ``batch_size``.
-
-    Uses the fewest batches that respect the cap, with all full batches equal:
-    ``num_batches = ceil(n / batch_size)``, ``balanced_size = ceil(n / num_batches)``.
-    The same policy as TomographyModel._balanced_slice_bounds, in batch-size form.
-
-    Args:
-        num_input_points (int): Total number of items (n > 0).
-        batch_size (int or None): Maximum batch size; None means one batch of everything.
-
-    Returns:
-        tuple (balanced_size, num_batches, residual): ``residual = num_batches *
-        balanced_size - num_input_points`` satisfies ``0 <= residual < balanced_size``; when
-        residual > 0 the caller runs one partial batch of ``balanced_size - residual`` items
-        (which is >= 1) plus ``num_batches - 1`` full batches.
-    """
-    if batch_size is None:
-        batch_size = num_input_points
-    batch_size = min(batch_size, num_input_points)
-    num_batches = -(-num_input_points // batch_size)          # ceil division
-    balanced_size = -(-num_input_points // num_batches)
-    residual = num_batches * balanced_size - num_input_points
-    return balanced_size, num_batches, residual
-
-
-def map_in_balanced_batches(function, data_to_batch, batch_size):
-    """v2 of :func:`concatenate_function_in_batches`: same contract and mechanics, with
-    BALANCED batch sizes.
-
-    Applies ``function`` to leading-axis batches of ``data_to_batch`` and concatenates the
-    per-batch outputs along the leading axis (which must match the input batch size, as in
-    v1).  Only the SIZING differs from v1: the near-full-size partial batch runs first, then
-    ``lax.map`` covers the equal full batches.
-
-    The mechanics deliberately stay v1's reshape + ``lax.map`` + concatenate, NOT a windowed
-    scan: measured on CPU (cone forward, N=128, identical batch width 128), a scan writing
-    per-window results into a carry via dynamic_update_slice was ~1.6x SLOWER than lax.map --
-    the map's stacked output fuses with the kernel where the carry update does not.  The
-    input reshape that the windowed form would have avoided is harmless HERE by construction:
-    every concatenate-axis input in the projector drivers is a small index/parameter array
-    (view params, pixel indices) -- the large arrays are closed over, not batched, on these
-    axes.  The large-array reshape copy lives on the SUM axes, where
-    :func:`sum_in_balanced_batches` does use the windowed form.
-
-    Args:
-        function (callable): Called as function(*batch) on leading-axis batches of the data.
-        data_to_batch (jax array or tuple of arrays): Same-size leading axes.
-        batch_size (int or None): Maximum batch size (None = single call).
-
-    Returns:
-        An array or tuple of arrays, as returned by function, with leading axis equal to the
-        total number of input points.
-    """
-    data_to_batch = ensure_tuple(data_to_batch)
-    num_input_points = data_to_batch[0].shape[0]
-    balanced_size, num_batches, residual = balanced_batch(num_input_points, batch_size)
-    if num_batches == 1:
-        return function(*data_to_batch)
-
-    # The initial batch always runs inline first, exactly as in v1 (a full batch when the
-    # input divides evenly, else the near-full-size partial batch) and lax.map covers the
-    # remaining full batches.
-    initial_size = balanced_size if residual == 0 else balanced_size - residual
-    output_data = function(*[data[:initial_size] for data in data_to_batch])
-
-    def wrapped_function(arg_list):
-        return function(*arg_list)
-
-    num_mapped_batches = (num_input_points - initial_size) // balanced_size
-    output_shape = (num_mapped_batches, balanced_size)
-    data_batched = [jnp.reshape(data[initial_size:], output_shape + data.shape[1:])
-                    for data in data_to_batch]
-    output_data_batched = jax.lax.map(wrapped_function, data_batched)
-    output_unbatched = jax.tree_util.tree_map(unbatch, output_data_batched)
-
-    output_data = jax.tree_util.tree_map(concatenate_arrays,
-                                         *(output_data, output_unbatched))
-    return output_data
-
-
-def sum_in_balanced_batches(function_to_sum, data_to_batch, batch_size, extra_args=()):
-    """v2 of :func:`sum_function_in_batches`: same contract, balanced windowed batches.
-
-    Applies ``function_to_sum`` to leading-axis batches of ``data_to_batch`` and SUMS the
-    per-batch outputs (which must have a batch-independent shape, as in v1).  The windows are
-    read with ``dynamic_slice`` (no input reshape/copy); the partial batch (if any) runs
-    first, mirroring v1's initial batch.
-
-    Args:
-        function_to_sum (callable): Called as function_to_sum(*batch, *extra_args).
-        data_to_batch (jax array or tuple of arrays): Same-size leading axes.
-        batch_size (int or None): Maximum window size (None = single call).
-        extra_args (tuple): Additional non-batched arguments for function_to_sum.
-
-    Returns:
-        The output of function_to_sum summed over all batches.
-    """
-    data_to_batch = ensure_tuple(data_to_batch)
-    extra_args = ensure_tuple(extra_args)
-    num_input_points = data_to_batch[0].shape[0]
-    balanced_size, num_batches, residual = balanced_batch(num_input_points, batch_size)
-    if num_batches == 1:
-        return function_to_sum(*data_to_batch, *extra_args)
-
-    num_full_batches = num_batches if residual == 0 else num_batches - 1
-    partial_size = num_input_points - num_full_batches * balanced_size
-
-    if partial_size > 0:
-        # Initialize the running sum from the near-full-size partial batch (v1's structure).
-        summed_output = function_to_sum(*[data[:partial_size] for data in data_to_batch],
-                                        *extra_args)
-    else:
-        # Evenly divisible: start the sum at zeros so the kernel appears ONCE (in the scan
-        # body).  eval_shape supplies the output structure without compiling anything.
-        window0 = [jax.lax.dynamic_slice_in_dim(data, 0, balanced_size, axis=0)
-                   for data in data_to_batch]
-        out_struct = jax.eval_shape(lambda *w: function_to_sum(*w, *extra_args), *window0)
-        summed_output = jax.tree_util.tree_map(
-            lambda s: jnp.zeros(s.shape, dtype=s.dtype), out_struct)
-
-    def add_one_batch(summed_and_fixed_data, k):
-        # Carry layout mirrors v1: [running sum, *extra_args].
-        summed_data = summed_and_fixed_data[0]
-        fixed_data = summed_and_fixed_data[1:]
-        start = partial_size + k * balanced_size
-        window = [jax.lax.dynamic_slice_in_dim(data, start, balanced_size, axis=0)
-                  for data in data_to_batch]
-        output_to_add = function_to_sum(*window, *fixed_data)
-        summed_data = jax.tree_util.tree_map(jnp.add, summed_data, output_to_add)
-        return [summed_data, *fixed_data], None
-
-    initial_carry = [summed_output, *extra_args]
-    final_carry, _ = jax.lax.scan(add_one_batch, initial_carry, jnp.arange(num_full_batches))
-    return final_carry[0]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -622,102 +449,5 @@ def _sparse_back_project_band(view_params_array, sinogram, pixel_indices, g0, nu
 
 _jit_sparse_back_project_band = jax.jit(
     _sparse_back_project_band,
-    static_argnames=['num_band_slices', 'back_band_kernel', 'projector_params',
-                     'pixel_batch_size', 'view_batch_size', 'coeff_power'])
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# v2 drivers: line-for-line mirrors of the v1 drivers above with ONLY the batching
-# helpers swapped (concatenate_function_in_batches -> map_in_balanced_batches,
-# sum_function_in_batches -> sum_in_balanced_batches).  Kept structurally identical to v1
-# on purpose: stepping through the two side by side shows exactly one mechanism changing,
-# and any v1-vs-v2 difference is attributable to the batching alone.  Selected per model
-# via TomographyModel.projector_batching_version (see Projectors.create_projectors).
-# ──────────────────────────────────────────────────────────────────────────────
-def _sparse_forward_project_v2(view_params_array, voxel_values, pixel_indices,
-                               fwd_kernel, projector_params, pixel_batch_size, view_batch_size,
-                               owned_view_indices=()):
-    """v2 of :func:`_sparse_forward_project` (balanced windowed batching; same contract)."""
-    cur_view_params_array = view_params_array
-    if len(owned_view_indices) > 0:
-        cur_view_params_array = view_params_array[owned_view_indices]
-
-    def forward_project_pixel_batch(local_values, local_pix_indices):
-        def forward_project_single_view(single_view_params):
-            return fwd_kernel(local_values, local_pix_indices, single_view_params, projector_params)
-
-        def forward_project_view_batch(view_params_batch):
-            # vmap (not a sequential map) over views: the per-view kernel reuses the same
-            # voxel batch, so parallelizing over views trades a little memory for speed.
-            return jax.vmap(forward_project_single_view)(view_params_batch)
-
-        return map_in_balanced_batches(forward_project_view_batch, cur_view_params_array,
-                                       view_batch_size)
-
-    return sum_in_balanced_batches(forward_project_pixel_batch, (voxel_values, pixel_indices),
-                                   pixel_batch_size)
-
-
-_jit_sparse_forward_project_v2 = jax.jit(
-    _sparse_forward_project_v2,
-    static_argnames=['fwd_kernel', 'projector_params', 'pixel_batch_size', 'view_batch_size'])
-
-
-def _sparse_back_project_v2(view_params_array, sinogram, pixel_indices,
-                            back_kernel, projector_params, pixel_batch_size, view_batch_size,
-                            coeff_power=1, owned_view_indices=()):
-    """v2 of :func:`_sparse_back_project` (balanced windowed batching; same contract)."""
-    cur_view_params_array = view_params_array
-    if len(owned_view_indices) > 0:
-        cur_view_params_array = view_params_array[owned_view_indices]
-
-    def back_project_view_batch(local_view_batch, local_view_params_batch, local_pixel_indices):
-        def back_project_pixel_batch(pixel_indices_batch):
-            # Map the per-view back kernel over the views in this batch, then sum over views.
-            bp_vmap = jax.vmap(back_kernel, in_axes=(0, None, 0, None, None))
-            per_view_voxel_values_batch = bp_vmap(local_view_batch, pixel_indices_batch,
-                                                  local_view_params_batch, projector_params, coeff_power)
-            with jax.named_scope("projector/back/view_reduce"):   # driver reduce; see v1
-                return jnp.sum(per_view_voxel_values_batch, axis=0)
-
-        return map_in_balanced_batches(back_project_pixel_batch, local_pixel_indices,
-                                       pixel_batch_size)
-
-    return sum_in_balanced_batches(back_project_view_batch, (sinogram, cur_view_params_array),
-                                   view_batch_size, pixel_indices)
-
-
-_jit_sparse_back_project_v2 = jax.jit(
-    _sparse_back_project_v2,
-    static_argnames=['back_kernel', 'projector_params', 'pixel_batch_size', 'view_batch_size',
-                     'coeff_power'])
-
-
-def _sparse_back_project_band_v2(view_params_array, sinogram, pixel_indices, g0, num_band_slices,
-                                 back_band_kernel, projector_params, pixel_batch_size, view_batch_size,
-                                 coeff_power=1, owned_view_indices=()):
-    """v2 of :func:`_sparse_back_project_band` (balanced windowed batching; same contract)."""
-    cur_view_params_array = view_params_array
-    if len(owned_view_indices) > 0:
-        cur_view_params_array = view_params_array[owned_view_indices]
-
-    def back_project_view_batch(local_view_batch, local_view_params_batch, local_pixel_indices):
-        def back_project_pixel_batch(pixel_indices_batch):
-            # Map the per-view banded back kernel over the views in this batch, then sum over views.
-            bp_vmap = jax.vmap(back_band_kernel, in_axes=(0, None, 0, None, None, None, None))
-            per_view_band = bp_vmap(local_view_batch, pixel_indices_batch, local_view_params_batch,
-                                    projector_params, g0, num_band_slices, coeff_power)
-            with jax.named_scope("projector/back/view_reduce"):   # driver reduce; see v1
-                return jnp.sum(per_view_band, axis=0)
-
-        return map_in_balanced_batches(back_project_pixel_batch, local_pixel_indices,
-                                       pixel_batch_size)
-
-    return sum_in_balanced_batches(back_project_view_batch, (sinogram, cur_view_params_array),
-                                   view_batch_size, pixel_indices)
-
-
-_jit_sparse_back_project_band_v2 = jax.jit(
-    _sparse_back_project_band_v2,
     static_argnames=['num_band_slices', 'back_band_kernel', 'projector_params',
                      'pixel_batch_size', 'view_batch_size', 'coeff_power'])

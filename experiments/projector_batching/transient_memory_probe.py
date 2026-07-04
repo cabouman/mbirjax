@@ -26,9 +26,11 @@ import mbirjax
 
 import jax.numpy as jnp
 from mbirjax.projectors import (ProjectorParams, _jit_sparse_forward_project,
-                                _jit_sparse_back_project,
-                                _jit_sparse_forward_project_v2,
-                                _jit_sparse_back_project_v2)
+                                _jit_sparse_back_project)
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from reference_batching import (_jit_sparse_forward_project_reference,
+                                _jit_sparse_back_project_reference)
 
 # ----------------------------------------------------------------------------------
 # Config -- edit here
@@ -90,10 +92,10 @@ def main():
 
     results = {}
     for name, lower in [
-        ('forward v1', fwd_lower(_jit_sparse_forward_project)),
-        ('forward v2', fwd_lower(_jit_sparse_forward_project_v2)),
-        ('back v1', back_lower(_jit_sparse_back_project)),
-        ('back v2', back_lower(_jit_sparse_back_project_v2)),
+        ('forward old(ref)', fwd_lower(_jit_sparse_forward_project_reference)),
+        ('forward new(live)', fwd_lower(_jit_sparse_forward_project)),
+        ('back old(ref)', back_lower(_jit_sparse_back_project_reference)),
+        ('back new(live)', back_lower(_jit_sparse_back_project)),
     ]:
         print(f'--- {name} driver ---')
         per_vb = []

@@ -137,16 +137,6 @@ class TomographyModel(ParameterHandler):
         self.view_batch_size_for_vmap = 128
         self.pixel_batch_size_for_vmap = 2048
         self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
-        # Projector batching machinery: 1 = original fixed-batch drivers, 2 = balanced
-        # windowed batching (experiments/projector_batching/batching_refactor_design.md).
-        # Read at CALL time by the projector entry points, so it can be flipped on a live
-        # model for an apples-to-apples v1-vs-v2 comparison with no rebuild.  A plain
-        # attribute, not a persisted param: the version must never change results beyond
-        # float noise, so it does not belong in a saved model.  Default 1 until v2 is
-        # validated at scale; the env var lets the whole test suite run with v2 forced
-        # (MBIRJAX_PROJECTOR_BATCHING_VERSION=2 pytest ...) with no code changes.
-        self.projector_batching_version = int(
-            os.environ.get('MBIRJAX_PROJECTOR_BATCHING_VERSION', '1'))
         self.set_devices()
         self.create_projectors()
         try:

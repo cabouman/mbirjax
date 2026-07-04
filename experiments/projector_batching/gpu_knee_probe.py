@@ -37,9 +37,7 @@ import mbirjax                                           # must precede jax (env
 import jax
 import jax.numpy as jnp
 from mbirjax.projectors import (ProjectorParams, _jit_sparse_forward_project,
-                                _jit_sparse_back_project,
-                                _jit_sparse_forward_project_v2,
-                                _jit_sparse_back_project_v2)
+                                _jit_sparse_back_project)
 
 # ----------------------------------------------------------------------------------
 # Config -- edit here
@@ -120,10 +118,8 @@ def main():
                     call)
 
         drivers = [
-            ('forward v1',) + fwd_pair(_jit_sparse_forward_project),
-            ('forward v2',) + fwd_pair(_jit_sparse_forward_project_v2),
-            ('back v1',) + back_pair(_jit_sparse_back_project),
-            ('back v2',) + back_pair(_jit_sparse_back_project_v2),
+            ('forward',) + fwd_pair(_jit_sparse_forward_project),
+            ('back',) + back_pair(_jit_sparse_back_project),
         ]
 
         for name, lower, call in drivers:

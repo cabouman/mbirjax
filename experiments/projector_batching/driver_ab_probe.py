@@ -1,25 +1,23 @@
-"""Driver-level v1-vs-v2 A/B at realistic shapes -- the timing gate for the default flip.
+"""Driver-level old-vs-new A/B of the windowed-read batching patch, at realistic shapes.
 
-Times the three projector drivers in isolation (everything above projectors.py is
-version-independent), at shapes matching what the 1024^3/2-GPU recon actually feeds them.
-This covers the two mechanisms the earlier gpu_knee_probe runs never timed on GPU:
+OLD = the frozen pre-change sum_function_in_batches (reshape + scan-over-xs; see
+reference_batching.py in this directory -- the package itself carries only ONE batching
+implementation).  NEW = the live mbirjax.projectors.  The single changed mechanism is how
+the sum-axis batches are READ (dynamic_slice windows vs a pre-reshaped input copy); the
+batch sizes, order, and partial sums are IDENTICAL, so the rel-max cross-check per cell
+should sit at different-executable noise (~1e-7 class), and any timing/memory difference is
+attributable to the input copy alone.
 
-  1. map_in_balanced_batches with MANY batches: the earlier probes used pixels=2048 -- a
-     single pixel batch, so the map helper was inert.  Real calls run tens-to-hundreds of
-     pixel batches, where v2's balanced width can be 2047 instead of 2048.
-  2. the BAND back driver (_sparse_back_project_band) -- the multi-GPU back path; earlier
-     probes ran only the monolithic back.
+Cells span the VCD granularity levels (823k..6.4k pixels), band lengths (103/256), and
+divisible + ragged view counts, for all three drivers.  Forward runs only at the small
+pixel cells (its sum axis IS the pixel axis, so multi-pixel-batch cells do exercise the
+change; the 823k forward would cost minutes per call for the same information).
 
-The view axis runs both DIVISIBLE (512 = 4 x 128; v2 zero-init scan) and RAGGED (471; v1
-odd batch 87 vs v2 balanced 118x3+117) counts.  Each cell also cross-checks v2 vs v1 with
-the scale-invariant rel-max (expect <= ~1e-5; sum-order noise only).
-
-Run on ONE GPU:
+Run on ONE GPU, from this directory (reference_batching.py must be importable):
 
     CUDA_VISIBLE_DEVICES=0 python driver_ab_probe.py
 
-Report back the full stdout.  Cell work is ~26G (view,pixel) pairs for back/forward
-(~3-10 s warm per call on H100), 12 timed cells + compiles: expect ~5-15 minutes total.
+Report back the full stdout.  Expect ~10-20 minutes, dominated by the 823k cells.
 """
 
 import os
@@ -33,9 +31,13 @@ import jax
 import jax.numpy as jnp
 from mbirjax.projectors import (
     ProjectorParams,
-    _jit_sparse_forward_project, _jit_sparse_forward_project_v2,
-    _jit_sparse_back_project, _jit_sparse_back_project_v2,
-    _jit_sparse_back_project_band, _jit_sparse_back_project_band_v2)
+    _jit_sparse_forward_project, _jit_sparse_back_project, _jit_sparse_back_project_band)
+# The 'old' side of the A/B: the frozen pre-change batching, kept OUTSIDE the package
+# (reference_batching.py, a sibling module in this directory).
+from reference_batching import (
+    _jit_sparse_forward_project_reference,
+    _jit_sparse_back_project_reference,
+    _jit_sparse_back_project_band_reference)
 
 # ----------------------------------------------------------------------------------
 # Config -- edit here.  Defaults mirror the 1024^3 / 2-GPU recon's driver calls.
@@ -111,9 +113,9 @@ def main():
     rng = np.random.default_rng(0)
     full_sino = jnp.array(rng.standard_normal(tuple(sinogram_shape)), dtype=jnp.float32)
 
-    # Forward is structurally identical between versions at production shapes (single host
-    # pixel batch, divisible views -> same code path), so it runs only at the small cells
-    # as a control; the big-pixel forward would cost ~minutes/call for no discrimination.
+    # Forward's sum axis is the PIXEL axis, so the small multi-pixel-batch cells already
+    # exercise its changed read path; the 823k forward would cost ~minutes/call for the
+    # same information, so it is skipped.
     FORWARD_PIXEL_LIMIT = 60000
 
     cell_num, total = 0, sum((2 if npix > FORWARD_PIXEL_LIMIT else 3) * len(VIEW_COUNTS)
@@ -160,20 +162,20 @@ def main():
             for name, make in cases:
                 cell_num += 1
                 log(f'cell {cell_num}/{total}: {name}, pixels={num_pixels}, views={num_views}')
-                v1_call = make({'forward': _jit_sparse_forward_project,
-                                'back': _jit_sparse_back_project,
-                                'band': _jit_sparse_back_project_band}[name])
-                v2_call = make({'forward': _jit_sparse_forward_project_v2,
-                                'back': _jit_sparse_back_project_v2,
-                                'band': _jit_sparse_back_project_band_v2}[name])
-                t1 = time_call(v1_call, TIMED_REPS, f'{name} v1')
-                t2 = time_call(v2_call, TIMED_REPS, f'{name} v2')
+                old_call = make({'forward': _jit_sparse_forward_project_reference,
+                                 'back': _jit_sparse_back_project_reference,
+                                 'band': _jit_sparse_back_project_band_reference}[name])
+                new_call = make({'forward': _jit_sparse_forward_project,
+                                 'back': _jit_sparse_back_project,
+                                 'band': _jit_sparse_back_project_band}[name])
+                t1 = time_call(old_call, TIMED_REPS, f'{name} old(reference)')
+                t2 = time_call(new_call, TIMED_REPS, f'{name} new(live)')
                 # Correctness cross-check on the same inputs (sum-order noise only).
                 log(f'  {name}: correctness cross-check (one more call per version) ...')
-                err = rel_max_err(v2_call(), v1_call())
+                err = rel_max_err(new_call(), old_call())
                 print(f'RESULT {name:8s} pixels={num_pixels:7d} L={band_slices:4d} '
-                      f'views={num_views:4d}  v1 {t1 * 1e3:8.1f} ms   v2 {t2 * 1e3:8.1f} ms   '
-                      f'v2/v1 {t2 / t1:5.3f}   rel_max {err:.1e}', flush=True)
+                      f'views={num_views:4d}  old {t1 * 1e3:8.1f} ms   new {t2 * 1e3:8.1f} ms   '
+                      f'new/old {t2 / t1:5.3f}   rel_max {err:.1e}', flush=True)
             print(flush=True)
 
         del pixel_indices, voxel_values     # free before the next (possibly larger) cell

@@ -1,5 +1,21 @@
 # Projector batching refactor — design (v2 drivers, parallel to v1)
 
+> **DECISION RECORD (2026-07-04, supersedes the plan below): v2 retired; its one measured
+> win extracted as a surgical patch to v1.**  Two consistent full-path runs showed v2 ~5%
+> slower end-to-end with identical peaks, and a ragged-shape run tripped the fp gate
+> (2.27e-04 vs 1e-4) because balanced sizing REGROUPS every sum — while the driver-level
+> data showed v2's only real win (the −10% band / −1×-sino temp reservation) comes entirely
+> from the WINDOWED `dynamic_slice` read, not from balanced sizing.  Balanced sizing itself
+> solved a non-problem: v1's ragged tails were already zero-waste (the census's dramatic
+> numbers priced pad/overlap strategies v1 never used), and the flat vmap-width knee means
+> batch-size hygiene doesn't matter.  Final state: `projectors.py` restarted from
+> `greg/shard_profiling` with ONE change — `sum_function_in_batches` reads its full batches
+> as `dynamic_slice` windows (same sizes, same order, same partials; only the input-reshape
+> copy is gone).  No side-by-side versions in the package; the old form is frozen in
+> `reference_batching.py` (this directory) for A/B measurement.  The v2 implementation and
+> its validation history live in git (`df91964`, `a550538`) and in the sections below,
+> kept as the record of what was measured and why each mechanism was kept or dropped.
+
 **Drafted 2026-07-03**, from `projector_batching_characterization.md` (structure + census +
 memory probe).  Scope: the **driver tier** in `mbirjax/projectors.py` only.  The host-tier
 sites in `tomography_model.py` (§1 of the characterization) are explicitly out of scope for

@@ -1,15 +1,18 @@
-"""Full-recon-path A/B of projector batching v1 vs v2 at scale (the default-flip gate).
+"""Full-recon-path A/B of the projector batching across CODE STATES, at scale.
 
-Runs the SAME cone-beam VCD recon twice -- once per batching version -- each in a fresh
-subprocess (peak_bytes_in_use is a process-cumulative high-water mark, so honest per-config
-memory needs one process per config with a JAX-free orchestrator; lessons.md section 5).
-Reports per-device peak memory, recon wall time, and the rel-max difference between the two
-recons (gate: fp equivalence at 1e-4, the iterated-VCD calibration).
+The package carries a single batching implementation, so old-vs-new full-path comparison is
+TWO RUNS of this script at two git states, compared through a saved baseline recon:
 
-This is also the measurement that reconciles the historical full-path transient (~18.8 GiB
-at 1024^3 / view_batch 512; a [vb x pixel_batch x slices x footprint~5] kernel intermediate
-per Greg's reconstruction) with the isolated-driver k ~= 1.3 -- see
-projector_batching_characterization.md section 4.
+  1. At the baseline commit: set KEEP_RECONS = True, run, note the saved
+     ab_output/recon_<label>.npy.
+  2. At the new code: set COMPARE_TO to that file's path and run again.
+
+Each case runs in a fresh subprocess (peak_bytes_in_use is a process-cumulative high-water
+mark, so honest per-config memory needs one process per config with a JAX-free
+orchestrator; lessons.md section 5).  Reports per-device peak memory, recon wall time,
+NRMSE vs the known phantom (the quality anchor: two recons that differ from each other but
+sit equidistant from truth are both fine), and rel-max between recons (gate: 1e-4, the
+iterated-VCD calibration -- see the null-calibration note at CASES).
 
 Run on the cluster (all GPUs, ~tens of minutes at 1024^3):
 
@@ -31,18 +34,19 @@ N = 1024                    # recon N^3; detector N x N
 NUM_VIEWS = 1024
 MAX_ITERATIONS = 5
 PARTITION_SEQUENCE = None   # None = model default [0,2,4,6,7].  Pin to a single granularity
-                            # level to LOCALIZE a v1-vs-v2 timing delta: e.g. [0] = all-coarse
+                            # level to LOCALIZE a timing delta: e.g. [0] = all-coarse
                             # iterations (823k-pixel subsets, short bands), [4] = all
-                            # granularity-16 (the driver-probe shape), [7] = all-fine (6.4k).
-# Cases: (label, batching_version, view_batch_size or None for the default 128).  Every case
-# after the first is compared against the first.  The default pair is the v1-vs-v2 A/B; for
-# the NULL CALIBRATION of the fp gate (how much does a pure sum-REGROUPING perturbation move
-# a 5-iteration VCD recon, with the batching CODE fixed?) use two v1 cases with different
-# view batches, e.g. [('v1_vb128', '1', None), ('v1_vb121', '1', 121)].
+                            # granularity-16, [7] = all-fine (6.4k).
+# Cases: (label, view_batch_size or None for the default).  Every case after the first is
+# compared against the first.  A single case is the normal cross-code-state mode (compare
+# via COMPARE_TO).  Two cases with different view batches is the NULL CALIBRATION of the fp
+# gate -- how much does a pure sum-REGROUPING perturbation move this recon, with the code
+# fixed? -- e.g. [('vb128', None), ('vb121', 121)].
 CASES = [
-    ('v1', '1', None),
-    ('v2', '2', None),
+    ('recon', None),
 ]
+COMPARE_TO = None           # path to a baseline recon .npy from a run at another code
+                            # state; the FIRST case is compared against it
 SEED = 0                    # np.random.seed before recon: partitions come from the global
                             # RNG, and an unseeded A/B compares partition noise, not code
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ab_output')
@@ -51,7 +55,6 @@ KEEP_RECONS = False         # True to keep the recon .npy files (N^3 * 4 bytes e
 _ROLE_ENV = 'MBIRJAX_AB_ROLE'
 _LABEL_ENV = 'MBIRJAX_AB_LABEL'
 _VIEW_BATCH_ENV = 'MBIRJAX_AB_VIEW_BATCH'
-_VERSION_ENV = 'MBIRJAX_PROJECTOR_BATCHING_VERSION'   # read by TomographyModel.__init__
 
 
 def worker():
@@ -116,18 +119,17 @@ def slab_rel_max(path_a, path_b):
 
 
 def orchestrator():
-    """JAX-free parent: one subprocess per case, then compare every case to the first."""
+    """JAX-free parent: one subprocess per case, then the configured comparisons."""
     os.makedirs(OUT_DIR, exist_ok=True)
     lines = {}
-    for label, version, view_batch in CASES:
-        env = dict(os.environ, **{_ROLE_ENV: 'worker', _LABEL_ENV: label,
-                                  _VERSION_ENV: version})
+    for label, view_batch in CASES:
+        env = dict(os.environ, **{_ROLE_ENV: 'worker', _LABEL_ENV: label})
         if view_batch is not None:
             env[_VIEW_BATCH_ENV] = str(view_batch)
         seq = 'default' if PARTITION_SEQUENCE is None else PARTITION_SEQUENCE
-        print(f'--- running case {label} (batching v{version}, '
-              f'view_batch={view_batch or "default"}, {N}^3, {NUM_VIEWS} views, '
-              f'{MAX_ITERATIONS} iters, partition_sequence={seq}) ---', flush=True)
+        print(f'--- running case {label} (view_batch={view_batch or "default"}, '
+              f'{N}^3, {NUM_VIEWS} views, {MAX_ITERATIONS} iters, '
+              f'partition_sequence={seq}) ---', flush=True)
         result = subprocess.run([sys.executable, os.path.abspath(__file__)], env=env,
                                 capture_output=True, text=True)
         sys.stdout.write(result.stdout)
@@ -138,19 +140,24 @@ def orchestrator():
         lines[label] = [ln for ln in result.stdout.splitlines() if ln.startswith('WORKER')]
 
     ref_label = CASES[0][0]
+    ref_path = os.path.join(OUT_DIR, f'recon_{ref_label}.npy')
     print('\n=== FINAL SUMMARY ===')
-    for label, _, _ in CASES:
+    for label, _ in CASES:
         for ln in lines[label]:
             print(ln)
-    for label, _, _ in CASES[1:]:
-        rel = slab_rel_max(os.path.join(OUT_DIR, f'recon_{ref_label}.npy'),
-                           os.path.join(OUT_DIR, f'recon_{label}.npy'))
+    for label, _ in CASES[1:]:
+        rel = slab_rel_max(ref_path, os.path.join(OUT_DIR, f'recon_{label}.npy'))
         verdict = 'PASS' if rel <= 1e-4 else 'FAIL'
         print(f'rel_max_err({label} vs {ref_label}) = {rel:.2e}   '
               f'(gate: 1e-4, iterated-VCD calibration)   {verdict}')
+    if COMPARE_TO is not None:
+        rel = slab_rel_max(COMPARE_TO, ref_path)
+        verdict = 'PASS' if rel <= 1e-4 else 'FAIL'
+        print(f'rel_max_err({ref_label} vs baseline {os.path.basename(COMPARE_TO)}) = '
+              f'{rel:.2e}   (gate: 1e-4, iterated-VCD calibration)   {verdict}')
 
     if not KEEP_RECONS:
-        for label, _, _ in CASES:
+        for label, _ in CASES:
             os.remove(os.path.join(OUT_DIR, f'recon_{label}.npy'))
 
 
