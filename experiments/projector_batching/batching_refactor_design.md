@@ -23,6 +23,25 @@
 > (i.e., XLA lowers both forms identically on GPU), the patch buys nothing measurable and
 > the right end state is pure shard_profiling v1 — the machinery is measured-optimal as it
 > stands, and the durable outputs of this episode are the measurements and this record.
+>
+> **RESOLUTION (2026-07-04).**  (a) The GPU transient probe showed old and new
+> BYTE-IDENTICAL in compiled temps at every vb — XLA lowers both forms to the same GPU
+> program, the "copy" is just how XLA represents the scan either way, and the windowed-read
+> patch was REVERTED: `projectors.py`'s batching machinery is pure shard_profiling v1,
+> measured-optimal.  (b) The pixel-width lead CONFIRMED and shipped
+> (`pixel_width_sweep.py`, H100 + CPU): the BAND kernel obeys two empirical width rules —
+> stay 32-ALIGNED (unaligned costs up to ~25% at short band lengths on H100) and avoid
+> row strides that are large POWERS OF TWO (exactly 2048: ~10% penalty at H100/L=256 and
+> **1.4–1.5×** on CPU at L=26–64) — while forward and monolithic back are width-insensitive.
+> Width **2016 = 32·63** satisfies both rules and was never worse than 2048 in any measured
+> cell (H100: 0.892 @ L=256, 0.999 @ L=103; CPU: 0.723 @ L=64, 0.665 @ L=26).  Shipped as
+> `TomographyModel.pixel_batch_size_for_vmap_back = 2016` (back/band only — their pixel
+> axis concatenates, so no sums regroup and the change is fp-trivial; forward keeps 2048).
+> This also re-attributes v2's band win (its widths happened to be near-optimal at both
+> cells), which makes v2's ~5% full-path slowdown MORE mysterious — that remains
+> unexplained (aggregate compile differences are the unfalsified suspect).  Related note
+> for the future (Greg): forward projection is ~2× back's time on GPU and 3–4× on CPU — a
+> forward-kernel-internals project would shift these width/batching trade-offs again.
 
 **Drafted 2026-07-03**, from `projector_batching_characterization.md` (structure + census +
 memory probe).  Scope: the **driver tier** in `mbirjax/projectors.py` only.  The host-tier

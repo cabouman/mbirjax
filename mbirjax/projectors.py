@@ -73,6 +73,12 @@ class Projectors:
         # change and rebuilds the projectors through set_params as before.
         self.view_params_array = jnp.asarray(self.tomography_model.get_params(view_params_name))
         pixel_batch_size = self.tomography_model.pixel_batch_size_for_vmap
+        # Back/band use their own pixel width: the band kernel is strongly width-sensitive
+        # (avoid power-of-2 strides, stay 32-aligned; see the comment at the attribute in
+        # TomographyModel.__init__).  Their pixel axis only concatenates, so the width is
+        # free to differ from forward's without regrouping any sums.
+        pixel_batch_size_back = getattr(self.tomography_model,
+                                        'pixel_batch_size_for_vmap_back', pixel_batch_size)
         view_batch_size = self.tomography_model.view_batch_size_for_vmap
 
         # The jitted drivers are MODULE-LEVEL functions (defined at the end of this file),
@@ -107,7 +113,7 @@ class Projectors:
                 self.view_params_array, sinogram, pixel_indices,
                 back_kernel=back_project_one_view_to_pixel_batch,
                 projector_params=projector_params,
-                pixel_batch_size=pixel_batch_size,
+                pixel_batch_size=pixel_batch_size_back,
                 view_batch_size=view_batch_size,
                 coeff_power=coeff_power,
                 owned_view_indices=owned_view_indices)
@@ -128,7 +134,7 @@ class Projectors:
                     self.view_params_array, sinogram, pixel_indices, g0, num_band_slices,
                     back_band_kernel=back_project_one_view_to_band,
                     projector_params=projector_params,
-                    pixel_batch_size=pixel_batch_size,
+                    pixel_batch_size=pixel_batch_size_back,
                     view_batch_size=view_batch_size,
                     coeff_power=coeff_power,
                     owned_view_indices=owned_view_indices)

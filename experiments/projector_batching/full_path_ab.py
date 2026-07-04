@@ -37,13 +37,15 @@ PARTITION_SEQUENCE = None   # None = model default [0,2,4,6,7].  Pin to a single
                             # level to LOCALIZE a timing delta: e.g. [0] = all-coarse
                             # iterations (823k-pixel subsets, short bands), [4] = all
                             # granularity-16, [7] = all-fine (6.4k).
-# Cases: (label, view_batch_size or None for the default).  Every case after the first is
-# compared against the first.  A single case is the normal cross-code-state mode (compare
-# via COMPARE_TO).  Two cases with different view batches is the NULL CALIBRATION of the fp
-# gate -- how much does a pure sum-REGROUPING perturbation move this recon, with the code
-# fixed? -- e.g. [('vb128', None), ('vb121', 121)].
+# Cases: (label, view_batch_size, back_pixel_batch_size) -- None = the model default.
+# Every case after the first is compared against the first.  A single case is the normal
+# cross-code-state mode (compare via COMPARE_TO).  Two cases with different view batches is
+# the NULL CALIBRATION of the fp gate (a pure sum-REGROUPING perturbation with the code
+# fixed), e.g. [('vb128', None, None), ('vb121', 121, None)].  The default pair below A/Bs
+# the back/band pixel width (2048 = the historical value vs the model default 2016).
 CASES = [
-    ('recon', None),
+    ('pixel_back_2048', None, 2048),
+    ('pixel_back_2016', None, None),
 ]
 COMPARE_TO = None           # path to a baseline recon .npy from a run at another code
                             # state; the FIRST case is compared against it
@@ -55,6 +57,7 @@ KEEP_RECONS = False         # True to keep the recon .npy files (N^3 * 4 bytes e
 _ROLE_ENV = 'MBIRJAX_AB_ROLE'
 _LABEL_ENV = 'MBIRJAX_AB_LABEL'
 _VIEW_BATCH_ENV = 'MBIRJAX_AB_VIEW_BATCH'
+_PIXEL_BACK_ENV = 'MBIRJAX_AB_PIXEL_BATCH_BACK'
 
 
 def worker():
@@ -70,10 +73,14 @@ def worker():
     if PARTITION_SEQUENCE is not None:
         model.set_params(partition_sequence=PARTITION_SEQUENCE)
     view_batch = os.environ.get(_VIEW_BATCH_ENV)
-    if view_batch:
+    pixel_back = os.environ.get(_PIXEL_BACK_ENV)
+    if view_batch or pixel_back:
         # The projector entry points capture the batch sizes when built, so a post-__init__
         # override must rebuild them.
-        model.view_batch_size_for_vmap = int(view_batch)
+        if view_batch:
+            model.view_batch_size_for_vmap = int(view_batch)
+        if pixel_back:
+            model.pixel_batch_size_for_vmap_back = int(pixel_back)
         model.create_projectors()
     recon_shape = model.get_params('recon_shape')
 
@@ -122,12 +129,15 @@ def orchestrator():
     """JAX-free parent: one subprocess per case, then the configured comparisons."""
     os.makedirs(OUT_DIR, exist_ok=True)
     lines = {}
-    for label, view_batch in CASES:
+    for label, view_batch, pixel_back in CASES:
         env = dict(os.environ, **{_ROLE_ENV: 'worker', _LABEL_ENV: label})
         if view_batch is not None:
             env[_VIEW_BATCH_ENV] = str(view_batch)
+        if pixel_back is not None:
+            env[_PIXEL_BACK_ENV] = str(pixel_back)
         seq = 'default' if PARTITION_SEQUENCE is None else PARTITION_SEQUENCE
         print(f'--- running case {label} (view_batch={view_batch or "default"}, '
+              f'pixel_batch_back={pixel_back or "default"}, '
               f'{N}^3, {NUM_VIEWS} views, {MAX_ITERATIONS} iters, '
               f'partition_sequence={seq}) ---', flush=True)
         result = subprocess.run([sys.executable, os.path.abspath(__file__)], env=env,
@@ -142,10 +152,10 @@ def orchestrator():
     ref_label = CASES[0][0]
     ref_path = os.path.join(OUT_DIR, f'recon_{ref_label}.npy')
     print('\n=== FINAL SUMMARY ===')
-    for label, _ in CASES:
+    for label, _, _ in CASES:
         for ln in lines[label]:
             print(ln)
-    for label, _ in CASES[1:]:
+    for label, _, _ in CASES[1:]:
         rel = slab_rel_max(ref_path, os.path.join(OUT_DIR, f'recon_{label}.npy'))
         verdict = 'PASS' if rel <= 1e-4 else 'FAIL'
         print(f'rel_max_err({label} vs {ref_label}) = {rel:.2e}   '
@@ -157,7 +167,7 @@ def orchestrator():
               f'{rel:.2e}   (gate: 1e-4, iterated-VCD calibration)   {verdict}')
 
     if not KEEP_RECONS:
-        for label, _ in CASES:
+        for label, _, _ in CASES:
             os.remove(os.path.join(OUT_DIR, f'recon_{label}.npy'))
 
 

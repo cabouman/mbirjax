@@ -53,9 +53,18 @@ the 'flash' associated with objects partially outside the FoV.
 
 - **Profile the existing projector performance**: Use jax/perfetto/tensorboard/nvidia tools to identify
   memory and computational bottlenecks and make a plan to improve performance.
-- **Simplify the sparse-projector batching machinery** (§6): collapse the scan/map/vmap nest, remove the
-  `lax.map` jax#27591 fragility (`apply_row_filter` is the template).  High blast-radius — do on its own with
-  the projector suite as the gate.
+- ~~Simplify the sparse-projector batching machinery~~ — **CLOSED 2026-07-04 with the machinery
+  UNCHANGED**: the batching-refactor investigation (census + balanced-batching v2 + windowed-read
+  patch, all measured and retired; full record in
+  `experiments/projector_batching/batching_refactor_design.md`) established that every piece of the
+  scan/map/vmap nest is load-bearing and the `lax.map` use is the safe no-`batch_size` form.  One
+  shipped outcome: **back/band pixel batch = 2016** (the band kernel is width-sensitive: stay
+  32-aligned, avoid power-of-2 row strides; exactly-2048 cost 1.4–1.5× on CPU band back).  Measured
+  constants for the adaptive-knob work: flat GPU vmap-width knee; isolated-driver k ≈ 1.0
+  forward / 1.9 back.
+- **Forward-kernel internals (future project, noted 2026-07-04):** forward projection is ~2× back's
+  time on GPU and 3–4× on CPU — the dominant projector cost.  Improving the forward kernel itself
+  would also re-open the batch-width trade-offs above.
 - **Minor opens:** `configure_devices`/`use_gpu` unification; forward pixel-batch default.
 
 ## 4. MAR Phase 3 — subsample / speed up the BH model fit
