@@ -66,6 +66,49 @@ All runs: same seed, same init policy, per-dataset sharpness/snr as in the exist
   skipping granularity 1 (`[2,...]` starts) costs any final quality — the adaptive-policy
   gate.
 
+## Results (P1-P2, 2026-07-05 — subsampled 4×/8×, 1 GPU, full trajectories in
+## /scratch/gautschi/buzzard/ps_study/ps_results*/; scratch is purged, decisions recorded here)
+
+**Calibration.**  References: lilly 60 iters, z62 184, sic 461 (slow converger, ~0.994×/iter).
+Chunk checks fp-class (1.5e-06..1.2e-04; lilly's top value is its positivity clipping), restart
+overhead ×1.00 — the checkpointed harness is production-exact and free.  **Noise floors**
+(5 partition seeds, 15 iters, pairwise masked NRMSE): lilly 0.0050, z62 0.0123, sic 0.0045 —
+z62 readable only at NRMSE ≥ ~0.02.
+
+**Sweep verdict (16 sequences over two rounds; consistent on all three datasets):**
+
+1. **Convergence per ITERATION is nearly sequence-independent.**  z62: all candidates reach
+   NRMSE 0.05 in 68–74 iters; sic at fixed budget: NRMSE spread ≤ the noise floor.  Only
+   lilly shows a modest real edge for fine-heavy starts (≈2 iterations at NRMSE 0.01).
+   Monotone never loses; `slow_dip` never wins; LONG COARSE PHASES (`ramp_full`, `dwell`)
+   consistently cost the most time.
+2. **Tail granularity is the big TIME lever via per-iteration COST**: 64-tails ≈ 17–23%
+   faster than 128-tails at equal quality (z62: 90 vs 118 s to NRMSE 0.05; sic: ~288 vs
+   ~348 s to iteration 140); 256-tails ~40–80% slower.
+3. **Skipping granularity 1 cuts peak memory 21–35% at no quality cost** (z62 5.03 → 3.49
+   GiB; lilly 3.88 → 3.15) — this GATES THE SIZE-ADAPTIVE STARTING-GRANULARITY POLICY
+   POSITIVELY (post_shard_plans §1).
+
+**Best sequences: `[4, 6]` (granularity 16 → 64) and `[6]` (flat 64)** — vs the default
+`[0,2,4,6,7]`: ~20–30% faster to every readable quality target AND ~20–30% lower peak, on
+every dataset.  (`[7]` flat-128 wins lilly's peak-memory column but pays 128-tail time.)
+
+**Scale check (P3, z62 at 2×/4× → 1024³, 2026-07-05):** the two levers SWAP importance at
+scale.  Quality still schedule-independent (default / `[4,6]` / `[6]` all end NRMSE ~0.064).
+The tail-granularity TIME edge SHRINKS to ~6% (default 1630 s vs `[4,6]` 1524 / `[6]` 1558) —
+at scale, compute-per-projection dominates the per-subset dispatch overhead that made 64-tails
+17–23% faster when subsampled (Greg's prediction: 128 never beats 64, confirmed, just by a
+smaller margin).  But **skipping granularity 1 becomes a 30–38% PEAK-MEMORY win** (default
+37.1 GiB → `[4,6]` 26.0 → `[6]` 23.0; 11–14 GiB at 1024³) — the dominant, growing benefit.
+
+**Recommendation:** skip granularity 1 (start ≥ index 2) primarily for MEMORY; prefer a
+64-class tail (index 6) over 128 for a small time win.  `[4,6]` and `[6]` dominate the default
+on every dataset and at scale.  The durable form is the size-adaptive starting-granularity
+policy (post_shard_plans §1), now positively gated.  Remaining caveat: one GPU, cone geometry,
+Z62 only at full scale — a second full-scale dataset would harden it but the mechanism
+(granularity-1 = one all-voxel update = the memory spike; subset count = per-iteration dispatch
+overhead) is size-robust.
+
 ## Phases
 
 - **P0** — cache-builder script (lives in `mbirjax_applications`, near the loaders; config
