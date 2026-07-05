@@ -191,6 +191,16 @@ def gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=True):
         warning += 'reconstruction.  \nReducing the number of subsets to equal the number of indices.'
         warnings.warn(warning)
 
+    # A single subset needs no permutation: the subsets are SORTED below, so a shuffle would be
+    # exactly undone -- but it would consume global np.random state.  Skipping it keeps
+    # full-index "partitions" (gen_full_indices: the Hessian diagonal, the direct-recon init)
+    # from advancing the RNG, so a restarted recon (init_recon + first_iteration, with
+    # caller-held partitions) reproduces a continuous run's per-iteration subset
+    # permutations -- and hence its trajectory -- exactly.  The returned partition is
+    # bit-identical to the permute-then-sort path.
+    if num_subsets == 1:
+        return jnp.array(np.sort(indices).reshape(1, -1))
+
     # Determine the number of indices to repeat to make the total number divisible by num_subsets
     num_indices_per_subset = int(np.ceil((len(indices) / num_subsets)))
     array_size = num_subsets * num_indices_per_subset
