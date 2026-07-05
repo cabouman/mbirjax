@@ -2680,7 +2680,8 @@ class TomographyModel(ParameterHandler):
         return recon, recon_dict
 
     def vcd_recon(self, sinogram, partitions, partition_sequence, stop_threshold_change_pct, weights=None,
-                  init_recon=None, prox_input=None, compute_prior_loss=False, first_iteration=0):
+                  init_recon=None, prox_input=None, compute_prior_loss=False, first_iteration=0,
+                  init_error_sinogram=None, fm_hessian=None, return_checkpoint=False):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm
         for a given set of partitions and a prescribed partition sequence.
@@ -2695,8 +2696,24 @@ class TomographyModel(ParameterHandler):
             prox_input (jax array, optional): Reconstruction to be used as input to a proximal map.
             compute_prior_loss (bool, optional):  Set true to calculate and return the prior model loss.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.
+            init_error_sinogram (jax array, optional): Precomputed error sinogram to resume from,
+                skipping the initializing forward projection.  Must be supplied together with
+                init_recon, and the pair is TRUSTED as consistent (init_error_sinogram ==
+                sinogram - A @ init_recon for the SAME sinogram and geometry) -- verifying would
+                cost the forward projection this argument exists to avoid.  The device-form array
+                returned via return_checkpoint satisfies this by construction.  Defaults to None.
+            fm_hessian (jax array, optional): Precomputed forward-model Hessian diagonal (as
+                returned via return_checkpoint, or compute_hessian_diagonal(weights=weights,
+                output_sharded=True) flattened to (num_pixels, num_slices)).  Must correspond to
+                the SAME weights and geometry.  When None (default), it is computed internally.
+            return_checkpoint (bool, optional): If True, additionally return the resume state --
+                a dict {'error_sinogram': <device form>, 'fm_hessian': <device form>} suitable for
+                the two arguments above -- so a chunked/checkpointed run can continue with no
+                re-initialization cost.  Zero-copy: the dict references the loop's own device
+                arrays.  Defaults to False.
         Returns:
             (recon, recon_stats): tuple of 3D reconstruction and a tuple containing arrays of per-iteration stats.
+            With return_checkpoint=True: (recon, recon_stats, checkpoint).
             recon_stats = (fm_rmse, pm_rmse, nrms_update), where fm is forward model, pm is prior model, and
             nrms_update is ||recon(i+1) - recon(i)||_2 / ||recon(i+1)||_2.
 
@@ -2741,6 +2758,9 @@ class TomographyModel(ParameterHandler):
         sinogram = to_sino(sinogram)
 
         scale_recon_to_sinogram = True if init_recon is None else False
+        if init_error_sinogram is not None and init_recon is None:
+            raise ValueError('init_error_sinogram requires init_recon (the pair must be a '
+                             'consistent resume state; see the docstring).')
         if init_recon is None:
             # Initialize VCD recon, and error sinogram.  output_sharded=True keeps the init in
             # the internal device form (slice-sharded when sharding is on; no gather).
@@ -2766,24 +2786,31 @@ class TomographyModel(ParameterHandler):
         init_recon = to_recon(init_recon)
 
         # Initialize VCD recon and error sinogram using the init_recon
-        # We find the optimal alpha to minimize (1/2)||y - alpha Ax||_weights^2, where y is the sinogram and x is init_recon
-        # output_sharded=True keeps the error sinogram in the device form (view-sharded when
-        # sharding is on; no gather between the forward projection and the loop).
-        self.logger.info('Initializing error sinogram')
-        error_sinogram = self.forward_project(init_recon, output_sharded=True)
-        if not constant_weights:
-            weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
+        if init_error_sinogram is not None:
+            # RESUME path: the caller supplies error_sinogram = sinogram - A @ init_recon
+            # (a trusted, consistent pair -- typically the return_checkpoint output of a
+            # previous call), skipping the initializing forward projection.
+            self.logger.info('Resuming from a supplied error sinogram')
+            error_sinogram = init_error_sinogram
         else:
-            weighted_error_sinogram = error_sinogram
-        wtd_err_sino_norm = jnp.sum(weighted_error_sinogram * error_sinogram)
-        if wtd_err_sino_norm > 0 and scale_recon_to_sinogram:
-            alpha = jnp.sum(weighted_error_sinogram * sinogram) / wtd_err_sino_norm
-            alpha = alpha.item()
-        else:
-            alpha = 1
+            # We find the optimal alpha to minimize (1/2)||y - alpha Ax||_weights^2, where y is the sinogram and x is init_recon
+            # output_sharded=True keeps the error sinogram in the device form (view-sharded when
+            # sharding is on; no gather between the forward projection and the loop).
+            self.logger.info('Initializing error sinogram')
+            error_sinogram = self.forward_project(init_recon, output_sharded=True)
+            if not constant_weights:
+                weighted_error_sinogram = weights * error_sinogram  # Note that fm_constant will be included below
+            else:
+                weighted_error_sinogram = error_sinogram
+            wtd_err_sino_norm = jnp.sum(weighted_error_sinogram * error_sinogram)
+            if wtd_err_sino_norm > 0 and scale_recon_to_sinogram:
+                alpha = jnp.sum(weighted_error_sinogram * sinogram) / wtd_err_sino_norm
+                alpha = alpha.item()
+            else:
+                alpha = 1
 
-        error_sinogram = sinogram - alpha * error_sinogram
-        init_recon = alpha * init_recon
+            error_sinogram = sinogram - alpha * error_sinogram
+            init_recon = alpha * init_recon
 
         recon = init_recon
         recon = to_recon(recon)  # slice-shard (a single device is the trivial 1-shard case)
@@ -2835,21 +2862,29 @@ class TomographyModel(ParameterHandler):
                       or self._sino_row_padding() is not None)
         loss_num_real = real_sino_size if pad_active else None
 
-        # Initialize the diagonal of the hessian of the forward model
-        if constant_weights:
-            # Ones over the real views, ZEROS over any padded views (device form):
-            # padded views must not contribute to the Hessian back projection.
-            # _sino_ones_device_form uses only its argument's dtype; error_sinogram (same dtype,
-            # same device form) stands in so the original sinogram can be freed above.
-            weights = self._sino_ones_device_form(error_sinogram)
+        # Initialize the diagonal of the hessian of the forward model (or accept a
+        # precomputed one -- as returned via return_checkpoint -- and skip the back
+        # projection that computes it).
+        if fm_hessian is None:
+            if constant_weights:
+                # Ones over the real views, ZEROS over any padded views (device form):
+                # padded views must not contribute to the Hessian back projection.
+                # _sino_ones_device_form uses only its argument's dtype; error_sinogram (same dtype,
+                # same device form) stands in so the original sinogram can be freed above.
+                weights = self._sino_ones_device_form(error_sinogram)
 
-        self.logger.info('Computing Hessian diagonal')
-        # output_sharded=True keeps the Hessian in the device form (slice-sharded, slice
-        # axis possibly padded -- the padded entries are zero, masked by the back projection).
-        fm_hessian = self.compute_hessian_diagonal(weights=weights, output_sharded=True)
-        # Flatten keeping each array's OWN slice count (the device form may carry a
-        # padded slice axis; num_recon_slices is the problem's real count).
-        fm_hessian = fm_hessian.reshape((-1, fm_hessian.shape[-1]))
+            self.logger.info('Computing Hessian diagonal')
+            # output_sharded=True keeps the Hessian in the device form (slice-sharded, slice
+            # axis possibly padded -- the padded entries are zero, masked by the back projection).
+            fm_hessian = self.compute_hessian_diagonal(weights=weights, output_sharded=True)
+            # Flatten keeping each array's OWN slice count (the device form may carry a
+            # padded slice axis; num_recon_slices is the problem's real count).
+            fm_hessian = fm_hessian.reshape((-1, fm_hessian.shape[-1]))
+        else:
+            self.logger.info('Using precomputed Hessian diagonal')
+            # Accept the flat device form (num_pixels, device slices) that return_checkpoint
+            # hands back; to_recon places a plain host array (a no-op on a placed one).
+            fm_hessian = to_recon(fm_hessian)
         if constant_weights:
             weights = 1
         else:
@@ -2934,8 +2969,14 @@ class TomographyModel(ParameterHandler):
         # Reshape to 3-D keeping the array's OWN slice count (the device form may carry a
         # padded slice axis -- the caller's exit handling gathers + crops to the real shape).
         recon_3d = flat_recon.reshape(tuple(recon_shape[:2]) + (flat_recon.shape[-1],))
-        return recon_3d, (fm_rmse[0:num_iters], pm_loss[0:num_iters], nmae_update[0:num_iters],
-                          alpha_values[0:num_iters])
+        losses = (fm_rmse[0:num_iters], pm_loss[0:num_iters], nmae_update[0:num_iters],
+                  alpha_values[0:num_iters])
+        if return_checkpoint:
+            # Zero-copy resume state: references to the loop's own device-form arrays.  Feed
+            # these back as init_error_sinogram / fm_hessian (with init_recon = the returned
+            # recon) to continue with no re-initialization cost.
+            return recon_3d, losses, {'error_sinogram': error_sinogram, 'fm_hessian': fm_hessian}
+        return recon_3d, losses
 
     def vcd_partition_iterator(self, vcd_subset_updater, flat_recon, error_sinogram, partition):
         """

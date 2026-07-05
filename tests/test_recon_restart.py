@@ -70,6 +70,25 @@ class TestReconRestart(unittest.TestCase):
         rel = float(np.max(np.abs(np.asarray(recon) - mono)) / np.max(np.abs(mono)))
         self.assertLess(rel, 1e-5, msg=f'chunked vs continuous rel_max {rel:.2e}')
 
+        # Checkpoint-threaded chunking (init_error_sinogram + fm_hessian round-tripped via
+        # return_checkpoint) must ALSO match -- and it skips the per-restart forward
+        # projection and Hessian back projection, so it is the cheap form.
+        partitions, seq = setup()
+        recon, ckpt = None, {}
+        for k in range(3):
+            recon, _, ckpt = model.vcd_recon(sino, partitions, seq[k:k + 1], 0,
+                                             init_recon=recon, first_iteration=k,
+                                             init_error_sinogram=ckpt.get('error_sinogram'),
+                                             fm_hessian=ckpt.get('fm_hessian'),
+                                             return_checkpoint=True)
+        rel = float(np.max(np.abs(np.asarray(recon) - mono)) / np.max(np.abs(mono)))
+        self.assertLess(rel, 1e-5, msg=f'checkpointed vs continuous rel_max {rel:.2e}')
+
+        # Guard: an error sinogram without its recon is an inconsistent resume state.
+        with self.assertRaises(ValueError):
+            model.vcd_recon(sino, partitions, seq[0:1], 0,
+                            init_error_sinogram=ckpt['error_sinogram'])
+
 
 if __name__ == '__main__':
     unittest.main()
