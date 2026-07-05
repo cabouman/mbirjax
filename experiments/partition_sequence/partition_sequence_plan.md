@@ -20,6 +20,14 @@ converge best — repeats are fine, dips (e.g. the `slow_dip` in
   seed → identical trajectory).  Measure the chunk-restart overhead once, then pick.
 - Partitions come from global `np.random` → `np.random.seed(0)` before every run; one seed
   for the whole study (the partition-noise floor is known ~1e-4-class on recon fingerprints).
+- **Subset ORDER is also drawn from global `np.random`, per iteration**
+  (`vcd_partition_iterator` shuffles subsets — tomography_model ~L2964).  Two consequences,
+  measured 2026-07-04: (a) chunked restarts differ from a monolithic run at subset-order
+  noise level (rel ~0.3–0.5 at 2–3 far-from-converged toy iterations), NOT fp noise — both
+  are valid VCD paths; (b) with chunk=1 every candidate draws its iteration-k permutation
+  from the identical RNG state, so **chunked is the matched-randomness instrument** —
+  monolithic runs of different sequences desync their RNG streams and carry permutation
+  noise into every comparison.  Production-path (monolithic) fidelity is checked at P3.
 - The per-iteration change metric depends on the iteration's granularity → thresholds are
   NOT comparable across sequences; NRMSE vs a converged reference is the primary metric,
   change-% secondary.
@@ -71,18 +79,14 @@ All runs: same seed, same init policy, per-dataset sharpness/snr as in the exist
 - **P4** — decision: new default sequence and/or the size-adaptive starting-granularity rule;
   update docs + the recon guidance.
 
-## Open questions (for discussion before P0)
+## Decisions (2026-07-04, Greg)
 
-1. **NRMSE region**: full recon vs RoR-masked vs flash-removed?  Objects extending past the
-   FoV converge slowly at the flash (post_shard_plans §2) — masking the exterior keeps the
-   metric about the object.  Proposal: RoR mask + drop the top/bottom few slices.
-2. **Init policy**: `recon()` default init for all runs (simplest, matches production), or
-   direct-recon init (Zeiss script style)?  Proposal: default init; direct-init as a P3
-   sensitivity check on one dataset.
-3. **Reference tightness**: 0.01% change may still leave the reference measurably moving at
-   granularity-128 tails; if the reference wobbles at the level that separates candidates,
-   tighten (0.005 / more iterations) on the affected dataset.
-4. **Time vs iterations**: iterations are seed-comparable but hide per-iteration cost
-   differences (coarse iterations cost more per pixel-pass?  — actually each iteration
-   processes all pixels once regardless of granularity, but subset count changes dispatch
-   overhead and line-search sync counts).  Report both; decide on time.
+1. **NRMSE region**: RoR mask + drop some top/bottom slices.
+2. **Init**: `recon()` default init everywhere — which is the direct recon anyway, scaled to
+   minimize the RMSE of the error sinogram.
+3. **Reference tightness**: expect the PARTITION-CHOICE variability (different partition
+   seeds at fixed 15 iterations, or at a fixed 0.2% threshold) to dominate the 0.01%
+   reference wobble — VERIFY via a noise-floor calibration in P1: reference config × ~5
+   seeds → pairwise masked NRMSE spread = the floor any candidate separation must exceed.
+4. **Verdict axes**: report iterations AND time, but decide on **time and memory at fixed
+   image quality**.
