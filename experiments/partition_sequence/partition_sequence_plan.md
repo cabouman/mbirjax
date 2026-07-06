@@ -101,18 +101,99 @@ at scale, compute-per-projection dominates the per-subset dispatch overhead that
 smaller margin).  But **skipping granularity 1 becomes a 30–38% PEAK-MEMORY win** (default
 37.1 GiB → `[4,6]` 26.0 → `[6]` 23.0; 11–14 GiB at 1024³) — the dominant, growing benefit.
 
-**Recommendation:** skip granularity 1 (start ≥ index 2) primarily for MEMORY; prefer a
-64-class tail (index 6) over 128 for a small time win.  `[4,6]` and `[6]` dominate the default
-on every dataset and at scale.  The durable form is the size-adaptive starting-granularity
-policy (post_shard_plans §1), now positively gated.  Remaining caveat: one GPU, cone geometry,
-Z62 only at full scale — a second full-scale dataset would harden it but the mechanism
-(granularity-1 = one all-voxel update = the memory spike; subset count = per-iteration dispatch
-overhead) is size-robust.
+**CORRECTION — the 4×/8× tail conclusion was a SUBSAMPLING ARTIFACT (2026-07-05, Greg's
+4×/4× suggestion).**  At 4×/8× only 101 views → so underdetermined the recon raced to its
+(noisy) reference regardless of granularity, MASKING the tail dependence.  Re-run at realistic
+sampling and the tail story is the OPPOSITE and SIZE-DEPENDENT:
+
+- **Convergence per iteration IS granularity-dependent** (VCD = coordinate descent; finer =
+  more Gauss-Seidel-like updates = faster convergence per iteration).  Flat coarse tails
+  ([3]/[4]/[5] = gran 8/16/32) barely converge; finer converges much faster.
+- **512³ (4×/4×, all 3 datasets z62/lilly/sic): finer tail [7]=128 is OPTIMAL on BOTH time and
+  memory.**  z62: [7] 74 it / 188 s to 0.05 & 3.78 GiB, vs [6] 103 it / 219 s & 4.40 GiB.
+  Lilly/sic agree.  `[8]=256` SATURATES — no convergence gain past 128, +overhead (z62: 257 s
+  vs 188), same floor memory.
+- **1024³ (z62): the optimum MOVES BACK to [6]=64.**  The convergence benefit of finer shrinks
+  at scale (103→99→98 it for 64→128→256) while per-iteration cost rises, so [6] is fastest to
+  target (1353 s vs [7] 1397 vs [8] 1488); and [6]/[7]/[8] all TIE on memory (~23 GiB, the
+  fixed-array floor).  So at scale the tail moves NO memory — only skipping granularity 1 does.
+
+**FINAL recommendation (supersedes the two above):**
+1. **Skip granularity 1** — the firm, size-independent memory win (default 37 → 23–26 GiB at
+   1024³), no quality cost.  THE lever.
+2. **Tail 64–128 with a size-dependent optimum** (~128 at 512³, ~64 at 1024³) — a MODEST
+   second-order effect (~3 % at 1024³, larger at small sizes); both far better than the
+   extremes.  256 is never worth it.
+3. Default `[0,2,4,6,7]`'s 128 tail is fine (optimal at 512³, ~3 % slow at 1024³); its only
+   real flaw is the granularity-1 START.  So the minimal fix is a sequence like `[4,6,7]` /
+   `[2,4,6,7]` (skip gran-1, keep a fine tail).  A coarse START buys a few % early convergence
+   for a few GiB (it lifts peak above the floor) — a real but small tradeoff.
+
+Durable form: the size-adaptive starting-granularity policy (post_shard_plans §1), now
+positively gated; the tail could be size-adaptive too but the payoff is small.  Cross-validated
+on 3 datasets at 512³ + z62 at 1024³, one GPU, cone.
+
+## PROPOSED default changes — for team review (2026-07-05)
+
+The study points to a small, well-supported set of changes.  These are PROPOSALS for the team to
+weigh in on, not settled decisions, before anything lands in `recon()`.
+
+**Sequence — two primary options, `[7]` and `[4, 7]`** (both a flat-128 tail; both drop the deep
+coarse ramp of today's `[0,2,4,6,7]`).  Shared basis: with a fine (128) tail, extra coarse
+granularities add ~0 convergence (flat `[7]` already matches / beats the fully-ramped default to
+every target — lilly 4 vs 6 iters, sic tie, z62 1024³ 99 vs 100), and each distinct granularity
+costs one more subset-updater compile.
+  - **`[7]`** (flat 128): simplest, ONE compile, and it SUBSUMES the granularity-1 memory win —
+    never coarse, so peak sits at the fixed-array floor at every size (post_shard_plans §1's
+    memory concern met by the sequence itself; no adaptive start needed for the default).
+  - **`[4, 7]`** (gran 16 → 128): one coarse warm-up iteration as a hedge for possibly-harder
+    cases (poor init, object classes we haven't tested), at a modest cost — the gran-16 step
+    lifts peak off the floor (its subset arrays are 8× a gran-128 step's) and adds a second
+    compile.  Our data shows the warm-up buys ~nothing HERE, but it's cheap insurance the team
+    may prefer.
+  The choice is simplicity/lowest-memory (`[7]`) vs coarse-start insurance (`[4,7]`); both are
+  clearly better than the current default.  An adaptive coarse start (start granularity from voxel
+  count) remains an option if size-adaptivity is wanted later.
+
+**`max_iterations`: raise from 15 into roughly the 25–50 range** (exact value TBD by the team);
+`stop_threshold_change_pct` unchanged at 0.2.  The real issue is the 15-cap STRANGLING the
+threshold: 0.2% binds at iter ~44–49 on hard objects, so the cap stops them first, far short
+(change 1–2.4 %).  Raising the cap lets the threshold govern → consistent quality across objects
+(easy ones still stop ~15).  0.2% is visually converged (convergence PNGs); ~25 is a lighter
+default that clears most objects, ~50 lets even hard objects reach the threshold — the team can
+pick where on that range to sit.  Tighten the threshold to 0.1% only for quantitative work.
+
+## Metric caveat — the study NRMSE is FLASH-inflated, object-dependently
+
+Radial-crop analysis on the flat-`[7]` snapshots (`experiments/.../figures/`, script
+`mbirjax_metrics/.../radial_crop_nrmse.py`): the FoV-edge "flash" (post_shard_plans §2 — objects
+extending past the field of view) inflates the NRMSE, but HOW MUCH depends on the object:
+
+- **Simple/solid (z62 cylinder): strongly flash-dominated.**  A 5 % radial crop drops the
+  0.2 %-stop NRMSE **5× (0.100 → 0.020)** and further crops barely move it — the flash is a thin
+  outer ring holding ~80 % of the reported error.  The INTERIOR is at ~2 % by iter 44; the
+  full-RoR 0.10 badly overstates object error.
+- **Structurally-complex (sic composite tube): mostly REAL.**  A 20 % crop takes 0.145 → 0.125
+  only — the error is distributed object structure (wall texture, pores) that genuinely needs
+  the iterations; cropping doesn't shortcut it.
+
+So the **change-% stop metric is left UNMASKED on purpose** (Greg): a signal-threshold mask is
+finicky (recon-sized, per-iteration re-estimation, histogram fragility, flash ≈ object intensity,
+per-subset plumbing in `vcd_subset_updater`) and a fixed radial crop is object-shape-dependent
+(would cut sic's boundary-hugging wall).  The flash-inclusive change-% is instead CONSERVATIVE
+for the interior (the flash keeps it elevated until everything, interior included, has settled),
+which is exactly the right bias for a default stop.  The flash is best fixed at the SOURCE
+(the §2 sinogram edge-taper / sine filter), which would also make simple-object NRMSE track
+quality — this study is good motivation to prioritize it.  Read absolute NRMSE-vs-iteration as an
+UPPER bound on interior error (loose for simple objects, tight for complex); RELATIVE schedule
+comparisons are unaffected (the flash is schedule-independent).
 
 ## Phases
 
-- **P0** — cache-builder script (lives in `mbirjax_applications`, near the loaders; config
-  at top, no CLI): one cached bundle per dataset on cluster scratch.
+- **P0** — cache-builder script: one cached bundle per dataset.  (As of 2026-07-06 the whole
+  pipeline lives in `mbirjax_metrics/experiments/partition_sequence/`, driven by one
+  `config.yaml`; caches are on the shared depot dir
+  `/depot/bouman/data/mbirjax_metrics/partition_sequence/cache/`.  See that folder's README.)
 - **P1** — references + trajectory harness (chunk-vs-rerun decision measured here).
 - **P2** — full candidate sweep on Lilly + Z62 (GPU; subsampled recons expected ~1–3 min
   each → the sweep is hours, run in pieces).

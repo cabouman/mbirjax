@@ -33,11 +33,16 @@ break the cross-device correctness gating).
 - **Size-only adaptive `partition_sequence` / starting granularity** (`sharding_implementation_plan_v3.md`
   §5 P1-design).  The granularity-1 first VCD iteration updates the whole recon in one subset → the biggest
   subset-domain arrays.  Deriving the coarsest starting granularity from voxel count (skip granularity 1 for
-  large problems) shrinks those.  **Size-only, never memory/hardware-adaptive** (reproducibility), and
-  **gated on convergence-quality data**.  **IN PROGRESS 2026-07-04:** empirical partition-sequence
-  study on real subsampled data (NSI Lilly + Zeiss sets, /4 space /8 views, converged baselines,
-  NRMSE-vs-reference metric); plan in `experiments/partition_sequence/partition_sequence_plan.md`.
-  Theory (Greg): monotone NON-DECREASING granularity sequences (repeats fine, no dips).
+  large problems) shrinks those.  **STUDIED 2026-07-05, findings pending team review** (full record:
+  `experiments/partition_sequence/partition_sequence_plan.md`, PROPOSED-defaults + metric-caveat
+  sections): a fine flat tail (finer converges faster per iteration = VCD is coordinate descent; the
+  old `[0,2,4,6,7]` coarse ramp added ~0 convergence but a gran-1 memory spike + extra compiles)
+  SUBSUMES this memory item — it never uses a coarse granularity, so peak sits at the fixed-array
+  floor at every size, no adaptive START needed for the default.  Two proposed sequence options
+  (**`[7]`** flat-128, or **`[4, 7]`** as a cheap coarse-start hedge); plus raise **`max_iterations`
+  from 15 into the ~25–50 range** (the 15-cap was strangling the 0.2% stop on hard objects),
+  threshold stays 0.2.  An adaptive coarse start remains an OPTIONAL advanced knob.  Not yet
+  decided/implemented — team review, then Greg's call.
 - These two are the same class of policy (problem-size → memory knob); worth unifying under one place.
 
 ## 2. Sinogram weight edge tapering to speed convergence and reduce flash
