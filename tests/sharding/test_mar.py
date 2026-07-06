@@ -142,15 +142,26 @@ class TestCorrectSinoPlasticMetal(unittest.TestCase):
 class TestReconPlasticMetalContract(unittest.TestCase):
 
     def test_output_sharded_contract(self):
-        """recon_plastic_metal returns a host ndarray by default and the sharded device form with
-        output_sharded=True, and the two agree.  The VCD partition RNG is seeded before each call
-        so the two runs draw identical partitions (comparing unseeded runs compares noise)."""
+        """The output_sharded FORM contract: the default returns a host ndarray at the problem's real
+        shape; output_sharded=True returns the slice-sharded device form (possibly slice-padded) with
+        no gather; and the flag changes only the output form, not the computation.
+
+        The form assertions are strict (deterministic).  The value comparison is deliberately LOOSE
+        (tol=1e-3): the two calls are INDEPENDENT runs of the full pipeline (FDK + BH fit + VCD), and
+        GPU run-to-run noise for that pipeline is context-dependent -- measured 6e-7..1.5e-5 across 15
+        seeded same/cross-flag pairs on 3xH100, but 1.1e-4 in a pytest-process context -- so a tight
+        gate here would be a flaky GPU-reproducibility test, not a contract test.  A real contract bug
+        (wrong data, padded-form leak, missing gather) fails the strict asserts or shows as O(1).
+        Flag-equivalence evidence: interleaved same/cross-flag runs on one model showed cross-flag
+        diffs (max 1.5e-5) statistically identical to within-flag run-to-run noise (max 9.6e-6).
+        The VCD partition RNG is seeded before each call so both draw identical partitions."""
         multi = preferred_devices(3)
         if multi is None:
             self.skipTest("need >= 3 devices")
         model = _make_model(multi)
         phantom = _make_phantom(model)
         measured = np.array(model.forward_project(phantom))
+        real_shape = tuple(model.get_params('recon_shape'))
 
         np.random.seed(7)
         recon_host = mjp.recon_plastic_metal(model, measured, None, num_BH_iterations=1,
@@ -160,11 +171,23 @@ class TestReconPlasticMetalContract(unittest.TestCase):
                                             num_metal=1, stop_threshold_change_pct=5.0,
                                             output_sharded=True)
 
+        # Strict form contract: host default.
         self.assertIsInstance(recon_host, np.ndarray)
-        self.assertEqual(recon_host.shape, tuple(model.get_params('recon_shape')))
-        self.assertNotIsInstance(recon_dev, np.ndarray)      # device form
-        assert_sharded_allclose(np.asarray(model._gather_recon(recon_dev)), recon_host,
-                                msg="output_sharded form diverged from the host default", tol=1e-4)
+        self.assertEqual(recon_host.shape, real_shape)
+        self.assertTrue(np.isfinite(recon_host).all())
+
+        # Strict form contract: device form.  A jax array (not gathered), distributed over the
+        # model's devices, slice axis at the device-form (padded) length.
+        self.assertNotIsInstance(recon_dev, np.ndarray)
+        self.assertEqual(set(recon_dev.devices()), set(multi))
+        self.assertEqual(recon_dev.shape[-1], model.recon_placement.padded_size)
+        gathered = np.asarray(model._gather_recon(recon_dev))
+        self.assertEqual(gathered.shape, real_shape)         # gather crops the padding
+        self.assertTrue(np.isfinite(gathered).all())
+
+        # Loose same-computation sanity check (see docstring for the measured tolerance basis).
+        assert_sharded_allclose(gathered, recon_host,
+                                msg="output_sharded form diverged from the host default", tol=1e-3)
 
 
 if __name__ == '__main__':

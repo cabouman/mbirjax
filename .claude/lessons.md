@@ -42,7 +42,15 @@ short jax/perf tips in `claude_prompt.md`.
   whose noise comes from large cancelling terms, get near-zero thresholds).
 - **Calibration:** same-executable GPU run-to-run noise on the projectors reaches ~8e-6 RELATIVE
   (~70 ULP, atomics), so anything touching the projectors gates at 1e-5 single-shot / 1e-4 iterated;
-  pure elementwise kernels (qGGMRF cylinder) are safe at 1e-6.
+  pure elementwise kernels (qGGMRF cylinder) are safe at 1e-6.  The noise SOURCE is the forward
+  projector's `.at[n].add` scatter (atomic float adds; arrival order varies with GPU scheduling);
+  plain reductions are deterministic.  Diagnostic discriminator: rerun once with
+  `XLA_FLAGS=--xla_gpu_deterministic_ops=true` — a diff that vanishes is atomics noise, not a bug
+  (verified: forward_project run-vs-run 5.7e-6 → exactly 0 under the flag; too slow to leave on).
+  Full-pipeline comparisons (e.g. two MAR recon_plastic_metal runs) accumulate this per-op noise and
+  pass it through DISCRETE selectors (the BH constraint argmin), so their cross-run spread is
+  context-dependent (measured 6e-7..1.1e-4) — gate such comparisons at 1e-3, and test CONTRACTS
+  (types/shapes/sharding) with strict asserts instead of tight value comparisons.
 - **Exact equality remains correct for exactly two things:** (1) DATA-MOVEMENT identities
   (shard/gather/assemble round trips, halo extraction, stored-parameter echo — bytes in = bytes out;
   a tolerance would mask corruption); (2) CONSTRUCTED-ZERO invariants (padded entries == 0.0 — an
