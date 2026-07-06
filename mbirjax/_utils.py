@@ -114,7 +114,7 @@ _reconstruction_defaults_dict = {
     'snr_db': Param(30.0, False),
     'sharpness': Param(1.0, False),
     'granularity': Param([1, 2, 4, 8, 16, 32, 64, 128, 256], False),
-    'partition_sequence': Param([0, 2, 4, 6, 7], False),
+    'partition_sequence': Param([4, 7,], False),
     'verbose': Param(1, False),
     'use_gpu': Param('automatic', True),  # 'automatic' or 'none' ('full' is a deprecated synonym of 'automatic')
     'max_overrelaxation': Param(1.5, False),  # This is used in vcd_subset_updater() to limit the maximum step size

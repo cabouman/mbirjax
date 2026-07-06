@@ -127,13 +127,10 @@ class TomographyModel(ParameterHandler):
         # by _qggmrf_interface_masks; invalidated by _set_device_layout on every recompile).
         self._qggmrf_interface_masks_cache = None
 
-        # The following may be adjusted based on memory in set_devices()
-        # 128, not 512: sparse_forward_project's transient scales with view_batch (several coexisting
-        # [view_batch x pixel_batch x det_rows] buffers), and at 1024^3 the old 512 pushed the peak past a
-        # single-GPU pool (~18.8 GiB just for that intermediate -> OOM).  128 cuts it ~4x for a small
-        # (~2%) time cost since the projection is compute-bound.  TODO revisit: scale this with recon size
-        # (large recons want it smaller; small recons are unaffected) and pick a DIVISOR of the per-view-
-        # shard view count so there is no ragged tail batch.
+        # view_batch_size_for_vmap is recomputed ADAPTIVELY from the device layout in
+        # _set_device_layout() -> _set_view_batch_size(); this is only the pre-layout initial value.
+        # The knob drives BOTH sparse_forward_project's transient (a large batch OOMs a single GPU at
+        # 1024^3) and sparse_back_project's multi-device scan penalty -- see _set_view_batch_size.
         self.view_batch_size_for_vmap = 128
         self.pixel_batch_size_for_vmap = 2048
         self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
@@ -376,6 +373,37 @@ class TomographyModel(ParameterHandler):
         num_slices = recon_shape[recon_axis % len(recon_shape)]
         self.recon_placement = mjs.Placement(devices, axis=recon_axis, real_size=num_slices)
         self.sino_placement = mjs.Placement(devices, axis=sino_axis, real_size=num_views)
+        self._set_view_batch_size(num_views, len(devices))
+
+    def _set_view_batch_size(self, num_views, n_devices):
+        """Adaptively size view_batch_size_for_vmap from the device layout (pragmatic first cut).
+
+        One knob drives two OPPOSING memory pressures, so the right value depends on the layout:
+          * sparse_forward_project's transient scales with view_batch (coexisting
+            ``[view_batch x pixel_batch x det_rows]`` buffers).  On a SINGLE device at 1024^3 a large
+            batch OOMs the GPU -- the reason this default dropped 512 -> 128.
+          * sparse_back_project sums each device's view shard via ``sum_function_in_batches``.  When
+            view_batch < the per-device view count it drops into the accumulating-SCAN path, whose live
+            carry (the per-device recon shard) coexists with each batch's transient and inflates
+            per-device peak -- the multi-device memory regression that same 512 -> 128 change caused.
+
+        Policy: SINGLE-vmap the per-device view shard (``view_batch >= per_shard_views``) so back
+        projection never scans, capped so the transient stays in budget.  The sinogram is VIEW-sharded,
+        so a multi-device run has already cut the per-device transient ~1/n_devices and can batch its
+        whole shard; a lone device cannot, so it keeps the small single-device cap.  At 1024^3 this gives
+        view_batch 128 / 512 / 256 for n=1 / 2 / 4 -> peak 16262 / 5952 / 3204 MB (multi-device back to
+        the pre-regression baseline; single-device keeps the OOM fix).
+
+        FULLY-ROBUST follow-up (deferred): replace the two empirical caps below with a cap derived from a
+        real per-device memory budget + a per-view transient estimate, and snap view_batch DOWN to a
+        DIVISOR of per_shard_views so a ragged tail batch adds no extra compiled kernel.  The regression
+        harness (cone / multiaxis back at 1024^3 / 513^3 x n=1/2/4) validates any change to this policy.
+        """
+        SINGLE_DEVICE_CAP = 128   # forward-OOM-safe batch for a FULL (unsharded) recon at 1024^3
+        SHARDED_CAP = 512         # prior default; safe for a per-device shard on sharded hardware
+        per_shard_views = -(-num_views // max(1, n_devices))   # ceil: views per device after view-sharding
+        cap = SINGLE_DEVICE_CAP if n_devices <= 1 else SHARDED_CAP
+        self.view_batch_size_for_vmap = max(1, min(per_shard_views, cap))
 
     # ------------------------------------------------------------------
     # Sharding hooks (uniform default scheme; override per geometry only
@@ -2505,7 +2533,7 @@ class TomographyModel(ParameterHandler):
             return filtered_sinogram                     # keep the device form
         return self._gather_sinogram(filtered_sinogram)  # default: numpy output
 
-    def initialize_recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, first_iteration=0,
+    def initialize_recon(self, sinogram, weights=None, init_recon=None, max_iterations=25, first_iteration=0,
                          compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True):
         """
         Do the device management and parameter initialization needed for recon and prox_map.
@@ -2595,7 +2623,7 @@ class TomographyModel(ParameterHandler):
             log_oom_guidance(self.logger, on_gpu=on_gpu)
         raise e
 
-    def recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2, first_iteration=0,
+    def recon(self, sinogram, weights=None, init_recon=None, max_iterations=25, stop_threshold_change_pct=0.2, first_iteration=0,
               compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True, output_sharded=False):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
