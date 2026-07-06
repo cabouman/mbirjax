@@ -92,6 +92,34 @@ class Placement:
         problem's real axis (real_size does not divide the device count)."""
         return self.padded_size is not None and self.padded_size > self.real_size
 
+    def real_mask(self, ndim):
+        """Broadcastable indicator of the REAL entries of a device-form array under this placement.
+
+        Returns None when nothing is padded (the common case -- callers use None as "no masking
+        needed").  Otherwise returns a host NumPy boolean array of rank ``ndim`` that is
+        ``padded_size`` long on this placement's shard axis and 1 elsewhere, True on the real entries
+        and False on the zero-filled padding.  Broadcasting it against the device-form array lets
+        statistical reductions (means, argmins, histograms, masked sums) exclude the padded entries;
+        as a tiny HOST constant it auto-promotes to whatever device(s) the computation runs on.
+
+        This is the reduction-side complement of ``TomographyModel._mask_padded_views``, which ZEROES
+        the padding inside per-owner local blocks during projector assembly -- an apply operation on
+        the per-device arrays, deliberately not expressed as a broadcast multiply.  The two serve
+        different mechanisms and are intentionally separate.
+
+        Args:
+            ndim (int): rank of the device-form array the mask will broadcast against.
+
+        Returns:
+            numpy.ndarray or None: boolean mask of shape (1, ..., padded_size, ..., 1), or None when
+            the placement is unpadded.
+        """
+        if not self.is_padded:
+            return None
+        mask_shape = [1] * ndim
+        mask_shape[self.axis % ndim] = self.padded_size
+        return (np.arange(self.padded_size) < self.real_size).reshape(mask_shape)
+
     def padded_shard_ranges(self):
         """``shard_ranges`` over the device-form (padded) axis length, plus each
         shard's count of REAL (problem-owned) entries.

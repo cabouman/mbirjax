@@ -40,6 +40,14 @@ order, set the variables in the environment before launching Python, e.g. `expor
   reconstruction to HDF5 no longer fails.**
 - **Clearer out-of-memory guidance** is printed when a reconstruction exceeds GPU memory, including how to
   reduce peak memory.
+- **The GPU memory reservation is now 94% and user-overridable.**  mbirjax previously hard-set
+  `XLA_PYTHON_CLIENT_MEM_FRACTION=0.98`, which left almost no room for allocations that live outside
+  XLA's pool (GPU library workspaces such as cuSolver, and the NCCL buffers used by multi-GPU
+  reductions) -- these could fail with out-of-memory errors even when the pool itself was nearly idle.
+  The default is now `0.94`, set with `setdefault` so setting the environment variable before importing
+  mbirjax overrides it.  Per-iteration reconstruction statistics are also computed in a single fused
+  pass (rather than several separate full-array operations), which both removes sinogram-sized
+  temporaries and reduces the number of separate multi-GPU collective allocations.
 
 ## Two-stage preprocessing / reconstruction
 

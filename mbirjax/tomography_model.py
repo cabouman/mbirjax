@@ -1,4 +1,6 @@
+import functools
 import io
+import math
 import types
 import warnings
 import inspect
@@ -54,8 +56,14 @@ if jax.config.jax_compilation_cache_dir is None:
     # WE configured the cache -- never override a user's explicit cache configuration.
     if hasattr(jax.config, "jax_persistent_cache_enable_xla_caches"):
         jax.config.update("jax_persistent_cache_enable_xla_caches", "none")
-# Set the GPU memory fraction for JAX
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.98'
+# Set the GPU memory fraction for JAX -- the share of each GPU that XLA's BFC pool may reserve.
+# 0.94 rather than 0.98: everything that allocates OUTSIDE the pool (cuSolver/cuDNN workspaces,
+# NCCL/collective vmm buffers for cross-device reductions on sharded arrays) has to fit in the
+# remainder, and the pool RETAINS its high-water mark for the life of the process -- at 0.98 those
+# out-of-pool allocations starved (CUDA_ERROR_OUT_OF_MEMORY from the vmm allocator, cuSolver handle
+# failures) even with the pool mostly idle.  See .claude/lessons.md "Out-of-pool GPU allocations".
+# setdefault (not a hard set) so users can tune per-run via the environment before importing mbirjax.
+os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.94')
 
 recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
                      'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
@@ -120,7 +128,13 @@ class TomographyModel(ParameterHandler):
         self._qggmrf_interface_masks_cache = None
 
         # The following may be adjusted based on memory in set_devices()
-        self.view_batch_size_for_vmap = 512
+        # 128, not 512: sparse_forward_project's transient scales with view_batch (several coexisting
+        # [view_batch x pixel_batch x det_rows] buffers), and at 1024^3 the old 512 pushed the peak past a
+        # single-GPU pool (~18.8 GiB just for that intermediate -> OOM).  128 cuts it ~4x for a small
+        # (~2%) time cost since the projection is compute-bound.  TODO revisit: scale this with recon size
+        # (large recons want it smaller; small recons are unaffected) and pick a DIVISOR of the per-view-
+        # shard view count so there is no ragged tail batch.
+        self.view_batch_size_for_vmap = 128
         self.pixel_batch_size_for_vmap = 2048
         self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
         self.set_devices()
@@ -2813,7 +2827,10 @@ class TomographyModel(ParameterHandler):
         # shapes).  Equals the device arrays' size except when the view axis and/or the
         # detector-row axis is padded for sharding; normalizing by the real count keeps the
         # reported losses independent of the (inert, identically-zero) padding.
-        real_sino_size = int(np.prod(self.get_params('sinogram_shape')))
+        # math.prod (exact Python ints), NOT np.prod: numpy's product accumulates in the platform
+        # default integer -- int32 on Windows/numpy<2 -- and a full-size sinogram (>2^31 elements)
+        # would silently wrap.
+        real_sino_size = math.prod(self.get_params('sinogram_shape'))
         pad_active = (self.sino_placement.is_padded
                       or self._sino_row_padding() is not None)
         loss_num_real = real_sino_size if pad_active else None
@@ -2869,13 +2886,14 @@ class TomographyModel(ParameterHandler):
                                                                                                  error_sinogram,
                                                                                                  partition)
 
-            # Compute the stats and display as desired
-            fm_rmse[i] = self.get_forward_model_loss(error_sinogram, sigma_y, weights,
-                                                     num_real_elements=loss_num_real)
-            nmae_update[i] = ell1_for_partition / jnp.sum(jnp.abs(flat_recon))
-            # real_sino_size == error_sinogram.size except under view padding, where the
-            # padded entries are identically zero and must not dilute the RMSE.
-            es_rmse = jnp.linalg.norm(error_sinogram) / jnp.sqrt(float(real_sino_size))
+            # Compute the stats and display as desired -- one fused pass over the error sinogram
+            # (see _vcd_iteration_stats).  real_sino_size == error_sinogram.size except under view
+            # padding, where the padded entries are identically zero and must not dilute the RMSE.
+            fm_loss_i, recon_l1, es_rmse = self._vcd_iteration_stats(
+                error_sinogram, flat_recon, sigma_y, weights,
+                num_real_elements=loss_num_real, real_sino_size=float(real_sino_size))
+            fm_rmse[i] = fm_loss_i
+            nmae_update[i] = ell1_for_partition / recon_l1
             alpha_values[i] = alpha
 
             if verbose >= 1:
@@ -2889,7 +2907,7 @@ class TomographyModel(ParameterHandler):
                     # Evaluate the prior loss on the REAL volume: _gather_recon crops any
                     # padded slices (whose zero values would otherwise add spurious
                     # boundary-difference terms to the loss).  Debug/verbose path only.
-                    real_recon_size = int(np.prod(recon_shape))
+                    real_recon_size = math.prod(recon_shape)   # exact Python ints (see real_sino_size)
                     loss_recon = self._gather_recon(flat_recon).reshape(recon_shape)
                     pm_loss[i] = mj.qggmrf_loss(loss_recon, qggmrf_params)
                     pm_loss[i] /= real_recon_size
@@ -3080,6 +3098,17 @@ class TomographyModel(ParameterHandler):
             prior_quadratic_approx = ((1 / prior_overrelaxation_factor) *
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
 
+            # Free the (now-dead) gradient/Hessian buffers BEFORE the memory-heavy forward projection.
+            # forward_grad/forward_hess were last read by delta_recon_at_indices; prior_grad/prior_hess by
+            # prior_linear/prior_quadratic_approx just above.  In eager mode a queued op pins its inputs, so
+            # blocking on those two scalars (which transitively force delta_recon_at_indices, hence the
+            # forward_* reads) guarantees all four are consumed; the del then releases them -- ~4 subset-
+            # sized arrays (~11.6 GB at the coarse 1024^3 subset) -- so sparse_forward_project's ~5x-volume
+            # transient has room.  Compute-free on a compute-bound GPU: the host was running ahead anyway
+            # and the projection depends on delta_recon_at_indices regardless.  (A no-op if ever jitted.)
+            jax.block_until_ready((prior_linear, prior_quadratic_approx))
+            del forward_grad, prior_grad, forward_hess, prior_hess
+
             # Compute update direction in sinogram domain
             delta_sinogram = sparse_forward_project(delta_recon_at_indices, pixel_indices)
 
@@ -3181,11 +3210,18 @@ class TomographyModel(ParameterHandler):
         return forward_linear, forward_quadratic
 
     @staticmethod
+    @functools.partial(jax.jit, static_argnums=(3, 4), static_argnames=('normalize', 'num_real_elements'))
     def get_forward_model_loss(error_sinogram, sigma_y, weights=None, normalize=True,
                                num_real_elements=None):
         """
         Calculate the loss function for the forward model from the error_sinogram and weights.
         The error sinogram should be error_sinogram = measured_sinogram - forward_proj(recon)
+
+        This is called once per VCD iteration on the full (possibly sharded) error sinogram, so it is
+        jitted: XLA fuses the elementwise products into the reductions, so no sinogram-sized
+        temporaries are materialized (eagerly, ``e*e``, ``weights/avg`` and their product each
+        allocated a full sinogram per call).  Scalar factors (``avg_weight``, the element count,
+        ``sigma_y``) divide the reduced SUM rather than the full-size array -- algebraically identical.
 
         Args:
             error_sinogram (jax array): 3D error sinogram with shape (num_views, num_det_rows, num_det_channels).
@@ -3201,22 +3237,45 @@ class TomographyModel(ParameterHandler):
         Returns:
             float loss.
         """
+        # Element counts enter the computation as FLOATS: a Python int operand is converted to int32
+        # by jax (x64 disabled), which overflows for sinograms above 2^31 elements (~2.1e9 -- a
+        # full-size half sino exceeds this).  float conversion carries the same ~1e-7 rounding that
+        # jnp.mean's internal count already had.
         if weights is None:
             weights = 1
             avg_weight = 1
         elif num_real_elements is None:
             avg_weight = jnp.average(weights)
         else:
-            avg_weight = jnp.sum(weights) / num_real_elements
+            avg_weight = jnp.sum(weights) / float(num_real_elements)
         if normalize:
-            weighted_sq = (error_sinogram * error_sinogram) * (weights / avg_weight)
-            if num_real_elements is None:
-                loss = jnp.sqrt((1.0 / (sigma_y ** 2)) * jnp.mean(weighted_sq))
-            else:
-                loss = jnp.sqrt((1.0 / (sigma_y ** 2)) * (jnp.sum(weighted_sq) / num_real_elements))
+            weighted_sq_sum = jnp.sum(error_sinogram * error_sinogram * weights)
+            denom = float(error_sinogram.size) if num_real_elements is None else float(num_real_elements)
+            loss = jnp.sqrt(weighted_sq_sum / (avg_weight * denom)) / sigma_y
         else:
             loss = (1.0 / (2 * sigma_y ** 2)) * jnp.sum((error_sinogram * error_sinogram) * weights)
         return loss
+
+    @staticmethod
+    @functools.partial(jax.jit, static_argnames=('num_real_elements',))
+    def _vcd_iteration_stats(error_sinogram, flat_recon, sigma_y, weights=None, num_real_elements=None,
+                             real_sino_size=None):
+        """Per-iteration VCD logging stats in ONE fused, jitted pass.
+
+        Returns ``(forward_model_loss, recon_l1, error_sino_rmse)`` as device scalars.  Eagerly, the
+        loss, the recon L1, and ``jnp.linalg.norm(error_sinogram)`` each materialized full-size
+        temporaries and -- on a SHARDED error sinogram -- each separate eager op also carried its own
+        cross-device reduction with its own collective buffers.  One jitted function means one
+        executable, one set of collective allocations, and no full-size temporaries.
+
+        ``real_sino_size`` is the REAL element count for the error-sino RMSE (see the caller: padded
+        entries are identically zero and must not dilute the RMSE).
+        """
+        fm_loss = TomographyModel.get_forward_model_loss(error_sinogram, sigma_y, weights,
+                                                         num_real_elements=num_real_elements)
+        recon_l1 = jnp.sum(jnp.abs(flat_recon))
+        es_rmse = jnp.sqrt(jnp.sum(error_sinogram * error_sinogram) / real_sino_size)
+        return fm_loss, recon_l1, es_rmse
 
     def prox_map(self, prox_input, sinogram, sigma_prox=None, weights=None, init_recon=None, do_initialization=True, stop_threshold_change_pct=0.2,
                  max_iterations=3, first_iteration=0, logfile_path='~/.mbirjax/logs/prox.log', print_logs=True, output_sharded=False):

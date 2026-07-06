@@ -1188,6 +1188,15 @@ class ConeBeamModel(TomographyModel):
         sino = np.asarray(sino)
         if weights is not None:
             weights = np.asarray(weights)
+        if init_recon is not None and isinstance(init_recon, jax.Array):
+            # Same host-side treatment as sino/weights, for two reasons.  (1) Slicing a slice-sharded
+            # volume along its sharded axis REPLICATES the half onto every device (a full half-recon
+            # copy per device) just before the half-recon builds its working set; host slicing keeps
+            # only one half's arrays device-resident at a time -- the point of this function.
+            # (2) _gather_recon crops any zero-padded slices of a device-form volume; without the crop,
+            # the bottom-half slice init_recon[:, :, -num_slices:] would pick up padding zeros instead
+            # of the real bottom slices.
+            init_recon = self._gather_recon(init_recon)
 
         # Get parameters for later use
         num_views, full_num_rows, num_cols = sino.shape

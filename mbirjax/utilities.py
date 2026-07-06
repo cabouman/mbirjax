@@ -96,6 +96,28 @@ def save_volume_as_gif(volume, filename, vmin=0, vmax=1):
     imageio.mimsave(filename, images, fps=5)  # 5 frames per second
 
 
+def _write_hdf5_streaming(file_path, array_name, out_shape, dtype, produce_slab, attributes_dict=None):
+    """Create an HDF5 dataset of out_shape/dtype and fill it slab-by-slab along axis 0.
+
+    produce_slab(i0, i1) returns the contiguous slab written to dset[i0:i1].  Only one slab is
+    held at a time, so a large or strided source is never fully copied.
+    """
+    mj.makedirs(file_path)
+    with h5py.File(file_path, 'w') as f:
+        dset = f.create_dataset(array_name, shape=out_shape, dtype=dtype)
+        if len(out_shape) == 0:
+            dset[...] = produce_slab(0, 0)
+        else:
+            row_bytes = np.dtype(dtype).itemsize * int(np.prod(out_shape[1:], dtype=np.int64))
+            slab = max(1, (1 << 30) // max(row_bytes, 1))   # ~1 GiB per write
+            for i in range(0, out_shape[0], slab):
+                dset[i:i + slab] = produce_slab(i, min(i + slab, out_shape[0]))
+        if isinstance(attributes_dict, dict):
+            attributes_dict = mj.TomographyModel.convert_subdicts_to_strings(attributes_dict)
+            for key, value in attributes_dict.items():
+                dset.attrs[key] = value
+
+
 def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
     """
     Save a NumPy or JAX array to an HDF5 file, optionally including metadata as attributes.
@@ -125,21 +147,11 @@ def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
         >>> file_path = './output/test_part_038.yaml'
         >>> mj.save_data_hdf5(file_path, recon, recon_info)
     """
-    # Ensure output directory exists
-    mj.makedirs(file_path)
+    # Stream the array to disk slab-by-slab (no full contiguous copy, even for a strided view).
+    def produce_slab(i0, i1):
+        return np.asarray(array) if array.ndim == 0 else np.ascontiguousarray(array[i0:i1])
 
-    # Open HDF5 file for writing
-    with h5py.File(file_path, 'w') as f:
-        # Save reconstruction array
-        arr = np.array(array)
-        volume_data = f.create_dataset(array_name, data=arr)
-
-        # Save reconstruction parameters as attributes
-        if isinstance(attributes_dict, dict):
-            # Convert subdicts to strings
-            attributes_dict = mj.TomographyModel.convert_subdicts_to_strings(attributes_dict)
-            for key, value in attributes_dict.items():
-                volume_data.attrs[key] = value
+    _write_hdf5_streaming(file_path, array_name, array.shape, array.dtype, produce_slab, attributes_dict)
 
 
 def display_translation_vectors(translation_vectors, recon_shape):
@@ -575,17 +587,28 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
     """
 
-    # This code is designed to work with either numpy or jax arrays or sharded jax arrays
-    # It does this by first moving the input array to the host (NumPy),
-    # and then performing the operations using numpy before writing to disk.
+    # Move the input to the host (NumPy) first so numpy/jax/sharded all collapse to one host case.
     recon = jax.device_get(recon)
 
-    if remove_flash:
-        recon = mj.preprocess.apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
+    if not remove_flash:
+        # Transposed view; save_data_hdf5 streams it slab-by-slab, so no full copy is made.
+        save_data_hdf5(file_path, np.transpose(recon, (2, 1, 0)), 'recon', recon_dict)
+        return
 
-    recon = np.transpose(recon, (2, 1, 0))   # host view, no copy
+    # remove_flash: mask + transpose + write one slab at a time, so no full masked volume is built.
+    # Slabbing along the slice axis keeps full (rows, cols), so apply_cylindrical_mask gives the
+    # identical circular mask per slab; we just map the global top/bottom margins to each slab.
+    num_rows, num_cols, num_slices = recon.shape
 
-    save_data_hdf5(file_path, recon, 'recon', recon_dict)
+    def produce_slab(s0, s1):
+        ds = s1 - s0
+        local_top = min(max(top_margin - s0, 0), ds)                       # global top slices in this slab
+        local_bottom = min(max(s1 - (num_slices - bottom_margin), 0), ds)  # global bottom slices in this slab
+        block = mj.preprocess.apply_cylindrical_mask(recon[:, :, s0:s1], radial_margin, local_top, local_bottom)
+        return np.ascontiguousarray(np.transpose(block, (2, 1, 0)))        # (ds, C, R)
+
+    _write_hdf5_streaming(file_path, 'recon', (num_slices, num_cols, num_rows), recon.dtype,
+                          produce_slab, recon_dict)
 
 
 def import_recon_hdf5(file_path):
