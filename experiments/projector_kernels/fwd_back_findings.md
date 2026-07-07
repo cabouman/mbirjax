@@ -22,15 +22,23 @@ number below.
   form uses `lax.sort_key_val` with the sorted keys AS the segment ids (immune to the known
   round-in-jit divergence hazard).  CPU keeps the original scatter loop verbatim — the CPU
   compiled programs are bit-identical to before (HLO-proven).
-- **Parallel-beam GPU forward tiling** (measured): slice band 256, pixel batch 8192.
+- **The GPU back-projection kernel gathers all psf taps at once** (one
+  (psf_width · num_pixels, num_rows) gather + reshape-sum instead of a per-tap gather+FMA
+  loop) behind a second flag, `ProjectorParams.back_stacked_gather` — the GPU back kernel is
+  ~95% gather-bound.  CPU keeps the per-tap loop verbatim (stacked is worse there).
+- **Parallel-beam GPU forward tiling** (measured): slice band 256, pixel batch 8192.  Back
+  tiling was swept and PARKED — its bands protect reduce-scatter memory, so only
+  memory-expensive trades exist.
 - **Float32 matmuls default to full float32** (TF32 opt-out via
   `JAX_DEFAULT_MATMUL_PRECISION=float32` in `_device_setup`, environment-overridable).
-- **Measured results (H100, model level):** parallel forward 4.3× at 1024³ n=1 (35.0 → 8.2 s)
-  and 4.7× at n=4 (9.3 → 2.0 s) — now ~2.2× faster than back; cone forward 1.4–1.6×
-  everywhere.  Back projections, VCD, and all CPU paths unchanged (CPU HLO bit-identical).
-- **Known cost:** parallel small-cell GPU memory +27–58% relative (≤0.65 GB absolute) from the
-  wide-band/large-pixel-batch policy — trips the nightly's hard 8% memory gate; needs the
-  acknowledged-trade path.  Cone memory is flat.
+- **Measured results (H100, model level), investigation start → now at 1024³:** parallel
+  forward 35.0 → 8.2 s at n=1 (4.3×) and 9.3 → 2.0 s at n=4 (4.7×); parallel back
+  18.2 → 10.9 s at n=1 (1.67×), 2.25×/1.80× at n=2/4 and 2.5–3.6× at 513³; cone forward
+  1.4–1.6× everywhere; parallel VCD +10%.  All CPU paths unchanged (HLO bit-identical).
+- **Memory:** back memory is flat to −46%; cone flat.  Known cost: parallel FORWARD
+  small-cell GPU memory +27–58% relative (≤0.65 GB absolute) from the wide-band /
+  large-pixel-batch policy — trips the nightly's hard 8% memory gate; needs the
+  acknowledged-trade path.
 
 The original question: why is `parallel_beam.forward_project_pixel_batch_to_one_view` slower
 than `back_project_one_view_to_pixel_batch` (nightly model-level: fwd/back ≈ 1.4–1.9× GPU,
@@ -211,6 +219,39 @@ item: the cone VCD guard cell moved +1.9% (single trial) — VCD calls forward o
 subsets where the sort has less to amortize; if the nightly confirms it, the clean fix is a
 static pixel-count guard INSIDE `channel_scatter_reduce` (the kernel's single-flag branch
 stays).
+
+## Back-projection results (2026-07-08, branch `greg/kernel_investigation`)
+
+With forward fixed, back became the long pole (18.2 vs 8.2 s at 1024³ n=1).  Attribution
+(`back_kernel_ab.py`): back's kernel is the platform-MIRROR of forward's — on CPU the
+data-dependent gather is only ~10% of the kernel (FMA-bound; nothing to gain), on GPU it is
+~95% (`back_nogather` = 0.05×).  The tile-knob sweep (`back_tile_sweep.py`) found ONLY
+memory-expensive trades (best 1024³ n=2 cell: 1.57× time for 3.3× memory; n=1 tops out at
+1.08× at 61 GB) — back's bands exist to protect reduce-scatter memory, and widening them
+spends exactly that memory.  Tiling PARKED; defaults unchanged.
+
+The clean win: **stack the psf taps into ONE (T·P, rows) gather + reshape-sum** — 1.6–1.8×
+kernel-level on H100, exact values, but 3.6–4.4× WORSE on CPU (FMA-bound + cache).  Landed as
+the second kernel-algorithm flag, `back_stacked_gather` (TilePolicy → ProjectorParams), same
+pattern as `sort_by_channel`; CPU keeps the loop verbatim (HLO-proven identical).
+
+H100 model-level A/B:
+
+| parallel back | old ms | new ms | speedup | memory |
+|---|---|---|---|---|
+| 1024³ n=1 / n=2 / n=4 | 18231 / 11069 / 4803 | 10919 / 4930 / 2673 | 1.67 / 2.25 / 1.80× | flat / −5% / flat |
+| 513³ n=1 / n=2 / n=4 | 777 / 429 / 204 | 314 / 120 / 59 | 2.47 / 3.58 / 3.44× | −46% / −42% / −10% |
+| 200³ n=1 | 13.6 | 15.1 | 0.90× | −68% |
+
+Multi-device beats the kernel-level prediction (the band path repeats the kernel with narrow
+rows, so collapsing 3 gather passes to 1 pays per band), and memory DROPS at mid sizes (no
+per-tap accumulator coexistence).  Guards: forward and cone back flat; parallel VCD +10%
+(the Hessian's coeff_power=2 rides the same branch).  Accepted trade: the tiny 200³ n=1 cell
+pays +1.5 ms for −226 MB.  Remaining headroom: the kernel is still ~90% gather-bound
+(`back_nogather` = 0.08–0.10×) — data-layout / custom-kernel territory.
+
+**Combined scoreboard at 1024³ n=1 (H100), investigation start → now:** forward 34.97 →
+8.19 s (4.3×), back 18.23 → 10.92 s (1.67×) — the pair is roughly balanced again.
 
 ## Numerics note (ties to the known JAX rounding bug)
 

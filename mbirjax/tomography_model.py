@@ -51,10 +51,14 @@ from importlib.metadata import version, PackageNotFoundError
 #   sort_by_channel -- kernel-algorithm flag: use the sorted segment-sum channel reduction in
 #       the forward kernel (GPU layouts with wide-enough bands; see
 #       projectors.channel_scatter_reduce and parallel_beam's policy override).
+#   back_stacked_gather -- kernel-algorithm flag: the back kernel gathers all psf taps in one
+#       stacked (psf_width * num_pixels, num_rows) gather + reshape-sum over taps (GPU: ~95%
+#       gather-bound, measured 1.6-1.8x; CPU: worse, keeps the per-tap loop).  See
+#       parallel_beam.back_project_one_view_to_pixel_batch.
 TilePolicy = namedtuple('TilePolicy', ['fwd_view_batch', 'back_view_batch',
                                        'fwd_pixel_batch', 'back_pixel_batch',
                                        'fwd_slice_band', 'back_slice_band',
-                                       'sort_by_channel'])
+                                       'sort_by_channel', 'back_stacked_gather'])
 
 # Persistent jit-compilation cache: repeat runs of the same model shapes load
 # compiled executables from disk instead of recompiling (a real win for
@@ -442,6 +446,7 @@ class TomographyModel(ParameterHandler):
             fwd_slice_band=None,
             back_slice_band=None,
             sort_by_channel=False,
+            back_stacked_gather=False,
         )
 
     @property

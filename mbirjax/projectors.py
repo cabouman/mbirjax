@@ -12,8 +12,11 @@ from functools import partial
 # the shared module-level projector jit cache.  geometry_params gets the same treatment at its
 # source (ParameterHandler.make_geometry_params).
 #
-# ``sort_by_channel`` (int: 1 = use the sorted segment-sum channel reduction, 0 = scatter-add;
-# default 0) is the kernel-algorithm flag DECIDED by the model's tile policy
+# ``sort_by_channel`` (int: 1 = use the sorted segment-sum channel reduction in the FORWARD
+# kernels, 0 = scatter-add; default 0) and ``back_stacked_gather`` (int: 1 = the BACK kernel
+# gathers all psf taps in one stacked (psf_width * num_pixels, num_rows) gather followed by a
+# reshape-sum over taps, 0 = the per-tap gather+FMA loop; default 0) are the kernel-algorithm
+# flags DECIDED by the model's tile policy
 # (TomographyModel._select_tile_policy: GPU layouts whose slice bands are wide enough to
 # amortize the sort) and baked in here by create_projectors.  The default keeps
 # externally-constructed instances (tests, experiments) on the portable scatter path.  It is an
@@ -22,7 +25,8 @@ from functools import partial
 # leaf traces harmlessly.  In the kernels projector_params is STATIC, so the flag is a concrete
 # Python int there and the kernel's branch on it is trace-time.
 ProjectorParams = namedtuple('ProjectorParams', ['sinogram_shape', 'recon_shape', 'geometry_params',
-                                                 'sort_by_channel'], defaults=(0,))
+                                                 'sort_by_channel', 'back_stacked_gather'],
+                             defaults=(0, 0))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -61,8 +65,9 @@ def channel_scatter_reduce(n, A, values, num_out, use_sorted=0):
     then handle boundaries identically, with no reliance on scatter drop semantics.
 
     Args:
-        n (int array, (num_taps, num_pixels)): channel index per psf tap per pixel, pre-clipped.
-        A (array, (num_taps, num_pixels)): weight per tap per pixel, zero where out of range.
+        n (int array, (psf_width, num_pixels)): channel index per psf tap per pixel,
+            pre-clipped (psf_width = 2 * psf_radius + 1 taps).
+        A (array, (psf_width, num_pixels)): weight per tap per pixel, zero where out of range.
         values (array, (num_pixels, num_cols)): the rows to be weighted and binned.
         num_out (int): number of output channels (static).
         use_sorted (int/bool): truthy = sorted segment-sum, else scatter-add.  Must be CONCRETE
@@ -79,7 +84,7 @@ def channel_scatter_reduce(n, A, values, num_out, use_sorted=0):
 def _channel_reduce_scatter_add(n, A, values, num_out):
     """Unrolled per-tap scatter-add -- the original formulation (best on CPU)."""
     out = jnp.zeros((num_out, values.shape[1]))
-    for k in range(n.shape[0]):        # unrolled over the few psf taps, as the original loop
+    for k in range(n.shape[0]):        # unrolled over the psf_width taps, as the original loop
         out = out.at[n[k], :].add(A[k].reshape(-1, 1) * values)
     return out
 
@@ -95,10 +100,11 @@ def _channel_reduce_sort_segsum(n, A, values, num_out):
     mis-reduce.)
     """
     num_pixels = values.shape[0]
-    flat_n = n.reshape(-1)                                   # (taps * P,) row-major: tap-major
+    flat_n = n.reshape(-1)          # (psf_width * num_pixels,), row-major: tap-major blocks
     sorted_n, order = jax.lax.sort_key_val(flat_n, jnp.arange(flat_n.shape[0]))
-    # Row p of tap block k sits at flat index k*P + p, so the values row is order % P; gathering
-    # A and values in sorted order avoids materializing a second (taps*P, num_cols) transient.
+    # Pixel p of tap block k sits at flat index k * num_pixels + p, so each sorted entry's
+    # values row is order % num_pixels; gathering A and values in sorted order avoids
+    # materializing a second (psf_width * num_pixels, num_cols) transient.
     updates = A.reshape(-1)[order][:, None] * values[order % num_pixels]
     return jax.ops.segment_sum(updates, sorted_n, num_segments=num_out, indices_are_sorted=True)
 
@@ -160,8 +166,9 @@ class Projectors:
         # set_params recompile.
         tiles = self.tomography_model.tiles
         sort_by_channel = int(bool(tiles is not None and tiles.sort_by_channel))
+        back_stacked_gather = int(bool(tiles is not None and tiles.back_stacked_gather))
         projector_params = ProjectorParams(sinogram_shape, recon_shape, geometry_params,
-                                           sort_by_channel)
+                                           sort_by_channel, back_stacked_gather)
 
         view_params_name = self.tomography_model.get_params('view_params_name')
         # The view parameters are a RUNTIME input to the jitted projectors, not a baked

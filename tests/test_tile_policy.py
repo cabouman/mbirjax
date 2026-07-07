@@ -34,6 +34,7 @@ class TestTilePolicy(unittest.TestCase):
         self.assertIsNone(t.fwd_slice_band)
         self.assertIsNone(t.back_slice_band)
         self.assertFalse(t.sort_by_channel)
+        self.assertFalse(t.back_stacked_gather)
 
     def test_view_batch_caps(self):
         model = make_model(num_views=600)
@@ -56,6 +57,8 @@ class TestTilePolicy(unittest.TestCase):
         self.assertEqual(gpu.back_view_batch, base.back_view_batch)   # back untouched
         self.assertEqual(gpu.back_pixel_batch, base.back_pixel_batch)
         self.assertIsNone(gpu.back_slice_band)
+        self.assertTrue(gpu.back_stacked_gather)             # stacked back gather on GPU
+        self.assertFalse(base.back_stacked_gather)
 
     def test_sorted_flag_guard_on_tiny_problems(self):
         # When the balanced band width falls below the sorted-reduce minimum, the flag stays
@@ -104,6 +107,31 @@ class TestTilePolicy(unittest.TestCase):
         out_sorted = np.asarray(kern(vox, idx, np.float32(0.4), ProjectorParams(*pp_args, 1)))
         np.testing.assert_allclose(out_sorted, out_scatter, rtol=1e-5,
                                    atol=1e-5 * np.abs(out_scatter).max())
+
+    def test_back_kernel_stacked_branch_matches_loop(self):
+        # The back kernel's stacked-gather branch (GPU) must match the per-tap loop, for both
+        # coeff_power values (1 = back projection, 2 = the Hessian diagonal) and for a
+        # row-sliced view (the sharded band path's shape).
+        from mbirjax.projectors import ProjectorParams
+        model = make_model()
+        model.configure_devices(1)
+        pp_args = (tuple(model.get_params('sinogram_shape')),
+                   tuple(model.get_params('recon_shape')), model.get_geometry_parameters())
+        pp_loop = ProjectorParams(*pp_args, 0, 0)
+        pp_stacked = ProjectorParams(*pp_args, 0, 1)
+        recon_shape = model.get_params('recon_shape')
+        idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=False)
+        rng = np.random.default_rng(4)
+        num_rows, num_channels = model.get_params('sinogram_shape')[1:]
+        view = rng.random((num_rows, num_channels), dtype=np.float32)
+        kern = mbirjax.ParallelBeamModel.back_project_one_view_to_pixel_batch
+        for coeff_power in (1, 2):
+            for sl in (slice(None), slice(8, 24)):     # full view and a row-sliced band
+                ref = np.asarray(kern(view[sl], idx, np.float32(0.7), pp_loop, coeff_power))
+                out = np.asarray(kern(view[sl], idx, np.float32(0.7), pp_stacked, coeff_power))
+                np.testing.assert_allclose(out, ref, rtol=1e-5,
+                                           atol=1e-5 * np.abs(ref).max(),
+                                           err_msg=f'coeff_power={coeff_power} slice={sl}')
 
     def test_cone_kernel_sorted_branch_matches_scatter_branch(self):
         # Cone's horizontal fan shares the channel reduction; its sorted branch must match the

@@ -109,6 +109,10 @@ class ParallelBeamModel(TomographyModel):
             fwd_slice_band=self._FWD_SLICE_BAND_GPU,
             fwd_pixel_batch=self._FWD_PIXEL_BATCH_GPU,
             sort_by_channel=balanced_band >= SORTED_CHANNEL_REDUCE_MIN_COLS,
+            # Back kernel: one stacked (psf_width * num_pixels, num_rows) gather (H100:
+            # 1.6-1.8x, the kernel is ~95% gather-bound there; CPU keeps the per-tap loop --
+            # 3.6-4.4x worse stacked).
+            back_stacked_gather=True,
         )
 
     def _forward_project_to_view_shards(self, devices, n_dev, num_slices, num_pixels,
@@ -283,7 +287,7 @@ class ParallelBeamModel(TomographyModel):
         # The channel reduction is chosen by ONE precomputed flag (see channel_scatter_reduce in
         # projectors.py and _select_tile_policy for how it is decided -- GPU layouts whose slice
         # bands are wide enough to amortize the sort): when set, the psf taps are stacked into
-        # (taps, num_pixels) arrays and reduced with a sorted segment-sum (~2-3x faster than the
+        # (psf_width, num_pixels) arrays and reduced with a sorted segment-sum (~2-3x faster than the
         # atomics-bound scatter on GPU); otherwise the ORIGINAL per-tap scatter-add loop runs
         # verbatim (the CPU path is identical to what it always was).  projector_params is a
         # static jit argument, so this is a trace-time branch, not a runtime one.
@@ -291,7 +295,7 @@ class ParallelBeamModel(TomographyModel):
             # Stack the taps; per the reduce contract, n is CLIPPED into range with the weights
             # zeroed where the unclipped tap was outside the detector.
             n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
-            n = n_p_center[None, :] + n_offsets[:, None]                    # (taps, num_pixels)
+            n = n_p_center[None, :] + n_offsets[:, None]              # (psf_width, num_pixels)
             abs_delta_p_c_n = jnp.abs(n_p[None, :] - n)
             L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
             A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
@@ -359,6 +363,29 @@ class ParallelBeamModel(TomographyModel):
         # the contiguous access avoids it (the adjoint of the forward kernel's
         # channel-major scatter).
         sinogram_view_T = sinogram_view.T            # (num_det_channels, num_input_rows)
+
+        # The per-tap gathers are chosen by ONE precomputed flag (see the tile policy): when
+        # set, the psf taps are stacked into a SINGLE (psf_width * num_pixels, num_input_rows)
+        # gather followed by a reshape-sum over taps -- measured 1.6-1.8x faster on H100, where
+        # the kernel is ~95% gather-bound (fewer passes over the (num_pixels, num_input_rows)
+        # accumulator).  On CPU the
+        # same form is 3.6-4.4x WORSE (the kernel there is FMA-bound and the stacked transient
+        # thrashes cache), so the ORIGINAL per-tap gather+FMA loop runs verbatim.
+        # projector_params is a static jit argument, so this is a trace-time branch.
+        if projector_params.back_stacked_gather:
+            n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
+            n = n_p_center[None, :] + n_offsets[:, None]              # (psf_width, num_pixels)
+            abs_delta_p_c_n = jnp.abs(n_p - n)
+            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
+            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
+            A_chan_n = A_chan_n * ((n >= 0) & (n < num_det_channels))
+            A_chan_n = A_chan_n ** coeff_power
+            n = jnp.clip(n, 0, num_det_channels - 1)                  # weights already 0 outside
+            # ONE (psf_width * num_pixels, num_input_rows) gather covering every tap:
+            gathered = sinogram_view_T[n.reshape(-1), :]
+            weighted = A_chan_n.reshape(-1)[:, None] * gathered
+            return weighted.reshape(n.shape[0], num_pixels, -1).sum(axis=0)
+
         det_voxel_cylinder = jnp.zeros((num_pixels, num_input_rows))
         # Do the horizontal projection
         for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):

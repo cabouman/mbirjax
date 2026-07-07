@@ -390,9 +390,10 @@ class ConeBeamModel(TomographyModel):
             # Stack the taps; per the reduce contract, n is CLIPPED into range with the
             # weights zeroed where the unclipped tap was outside the detector.
             n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
-            n = n_p_center[None, :] + n_offsets[:, None]                # (taps, num_pixels)
-            # W_p_c / L_max / footprint_xy are per-pixel (num_pixels,) for cone (per-pixel
-            # magnification); plain broadcasting against (taps, num_pixels) handles them.
+            n = n_p_center[None, :] + n_offsets[:, None]              # (psf_width, num_pixels)
+            # W_p_c / L_max / footprint_xy are per-pixel (num_pixels,) arrays for cone
+            # (per-pixel magnification); plain broadcasting against (psf_width, num_pixels)
+            # handles them.
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
             A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
