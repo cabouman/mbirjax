@@ -29,8 +29,8 @@ class TestTilePolicy(unittest.TestCase):
         t = model.tiles
         self.assertEqual(t.fwd_view_batch, 64)          # min(views, cap 128)
         self.assertEqual(t.back_view_batch, 64)
-        self.assertEqual(t.fwd_pixel_batch, model.pixel_batch_size_for_vmap)
-        self.assertEqual(t.back_pixel_batch, model.pixel_batch_size_for_vmap)
+        self.assertEqual(t.fwd_pixel_batch, model._PIXEL_BATCH_DEFAULT)
+        self.assertEqual(t.back_pixel_batch, model._PIXEL_BATCH_DEFAULT)
         self.assertIsNone(t.fwd_slice_band)
         self.assertIsNone(t.back_slice_band)
         self.assertFalse(t.sort_by_channel)
@@ -80,7 +80,8 @@ class TestTilePolicy(unittest.TestCase):
     def test_retired_attribute_names_raise(self):
         model = make_model()
         for name in ('view_batch_size_for_vmap', 'fwd_view_batch_size_for_vmap',
-                     'back_view_batch_size_for_vmap'):
+                     'back_view_batch_size_for_vmap', 'pixel_batch_size_for_vmap',
+                     'transfer_pixel_batch_size'):
             with self.assertRaises(AttributeError):
                 getattr(model, name)
             with self.assertRaises(AttributeError):
@@ -103,6 +104,44 @@ class TestTilePolicy(unittest.TestCase):
         out_sorted = np.asarray(kern(vox, idx, np.float32(0.4), ProjectorParams(*pp_args, 1)))
         np.testing.assert_allclose(out_sorted, out_scatter, rtol=1e-5,
                                    atol=1e-5 * np.abs(out_scatter).max())
+
+    def test_cone_kernel_sorted_branch_matches_scatter_branch(self):
+        # Cone's horizontal fan shares the channel reduction; its sorted branch must match the
+        # scatter branch (per-pixel W_p_c/footprint arrays exercise the broadcast path that
+        # parallel's scalar geometry does not).  Curved detector covers the other n_p formula.
+        from mbirjax.projectors import ProjectorParams
+        for curved in (False, True):
+            angles = np.linspace(0, np.pi, 32, endpoint=False)
+            model = mbirjax.ConeBeamModel((32, 40, 36), angles,
+                                          source_detector_dist=4 * 36, source_iso_dist=2 * 36)
+            if curved:
+                model.set_params(use_curved_detector=True)
+            model.configure_devices(1)
+            pp_args = (tuple(model.get_params('sinogram_shape')),
+                       tuple(model.get_params('recon_shape')), model.get_geometry_parameters())
+            recon_shape = model.get_params('recon_shape')
+            idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=False)
+            rng = np.random.default_rng(2)
+            vox = rng.random((len(idx), recon_shape[2]), dtype=np.float32)
+            view_params = np.asarray(model.projector_functions.view_params_array)[3]
+            kern = mbirjax.ConeBeamModel.forward_project_pixel_batch_to_one_view
+            out_scatter = np.asarray(kern(vox, idx, view_params, ProjectorParams(*pp_args, 0)))
+            out_sorted = np.asarray(kern(vox, idx, view_params, ProjectorParams(*pp_args, 1)))
+            np.testing.assert_allclose(out_sorted, out_scatter, rtol=1e-5,
+                                       atol=1e-5 * np.abs(out_scatter).max(),
+                                       err_msg=f'curved={curved}')
+
+    def test_cone_gpu_policy_sets_sort_flag(self):
+        angles = np.linspace(0, np.pi, 32, endpoint=False)
+        model = mbirjax.ConeBeamModel((32, 96, 64), angles,
+                                      source_detector_dist=4 * 64, source_iso_dist=2 * 64)
+        gpu = model._select_tile_policy(True, 32, model.get_params('recon_shape')[2], 1)
+        self.assertTrue(gpu.sort_by_channel)            # 96 detector rows >= the minimum
+        cpu = model._select_tile_policy(False, 32, model.get_params('recon_shape')[2], 1)
+        self.assertFalse(cpu.sort_by_channel)
+        # Batch/band knobs inherited from the base policy (cone unmeasured so far).
+        self.assertIsNone(gpu.fwd_slice_band)
+        self.assertEqual(gpu.fwd_pixel_batch, model._PIXEL_BATCH_DEFAULT)
 
     def test_projection_runs_with_replaced_tiles(self):
         # End-to-end smoke: an overridden tile policy still projects correctly (values equal

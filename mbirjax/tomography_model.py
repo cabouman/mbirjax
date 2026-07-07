@@ -153,9 +153,6 @@ class TomographyModel(ParameterHandler):
         # field with ``model.tiles = model.tiles._replace(...)``.  Geometry classes override
         # _select_tile_policy for measured, geometry-specific choices.
         self.tiles = None                       # set by set_devices() -> _set_device_layout below
-        self.pixel_batch_size_for_vmap = 2048   # generic pixel tile; the base policy feeds it
-                                                # into both per-op pixel-batch fields
-        self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
         self.set_devices()
         self.create_projectors()
         try:
@@ -398,11 +395,13 @@ class TomographyModel(ParameterHandler):
         on_gpu = devices[0].platform == 'gpu'
         self.tiles = self._select_tile_policy(on_gpu, num_views, num_slices, len(devices))
 
-    # Base view-batch caps (geometry-independent; evidence: the 2026-07-05/06 view-batch work,
-    # experiments/sharding + the nightly memory cells at 1024^3):
+    # Base tiling constants (geometry-independent defaults; geometry classes change measured
+    # values in their _select_tile_policy overrides, not by shadowing these).  Evidence: the
+    # 2026-07-05/06 view-batch work, experiments/sharding + the nightly memory cells at 1024^3.
     _FWD_VIEW_CAP = 128                # forward-OOM-safe vmap width at 1024^3, any layout
     _BACK_VIEW_CAP_SINGLE = 128        # unsharded back: 512-wide peaks ~20.7 GB at 1024^3, 128 -> 16.3
     _BACK_VIEW_CAP_SHARDED = 512       # safe for a per-device view shard
+    _PIXEL_BATCH_DEFAULT = 2048        # generic pixel tile (both ops); the long-standing default
 
     def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
         """Select the projector TILING POLICY for this device layout -- the ONE decision site.
@@ -418,7 +417,7 @@ class TomographyModel(ParameterHandler):
             per-device view shard (a smaller batch drops into the accumulating-SCAN path, whose
             live carry inflates the peak), capped per the constants above.  Measured H100 peaks
             at 1024^3 (GB, n=1/2/4): forward 16.3 / 10.6 / 9.0, back 16.3 / 6.0 / 3.2.
-          * PIXEL batches -- the generic ``pixel_batch_size_for_vmap`` (2048) for both ops.
+          * PIXEL batches -- the generic default (_PIXEL_BATCH_DEFAULT) for both ops.
           * SLICE bands -- None = the memory-driven ``_slice_band_length`` formula.  A number
             here overrides it (clipped to the slice shard); the per-instance
             ``fwd/back_project_slice_band`` attributes remain the top-priority experiment hook.
@@ -438,8 +437,8 @@ class TomographyModel(ParameterHandler):
         return TilePolicy(
             fwd_view_batch=max(1, min(per_shard_views, self._FWD_VIEW_CAP)),
             back_view_batch=max(1, min(per_shard_views, back_cap)),
-            fwd_pixel_batch=self.pixel_batch_size_for_vmap,
-            back_pixel_batch=self.pixel_batch_size_for_vmap,
+            fwd_pixel_batch=self._PIXEL_BATCH_DEFAULT,
+            back_pixel_batch=self._PIXEL_BATCH_DEFAULT,
             fwd_slice_band=None,
             back_slice_band=None,
             sort_by_channel=False,
@@ -475,6 +474,29 @@ class TomographyModel(ParameterHandler):
     def back_view_batch_size_for_vmap(self, value):
         raise AttributeError(
             "moved into TilePolicy: model.tiles = model.tiles._replace(back_view_batch=...)")
+
+    @property
+    def pixel_batch_size_for_vmap(self):
+        raise AttributeError("moved into TilePolicy: read model.tiles.fwd_pixel_batch / "
+                             ".back_pixel_batch")
+
+    @pixel_batch_size_for_vmap.setter
+    def pixel_batch_size_for_vmap(self, value):
+        raise AttributeError(
+            "moved into TilePolicy: model.tiles = model.tiles._replace(fwd_pixel_batch=..., "
+            "back_pixel_batch=...)")
+
+    @property
+    def transfer_pixel_batch_size(self):
+        raise AttributeError(
+            "transfer_pixel_batch_size is now derived at its use site as "
+            "100 * model.tiles.back_pixel_batch")
+
+    @transfer_pixel_batch_size.setter
+    def transfer_pixel_batch_size(self, value):
+        raise AttributeError(
+            "transfer_pixel_batch_size is now derived at its use site as "
+            "100 * model.tiles.back_pixel_batch")
 
     # ------------------------------------------------------------------
     # Sharding hooks (uniform default scheme; override per geometry only
@@ -1641,7 +1663,9 @@ class TomographyModel(ParameterHandler):
         # Batch the views and pixels to bound vmap memory.  This is a BACK-projection driver, so
         # the view slices follow the back knob (they feed sparse_back_project below).
         transfer_view_batch_size = self.tiles.back_view_batch
-        transfer_pixel_batch_size = self.transfer_pixel_batch_size
+        # Host-transfer granularity: a large multiple of the pixel tile (the transfer is
+        # communication, not a vmap width; 100x keeps the historical 204800 default).
+        transfer_pixel_batch_size = 100 * self.tiles.back_pixel_batch
         num_views = sinogram.shape[0]
         all_view_indices = jnp.arange(num_views)          # all views (transfer-batched below)
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)

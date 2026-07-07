@@ -9,6 +9,7 @@ import numpy as np
 
 import mbirjax as mj
 from mbirjax import TomographyModel, tomography_utils, ParameterHandler
+from mbirjax.projectors import channel_scatter_reduce, SORTED_CHANNEL_REDUCE_MIN_COLS
 
 ConeBeamParamNames = mj.ParamNames | Literal['view_params_array', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
 
@@ -268,6 +269,23 @@ class ConeBeamModel(TomographyModel):
 
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel, recon_slice_offset=recon_slice_offset)
 
+    def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
+        """Cone tiling: on GPU the horizontal fan uses the SORTED channel reduction.
+
+        Its reduce columns are the FULL detector rows (cone forward is not row-banded: the
+        horizontal fan always emits every row of the view), so the sorted reduce's per-call
+        sort amortizes at any realistic detector; the guard below only trips on tiny ones.
+        The crossover constant was measured on the parallel-beam kernel, which shares the
+        reduce exactly (same psf structure and pixel batch); H100 A/B on the cone harness
+        cells validates the end-to-end win.  The batch/band knobs are inherited from the base
+        policy -- cone's own band/pixel-batch sweep is a separate, future measurement.
+        """
+        tiles = super()._select_tile_policy(on_gpu, num_views, num_slices, n_devices)
+        if not on_gpu:
+            return tiles
+        num_det_rows = self.get_params('sinogram_shape')[1]
+        return tiles._replace(sort_by_channel=num_det_rows >= SORTED_CHANNEL_REDUCE_MIN_COLS)
+
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
     def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, single_view_params, projector_params):
@@ -362,17 +380,35 @@ class ConeBeamModel(TomographyModel):
         # channel scatter is (measured) the dominant cone-forward cost on both CPU and
         # GPU; the contiguous write avoids it.  Transpose back to (rows, channels) on
         # return (one cheap pass, fused by XLA) so the output layout is unchanged.  This
-        # mirrors ParallelBeamModel.forward_project_pixel_batch_to_one_view.
-        sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
-
-        # Do the horizontal projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-            n = n_p_center + n_offset
+        # mirrors ParallelBeamModel.forward_project_pixel_batch_to_one_view -- including the
+        # channel-reduction choice: ONE precomputed flag (see channel_scatter_reduce in
+        # projectors.py and ConeBeamModel._select_tile_policy) selects the sorted segment-sum
+        # (GPU layouts; the reduce columns here are the FULL detector rows, so the sort
+        # amortizes except at tiny detectors) vs the original per-tap scatter-add loop, kept
+        # verbatim.  projector_params is static, so this is a trace-time branch.
+        if projector_params.sort_by_channel:
+            # Stack the taps; per the reduce contract, n is CLIPPED into range with the
+            # weights zeroed where the unclipped tap was outside the detector.
+            n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
+            n = n_p_center[None, :] + n_offsets[:, None]                # (taps, num_pixels)
+            # W_p_c / L_max / footprint_xy are per-pixel (num_pixels,) for cone (per-pixel
+            # magnification); plain broadcasting against (taps, num_pixels) handles them.
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
             A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
+            A_chan_n = A_chan_n * ((n >= 0) & (n < num_det_channels))
+            n = jnp.clip(n, 0, num_det_channels - 1)
+            sinogram_view_T = channel_scatter_reduce(n, A_chan_n, voxel_values, num_det_channels,
+                                                     use_sorted=True)
+        else:
+            sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
+            for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+                n = n_p_center + n_offset
+                abs_delta_p_c_n = jnp.abs(n_p - n)
+                L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
+                A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
+                A_chan_n *= (n >= 0) * (n < num_det_channels)
+                sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
 
         return sinogram_view_T.T
 
