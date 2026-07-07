@@ -84,16 +84,16 @@ class TestChannelScatterReduce(unittest.TestCase):
             np.testing.assert_array_equal(out, np.zeros((num_out, num_cols)),
                                           err_msg=f'implementation {name}')
 
-    def test_dispatch_by_backend(self):
-        # channel_scatter_reduce(use_gpu=...) must return the same values as the
+    def test_dispatch_by_flag(self):
+        # channel_scatter_reduce(use_sorted=...) must return the same values as the
         # implementation it dispatches to (trivially true today; guards the dispatch wiring).
         rng = np.random.default_rng(2)
         n, A, values, num_out = make_case(rng, integer_valued=True)
         np.testing.assert_array_equal(
-            np.asarray(channel_scatter_reduce(n, A, values, num_out, use_gpu=0)),
+            np.asarray(channel_scatter_reduce(n, A, values, num_out, use_sorted=0)),
             np.asarray(_channel_reduce_scatter_add(n, A, values, num_out)))
         np.testing.assert_array_equal(
-            np.asarray(channel_scatter_reduce(n, A, values, num_out, use_gpu=1)),
+            np.asarray(channel_scatter_reduce(n, A, values, num_out, use_sorted=1)),
             np.asarray(_channel_reduce_sort_segsum(n, A, values, num_out)))
 
     def test_single_tap_and_single_pixel_shapes(self):

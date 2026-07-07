@@ -12,15 +12,17 @@ from functools import partial
 # the shared module-level projector jit cache.  geometry_params gets the same treatment at its
 # source (ParameterHandler.make_geometry_params).
 #
-# ``backend_gpu`` (int: 1 = the model's device layout is GPU, 0 = CPU; default 0) lets
-# scatter-type kernels pick the platform-appropriate reduction (see channel_scatter_reduce).
-# Set by create_projectors from the model's placement; the default keeps externally-constructed
-# instances (tests, experiments) on the portable CPU path.  It is an INT, not a string, because
-# ProjectorParams is a pytree: some helpers take it TRACED (e.g. cone's compute_y_mag_for_pixel),
-# where every leaf must be a valid jax type -- an unused int leaf traces harmlessly, a str
-# errors.  In the kernels projector_params is STATIC, so the flag is a concrete Python int there.
+# ``sort_by_channel`` (int: 1 = use the sorted segment-sum channel reduction, 0 = scatter-add;
+# default 0) is the kernel-algorithm flag DECIDED by the model's tile policy
+# (TomographyModel._select_tile_policy: GPU layouts whose slice bands are wide enough to
+# amortize the sort) and baked in here by create_projectors.  The default keeps
+# externally-constructed instances (tests, experiments) on the portable scatter path.  It is an
+# INT, not a bool/str, because ProjectorParams is a pytree: some helpers take it TRACED (e.g.
+# cone's compute_y_mag_for_pixel), where every leaf must be a valid jax type -- an unused int
+# leaf traces harmlessly.  In the kernels projector_params is STATIC, so the flag is a concrete
+# Python int there and the kernel's branch on it is trace-time.
 ProjectorParams = namedtuple('ProjectorParams', ['sinogram_shape', 'recon_shape', 'geometry_params',
-                                                 'backend_gpu'], defaults=(0,))
+                                                 'sort_by_channel'], defaults=(0,))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -47,12 +49,12 @@ ProjectorParams = namedtuple('ProjectorParams', ['sinogram_shape', 'recon_shape'
 # band sizing changes (which would also move most bands to B >= 96, deep in sorted territory).
 SORTED_CHANNEL_REDUCE_MIN_COLS = 48
 # ──────────────────────────────────────────────────────────────────────────────
-def channel_scatter_reduce(n, A, values, num_out, use_gpu=0):
+def channel_scatter_reduce(n, A, values, num_out, use_sorted=0):
     """Reduce weighted per-pixel rows into channel bins: out[c, :] = sum_{k,p: n[k,p]==c} A[k,p] * values[p, :].
 
-    The shared reduction behind the forward kernels' channel scatter.  ``use_gpu`` picks the
-    platform-appropriate algorithm (see the note above); both produce the same values up to
-    float32 summation order.
+    The shared reduction behind the forward kernels' channel scatter.  ``use_sorted`` picks the
+    algorithm (see the note above; decided by the model's tile policy); both produce the same
+    values up to float32 summation order.
 
     Contract: callers must pass ``n`` CLIPPED to [0, num_out-1] with ``A`` zeroed wherever the
     unclipped index was out of range (the kernels' existing range mask) -- both implementations
@@ -63,13 +65,13 @@ def channel_scatter_reduce(n, A, values, num_out, use_gpu=0):
         A (array, (num_taps, num_pixels)): weight per tap per pixel, zero where out of range.
         values (array, (num_pixels, num_cols)): the rows to be weighted and binned.
         num_out (int): number of output channels (static).
-        use_gpu (int/bool): truthy = sorted segment-sum (GPU layouts), else scatter-add.
-            Must be CONCRETE at trace time (from the static ProjectorParams.backend_gpu).
+        use_sorted (int/bool): truthy = sorted segment-sum, else scatter-add.  Must be CONCRETE
+            at trace time (from the static ProjectorParams.sort_by_channel).
 
     Returns:
         array of shape (num_out, num_cols).
     """
-    if use_gpu:
+    if use_sorted:
         return _channel_reduce_sort_segsum(n, A, values, num_out)
     return _channel_reduce_scatter_add(n, A, values, num_out)
 
@@ -149,16 +151,17 @@ class Projectors:
         # jit cache is shared across instances (see the note on ProjectorParams at the top).
         geometry_params = self.tomography_model.get_geometry_parameters()
         sinogram_shape, recon_shape = self.tomography_model.get_params(['sinogram_shape', 'recon_shape'])
-        # backend: the platform of the model's device layout, so scatter-type kernels pick the
-        # platform-appropriate channel reduction (channel_scatter_reduce).  Placements exist by
-        # the time create_projectors runs (set_devices precedes it in __init__ and in the
-        # set_params recompile).  Edge: configure_devices() can re-pin devices WITHOUT a
-        # projector rebuild; a cross-PLATFORM re-pin that way would keep the old reduction --
-        # results stay correct (the reductions are value-equal), only the speed is suboptimal --
-        # and every sanctioned platform switch (use_gpu=...) goes through a set_params recompile.
-        placement = self.tomography_model.sino_placement
-        backend_gpu = int(placement is not None and placement.devices[0].platform == 'gpu')
-        projector_params = ProjectorParams(sinogram_shape, recon_shape, geometry_params, backend_gpu)
+        # sort_by_channel: the kernel-algorithm flag from the model's tile policy (selected at
+        # device layout; the layout exists by the time create_projectors runs -- set_devices
+        # precedes it in __init__ and in the set_params recompile).  Edge: configure_devices()
+        # re-lays-out (new tiles) WITHOUT a projector rebuild, so this baked flag can go stale
+        # across such a re-layout -- that costs only speed, never correctness (the reductions
+        # are value-equal), and every sanctioned platform switch (use_gpu=...) goes through a
+        # set_params recompile.
+        tiles = self.tomography_model.tiles
+        sort_by_channel = int(bool(tiles is not None and tiles.sort_by_channel))
+        projector_params = ProjectorParams(sinogram_shape, recon_shape, geometry_params,
+                                           sort_by_channel)
 
         view_params_name = self.tomography_model.get_params('view_params_name')
         # The view parameters are a RUNTIME input to the jitted projectors, not a baked
@@ -168,9 +171,10 @@ class Projectors:
         # the angles/translations with NO recompile; a view-COUNT change is a geometry
         # change and rebuilds the projectors through set_params as before.
         self.view_params_array = jnp.asarray(self.tomography_model.get_params(view_params_name))
-        # The batch-size knobs are NOT captured here: the public wrappers below read them off the
-        # model AT CALL TIME (late binding), for the same reason view_params_array is late-bound.
-        # _set_view_batch_sizes recomputes them on every device re-layout, and configure_devices()
+        # The batch-size knobs are NOT captured here: the public wrappers below read the model's
+        # TILE POLICY (tm.tiles) AT CALL TIME (late binding), for the same reason
+        # view_params_array is late-bound.  _select_tile_policy recomputes it on every device
+        # re-layout, and configure_devices()
         # re-lays-out WITHOUT recreating the projectors -- a construction-time capture would freeze
         # the value computed for the automatic (all-devices) layout and silently run it at every
         # later pinned device count.  The knobs are STATIC jit arguments, so a changed value
@@ -201,8 +205,8 @@ class Projectors:
                 self.view_params_array, voxel_values, pixel_indices,
                 fwd_kernel=forward_project_pixel_batch_to_one_view,
                 projector_params=projector_params,
-                pixel_batch_size=tm.pixel_batch_size_for_vmap,
-                view_batch_size=tm.fwd_view_batch_size_for_vmap,
+                pixel_batch_size=tm.tiles.fwd_pixel_batch,
+                view_batch_size=tm.tiles.fwd_view_batch,
                 owned_view_indices=owned_view_indices)
 
         def sparse_back_project_public(sinogram, pixel_indices, coeff_power=1, owned_view_indices=()):
@@ -210,8 +214,8 @@ class Projectors:
                 self.view_params_array, sinogram, pixel_indices,
                 back_kernel=back_project_one_view_to_pixel_batch,
                 projector_params=projector_params,
-                pixel_batch_size=tm.pixel_batch_size_for_vmap,
-                view_batch_size=tm.back_view_batch_size_for_vmap,
+                pixel_batch_size=tm.tiles.back_pixel_batch,
+                view_batch_size=tm.tiles.back_view_batch,
                 coeff_power=coeff_power,
                 owned_view_indices=owned_view_indices)
 
@@ -231,8 +235,8 @@ class Projectors:
                     self.view_params_array, sinogram, pixel_indices, g0, num_band_slices,
                     back_band_kernel=back_project_one_view_to_band,
                     projector_params=projector_params,
-                    pixel_batch_size=tm.pixel_batch_size_for_vmap,
-                    view_batch_size=tm.back_view_batch_size_for_vmap,
+                    pixel_batch_size=tm.tiles.back_pixel_batch,
+                    view_batch_size=tm.tiles.back_view_batch,
                     coeff_power=coeff_power,
                     owned_view_indices=owned_view_indices)
 

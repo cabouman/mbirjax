@@ -82,18 +82,48 @@ class ParallelBeamModel(TomographyModel):
             view_data[:, g0:g1, :], pixel_indices,
             owned_view_indices=owned_view_indices, coeff_power=coeff_power)
 
+    # Measured GPU forward tiling (H100 band x pixel-batch grid, 2026-07-07; see
+    # experiments/projector_kernels/fwd_back_findings.md and fwd_band_pixel_sweep.py).
+    # Model-level forward speedups vs the inherited defaults: 2.0/2.0/3.6x at 1024^3 n=1/2/4,
+    # 1.3/2.0/2.0x at 513^3, with memory within +0.7 GB per device.  CPU measured the OPPOSITE
+    # (wide bands neutral-to-worse, large pixel batches 0.6-0.85x), so these apply to GPU
+    # layouts only and the base (CPU) policy is untouched.
+    _FWD_SLICE_BAND_GPU = 256    # band knee; whole-shard is WORSE at 1024^3 n=1 (+3 GB, 0.97x)
+    _FWD_PIXEL_BATCH_GPU = 8192  # larger sorts use the GPU better + 4x fewer scan-carry steps;
+                                 # 16384 is not uniformly better (non-monotonic at 513^3/1024^3 n=1/2)
+
+    def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
+        """Parallel-beam tiling: GPU forward gets the measured band/pixel-batch/sorted-reduce
+        combination (constants above); everything else inherits the base policy."""
+        tiles = super()._select_tile_policy(on_gpu, num_views, num_slices, n_devices)
+        if not on_gpu:
+            return tiles
+        # The sorted channel reduction pays a per-call sort that amortizes over the band width;
+        # with the 256-band policy the bands are wide everywhere except tiny problems, where the
+        # BALANCED band width (bands split ±1, so ~slices_per_dev/n_bands) can drop below the
+        # measured crossover and the scatter-add stays faster.
+        slices_per_dev = -(-num_slices // max(1, n_devices))
+        band = min(self._FWD_SLICE_BAND_GPU, max(1, slices_per_dev))
+        balanced_band = slices_per_dev // max(1, -(-slices_per_dev // band))
+        return tiles._replace(
+            fwd_slice_band=self._FWD_SLICE_BAND_GPU,
+            fwd_pixel_batch=self._FWD_PIXEL_BATCH_GPU,
+            sort_by_channel=balanced_band >= SORTED_CHANNEL_REDUCE_MIN_COLS,
+        )
+
     def _forward_project_to_view_shards(self, devices, n_dev, num_slices, num_pixels,
                                      recon_shard_info, view_ranges, local_pixels):
         """Parallel-beam specialization of the sharded forward projection (overrides the base
         gather+monolithic path): band the slice axis and broadcast each band; each view-owner
         projects detector rows [g0:g1) from the band (row r <- slice r) and concatenates its
-        row-bands -- never gathering the full cylinder.  Band sizing mirrors back projection
-        (see _slice_band_length); forward's transient is even smaller (no n_dev-way gather), so
-        reusing the back sizing is safe and conservative."""
+        row-bands -- never gathering the full cylinder.  Band sizing: the tile policy's
+        fwd_slice_band when set (GPU: 256, measured -- see _select_tile_policy), else the
+        memory-driven back formula (safe and conservative; forward's transient is even smaller,
+        no n_dev-way gather)."""
         slices_per_dev = num_slices // n_dev
         band_len = self._slice_band_length(
             slices_per_dev, n_dev, num_pixels,
-            fixed_band=getattr(self, 'forward_project_slice_band', None))
+            fixed_band=self._fixed_slice_band('fwd'))
         band_bounds = self._balanced_slice_bounds(slices_per_dev, band_len)
         return self._forward_project_all_bands(
             band_bounds, recon_shard_info, view_ranges, local_pixels, devices)
@@ -250,16 +280,14 @@ class ParallelBeamModel(TomographyModel):
         # cheap pass, fused by XLA) so the output layout and all callers are
         # unchanged.
         #
-        # The channel reduction is PLATFORM-SPLIT (see channel_scatter_reduce in projectors.py):
-        # on GPU the psf taps are stacked into (taps, num_pixels) arrays and reduced with a
-        # sorted segment-sum (~2-3x faster than the atomics-bound scatter); on CPU the ORIGINAL
-        # per-tap scatter-add loop is kept verbatim -- the stacked form measured a few percent
-        # slower there, and keeping the loop makes the CPU path identical to what it always was.
-        # The GPU path also requires a wide-enough band: the sort's fixed cost loses to the
-        # scatter on narrow slice bands (see SORTED_CHANNEL_REDUCE_MIN_COLS).  Both conditions
-        # are static here (projector_params is a static jit argument and num_input_slices is a
-        # shape), so this is a trace-time branch, not a runtime one.
-        if projector_params.backend_gpu and num_input_slices >= SORTED_CHANNEL_REDUCE_MIN_COLS:
+        # The channel reduction is chosen by ONE precomputed flag (see channel_scatter_reduce in
+        # projectors.py and _select_tile_policy for how it is decided -- GPU layouts whose slice
+        # bands are wide enough to amortize the sort): when set, the psf taps are stacked into
+        # (taps, num_pixels) arrays and reduced with a sorted segment-sum (~2-3x faster than the
+        # atomics-bound scatter on GPU); otherwise the ORIGINAL per-tap scatter-add loop runs
+        # verbatim (the CPU path is identical to what it always was).  projector_params is a
+        # static jit argument, so this is a trace-time branch, not a runtime one.
+        if projector_params.sort_by_channel:
             # Stack the taps; per the reduce contract, n is CLIPPED into range with the weights
             # zeroed where the unclipped tap was outside the detector.
             n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
@@ -270,7 +298,7 @@ class ParallelBeamModel(TomographyModel):
             A_chan_n = A_chan_n * ((n >= 0) & (n < num_det_channels))
             n = jnp.clip(n, 0, num_det_channels - 1)
             sinogram_view_T = channel_scatter_reduce(n, A_chan_n, voxel_values, num_det_channels,
-                                                     use_gpu=True)
+                                                     use_sorted=True)
         else:
             sinogram_view_T = jnp.zeros((num_det_channels, num_input_slices))
             for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):

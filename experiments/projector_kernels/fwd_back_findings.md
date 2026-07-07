@@ -119,6 +119,39 @@ than standalone timing suggests.  Dispatch threshold `SORTED_CHANNEL_REDUCE_MIN_
 sits between the end-to-end anchors.  Follow-up: forward band sizing is inherited from back's
 memory-driven policy; longer forward bands (Phase B/C) would push everything to B ≥ 96.
 
+## Phase B implementation results (2026-07-08, branch `greg/kernel_investigation`)
+
+Strategies 2 and 3 landed together via the **TilePolicy consolidation**: every projector
+batching/banding knob and kernel-algorithm flag now lives in one immutable namedtuple
+(`model.tiles`), selected in ONE method (`_select_tile_policy`) on every device re-layout and
+read late-bound by all consumers.  The kernel's compound branch collapsed to a single
+precomputed flag (`ProjectorParams.sort_by_channel`, decided by the policy).  Experiment
+override idiom: `model.tiles = model.tiles._replace(...)`; the per-instance
+`fwd/back_project_slice_band` attributes remain the top-priority hook.
+
+`ParallelBeamModel`'s GPU policy (from the band × pixel-batch grid, `fwd_band_pixel_sweep.py`):
+`fwd_slice_band = 256` (whole-shard is WORSE at 1024³ n=1: 0.97×, +3 GB), `fwd_pixel_batch =
+8192` (16384 is non-monotonic), sorted reduce on unless the balanced band falls below the
+crossover.  CPU measured the opposite direction on every knob, so the base (CPU) policy is
+untouched and the CPU compiled program is bit-identical (HLO-proven, model level).
+
+H100 model-level A/B (old = post-Phase-A HEAD, isolation-clean cells):
+
+| parallel forward | old ms | new ms | speedup | memory |
+|---|---|---|---|---|
+| 1024³ n=1 / n=2 / n=4 | 16727 / 8308 / 7086 | 8187 / 4103 / 1973 | 2.04 / 2.03 / 3.59× | +3% / −8% / +22% |
+| 513³ n=1 / n=2 / n=4 | 438 / 398 / 285 | 342 / 201 / 148 | 1.28 / 1.97 / 1.93× | −15% / +27% / +58% |
+| 200³ n=1 | 11.0 | 10.5 | 1.05× | +54% (88→136 MB) |
+
+Guards: parallel back and cone forward byte-flat; parallel VCD 1.05× (its interior forward).
+CUMULATIVE (Phase A + B) vs the original kernel: 1024³ forward 34.97 s → **8.19 s at n=1
+(4.3×)** and 9.32 → **1.97 s at n=4 (4.7×)**; forward is now ~2.2× FASTER than back at
+1024³ n=1.  Back projection is the new long pole.
+
+NOTE for the nightly: the relative memory increases at the small cells (+27–58%, absolute
+≤ 0.65 GB) exceed the hard 8% GPU memory gate — a deliberate time-for-memory trade that needs
+the acknowledged-regression path (or re-baseline) when this lands.
+
 ## Numerics note (ties to the known JAX rounding bug)
 
 Early full-grid runs showed two *value-equal* compiled programs (`fwd_asis` vs the stacked

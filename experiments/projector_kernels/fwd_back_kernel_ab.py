@@ -69,13 +69,15 @@ def build(sino_shape):
     model = mbirjax.ParallelBeamModel(sino_shape, angles)
     model.configure_devices(1)   # single device: kernel-level comparison, no sharding
     from mbirjax.projectors import ProjectorParams
-    # backend_gpu mirrors create_projectors: the library kernel (fwd_asis) dispatches its
-    # channel reduction on this flag, so the bench must set it as production would.  Libraries
-    # predating the platform-split reduction have a 3-field ProjectorParams -- fall back so the
-    # bench runs against both sides of an A/B.
+    # The kernel-algorithm flag mirrors create_projectors so the library kernel (fwd_asis)
+    # dispatches as production would.  Compat chain across library generations: current =
+    # sort_by_channel (from the tile policy); earlier = backend_gpu (platform); oldest = the
+    # 3-field ProjectorParams (no flag).
     args = (tuple(model.get_params('sinogram_shape')), tuple(model.get_params('recon_shape')),
             model.get_geometry_parameters())
-    if 'backend_gpu' in ProjectorParams._fields:
+    if 'sort_by_channel' in ProjectorParams._fields:
+        args += (int(bool(model.tiles.sort_by_channel)),)
+    elif 'backend_gpu' in ProjectorParams._fields:
         args += (int(model.sino_placement.devices[0].platform == 'gpu'),)
     pp = ProjectorParams(*args)
     recon_shape = model.get_params('recon_shape')

@@ -38,6 +38,24 @@ import mbirjax.tomography_utils as tomography_utils
 
 from importlib.metadata import version, PackageNotFoundError
 
+# The projector TILING POLICY: every batching/banding knob and kernel-algorithm flag the
+# projectors consume, selected in ONE place (TomographyModel._select_tile_policy, re-run on
+# every device re-layout) and stored on the model as ``self.tiles``.  Immutable by design:
+# experiments override a field with ``model.tiles = model.tiles._replace(...)`` rather than
+# mutating scattered attributes.  Fields:
+#   fwd_view_batch / back_view_batch  -- per-op vmap widths over views.
+#   fwd_pixel_batch / back_pixel_batch -- per-op pixel tile sizes (the forward driver's pixel
+#       scan; back's pixel concatenation; cone's gather-forward host tiling).
+#   fwd_slice_band / back_slice_band  -- slice-band length overrides for the banded projector
+#       paths; None = the memory-driven _slice_band_length formula.
+#   sort_by_channel -- kernel-algorithm flag: use the sorted segment-sum channel reduction in
+#       the forward kernel (GPU layouts with wide-enough bands; see
+#       projectors.channel_scatter_reduce and parallel_beam's policy override).
+TilePolicy = namedtuple('TilePolicy', ['fwd_view_batch', 'back_view_batch',
+                                       'fwd_pixel_batch', 'back_pixel_batch',
+                                       'fwd_slice_band', 'back_slice_band',
+                                       'sort_by_channel'])
+
 # Persistent jit-compilation cache: repeat runs of the same model shapes load
 # compiled executables from disk instead of recompiling (a real win for
 # production-size recons, whose XLA compiles take seconds).  The cache lives in
@@ -127,16 +145,16 @@ class TomographyModel(ParameterHandler):
         # by _qggmrf_interface_masks; invalidated by _set_device_layout on every recompile).
         self._qggmrf_interface_masks_cache = None
 
-        # PER-OP view-batch knobs, recomputed ADAPTIVELY from the device layout in
-        # _set_device_layout() -> _set_view_batch_sizes(); these are only the pre-layout initial
-        # values.  Forward and back projection want OPPOSITE view-batch policies (forward: small
-        # batches, its transient scales with the batch width per device; back: one vmap over the
-        # whole per-device view shard, the scan carry is the enemy) -- see _set_view_batch_sizes.
-        # The jitted projectors read these at CALL time (late binding in create_projectors), so a
-        # configure_devices() re-layout takes effect on the next projection call.
-        self.fwd_view_batch_size_for_vmap = 128
-        self.back_view_batch_size_for_vmap = 128
-        self.pixel_batch_size_for_vmap = 2048
+        # The projector TILING POLICY (batch sizes, band lengths, kernel-algorithm flags) is
+        # selected in ONE place -- _select_tile_policy, called from _set_device_layout on every
+        # re-layout -- and stored here as an immutable TilePolicy namedtuple.  The projector
+        # wrappers read self.tiles at CALL time (late binding), so a configure_devices()
+        # re-layout takes effect on the next projection call, and an experiment can override a
+        # field with ``model.tiles = model.tiles._replace(...)``.  Geometry classes override
+        # _select_tile_policy for measured, geometry-specific choices.
+        self.tiles = None                       # set by set_devices() -> _set_device_layout below
+        self.pixel_batch_size_for_vmap = 2048   # generic pixel tile; the base policy feeds it
+                                                # into both per-op pixel-batch fields
         self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
         self.set_devices()
         self.create_projectors()
@@ -377,59 +395,86 @@ class TomographyModel(ParameterHandler):
         num_slices = recon_shape[recon_axis % len(recon_shape)]
         self.recon_placement = mjs.Placement(devices, axis=recon_axis, real_size=num_slices)
         self.sino_placement = mjs.Placement(devices, axis=sino_axis, real_size=num_views)
-        self._set_view_batch_sizes(num_views, len(devices))
+        on_gpu = devices[0].platform == 'gpu'
+        self.tiles = self._select_tile_policy(on_gpu, num_views, num_slices, len(devices))
 
-    def _set_view_batch_sizes(self, num_views, n_devices):
-        """Size the per-op view-batch knobs from the device layout.
+    # Base view-batch caps (geometry-independent; evidence: the 2026-07-05/06 view-batch work,
+    # experiments/sharding + the nightly memory cells at 1024^3):
+    _FWD_VIEW_CAP = 128                # forward-OOM-safe vmap width at 1024^3, any layout
+    _BACK_VIEW_CAP_SINGLE = 128        # unsharded back: 512-wide peaks ~20.7 GB at 1024^3, 128 -> 16.3
+    _BACK_VIEW_CAP_SHARDED = 512       # safe for a per-device view shard
 
-        Forward and back projection want OPPOSITE view-batch policies, so each has its own knob:
+    def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
+        """Select the projector TILING POLICY for this device layout -- the ONE decision site.
 
-          * FORWARD: the vmap transient scales with the batch width PER DEVICE (several coexisting
-            ``[view_batch x pixel_batch x det_rows]`` buffers), and view-sharding does NOT shrink
-            it -- sharding cuts the per-device view COUNT, so re-inflating the batch to match the
-            shard just re-creates the single-device transient on every device.  Forward therefore
-            keeps a flat OOM-safe width (512-wide OOMs a single GPU at 1024^3), clipped to the
-            per-device shard.
-          * BACK: sums each device's view shard via ``sum_function_in_batches``; a batch smaller
-            than the shard drops into the accumulating-SCAN path, whose live carry coexists with
-            each batch's transient and inflates the peak.  Back therefore SINGLE-vmaps the whole
-            per-device shard, capped at 512 on multi-device layouts and 128 on a single device
-            (an unsharded 1024^3 back at 512 peaks ~20.7 GB vs 16.3 at 128).
+        Returns a TilePolicy (see its definition above) covering every batching/banding knob and
+        kernel-algorithm flag the projectors consume.  Geometry classes override this method to
+        change ONLY what they have measured (e.g. ParallelBeamModel's GPU forward tiling); the
+        base policy preserves the long-standing defaults:
 
-        Measured H100 peaks at 1024^3 under this policy (GB, n=1/2/4): forward 16.3 / 10.6 / 9.0,
-        back 16.3 / 6.0 / 3.2.
+          * VIEW batches -- forward and back want OPPOSITE policies.  Forward's vmap transient
+            scales with the batch width PER DEVICE (view-sharding does not shrink it), so it
+            keeps a flat OOM-safe width clipped to the shard.  Back single-vmaps its whole
+            per-device view shard (a smaller batch drops into the accumulating-SCAN path, whose
+            live carry inflates the peak), capped per the constants above.  Measured H100 peaks
+            at 1024^3 (GB, n=1/2/4): forward 16.3 / 10.6 / 9.0, back 16.3 / 6.0 / 3.2.
+          * PIXEL batches -- the generic ``pixel_batch_size_for_vmap`` (2048) for both ops.
+          * SLICE bands -- None = the memory-driven ``_slice_band_length`` formula.  A number
+            here overrides it (clipped to the slice shard); the per-instance
+            ``fwd/back_project_slice_band`` attributes remain the top-priority experiment hook.
+          * ``sort_by_channel`` -- False: the scatter-add channel reduction (see
+            projectors.channel_scatter_reduce).
 
-        BINDING: the jitted projectors read these attributes AT CALL TIME (late binding in
-        ``Projectors.create_projectors``), so a ``configure_devices()`` re-layout takes effect on
-        the next projection without recreating the projectors.  They are STATIC jit arguments: a
-        changed value retraces, never silently misbatches.
-
-        Deferred refinement: derive the caps from a per-device memory budget + a per-view
-        transient estimate, and snap the back batch DOWN to a DIVISOR of per_shard_views so a
-        ragged tail batch adds no extra compiled kernel.  The regression harness (cone
-        forward+back at 1024^3 x n=1/2/4) validates any change to this policy.
+        BINDING: consumers read ``self.tiles`` at CALL time (late binding), so a
+        ``configure_devices()`` re-layout takes effect on the next projection without recreating
+        the projectors.  Exception: ``sort_by_channel`` is baked into the STATIC ProjectorParams
+        at create_projectors -- every sanctioned platform change recreates the projectors via
+        set_params, and a stale flag can only cost speed, never correctness (the reductions are
+        value-equal).  Values that reach jit are STATIC arguments: a changed value retraces,
+        never silently misbatches.
         """
-        FWD_CAP = 128                  # forward-OOM-safe vmap width at 1024^3, any layout
-        BACK_SINGLE_DEVICE_CAP = 128   # unsharded back: 512-wide peaks ~20.7 GB at 1024^3, 128 -> 16.3
-        BACK_SHARDED_CAP = 512         # safe for a per-device view shard
-        per_shard_views = -(-num_views // max(1, n_devices))   # ceil: views per device after view-sharding
-        back_cap = BACK_SINGLE_DEVICE_CAP if n_devices <= 1 else BACK_SHARDED_CAP
-        self.fwd_view_batch_size_for_vmap = max(1, min(per_shard_views, FWD_CAP))
-        self.back_view_batch_size_for_vmap = max(1, min(per_shard_views, back_cap))
+        per_shard_views = -(-num_views // max(1, n_devices))   # ceil: views per device
+        back_cap = self._BACK_VIEW_CAP_SINGLE if n_devices <= 1 else self._BACK_VIEW_CAP_SHARDED
+        return TilePolicy(
+            fwd_view_batch=max(1, min(per_shard_views, self._FWD_VIEW_CAP)),
+            back_view_batch=max(1, min(per_shard_views, back_cap)),
+            fwd_pixel_batch=self.pixel_batch_size_for_vmap,
+            back_pixel_batch=self.pixel_batch_size_for_vmap,
+            fwd_slice_band=None,
+            back_slice_band=None,
+            sort_by_channel=False,
+        )
 
     @property
     def view_batch_size_for_vmap(self):
         raise AttributeError(
-            "view_batch_size_for_vmap was SPLIT into fwd_view_batch_size_for_vmap and "
-            "back_view_batch_size_for_vmap (2026-07-06): forward and back projection need opposite "
-            "view-batch policies (see _set_view_batch_sizes).  Read/set those attributes instead.")
+            "view_batch_size_for_vmap no longer exists: the batching knobs are consolidated in "
+            "the TilePolicy at model.tiles (see _select_tile_policy).  Read model.tiles.fwd_"
+            "view_batch / .back_view_batch; override with model.tiles = model.tiles._replace(...).")
 
     @view_batch_size_for_vmap.setter
     def view_batch_size_for_vmap(self, value):
         raise AttributeError(
-            "view_batch_size_for_vmap was SPLIT into fwd_view_batch_size_for_vmap and "
-            "back_view_batch_size_for_vmap (2026-07-06); setting the old name would silently do "
-            "nothing.  Set the per-op attribute(s) instead.")
+            "view_batch_size_for_vmap no longer exists; setting it would silently do nothing.  "
+            "Use model.tiles = model.tiles._replace(fwd_view_batch=..., back_view_batch=...).")
+
+    @property
+    def fwd_view_batch_size_for_vmap(self):
+        raise AttributeError("moved into TilePolicy: read model.tiles.fwd_view_batch")
+
+    @fwd_view_batch_size_for_vmap.setter
+    def fwd_view_batch_size_for_vmap(self, value):
+        raise AttributeError(
+            "moved into TilePolicy: model.tiles = model.tiles._replace(fwd_view_batch=...)")
+
+    @property
+    def back_view_batch_size_for_vmap(self):
+        raise AttributeError("moved into TilePolicy: read model.tiles.back_view_batch")
+
+    @back_view_batch_size_for_vmap.setter
+    def back_view_batch_size_for_vmap(self, value):
+        raise AttributeError(
+            "moved into TilePolicy: model.tiles = model.tiles._replace(back_view_batch=...)")
 
     # ------------------------------------------------------------------
     # Sharding hooks (uniform default scheme; override per geometry only
@@ -1382,7 +1427,7 @@ class TomographyModel(ParameterHandler):
         Returns a list of per-view-owner sinogram shards ``(views_per_dev, num_det_rows,
         num_channels)``, ``owned_views[i]`` resident on ``devices[i]``.
         """
-        pixel_batch = self.pixel_batch_size_for_vmap
+        pixel_batch = self.tiles.fwd_pixel_batch
         # Gather slice-shards in GLOBAL slice order so the assembled cylinder is correctly ordered.
         slice_owners = sorted(devices, key=lambda d: recon_shard_info[d][1][0])
         # The monolithic forward kernel anchors its slice->detector-row geometry on the REAL
@@ -1595,7 +1640,7 @@ class TomographyModel(ParameterHandler):
 
         # Batch the views and pixels to bound vmap memory.  This is a BACK-projection driver, so
         # the view slices follow the back knob (they feed sparse_back_project below).
-        transfer_view_batch_size = self.back_view_batch_size_for_vmap
+        transfer_view_batch_size = self.tiles.back_view_batch
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
         num_views = sinogram.shape[0]
         all_view_indices = jnp.arange(num_views)          # all views (transfer-batched below)
@@ -1779,7 +1824,7 @@ class TomographyModel(ParameterHandler):
         slices_per_dev = num_slices // n_dev
         band_len = self._slice_band_length(
             slices_per_dev, n_dev, num_pixels,
-            fixed_band=getattr(self, 'back_project_slice_band', None))
+            fixed_band=self._fixed_slice_band('back'))
         band_bounds = self._balanced_slice_bounds(slices_per_dev, band_len)
 
         # Do the back projection:
@@ -1957,6 +2002,20 @@ class TomographyModel(ParameterHandler):
         return self.projector_functions.sparse_back_project_band(
             view_data, pixel_indices, g0, g1 - g0,
             owned_view_indices=owned_view_indices, coeff_power=coeff_power)
+
+    def _fixed_slice_band(self, op):
+        """Resolve the slice-band override for ``op`` ('fwd' or 'back'), or None for the formula.
+
+        Resolution order: a per-INSTANCE ``fwd_project_slice_band`` / ``back_project_slice_band``
+        attribute (the experiment/test hook -- highest priority), else the tile policy's
+        ``fwd_slice_band`` / ``back_slice_band`` field.  ``_slice_band_length`` clips the result
+        to the slice shard, so an override larger than the shard means one band.
+        """
+        hook = {'fwd': 'forward_project_slice_band', 'back': 'back_project_slice_band'}[op]
+        fixed = getattr(self, hook, None)
+        if fixed is not None:
+            return fixed
+        return self.tiles.fwd_slice_band if op == 'fwd' else self.tiles.back_slice_band
 
     @staticmethod
     def _slice_band_length(slices_per_dev, n_dev, num_pixels, fixed_band=None):
