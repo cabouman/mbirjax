@@ -2560,7 +2560,7 @@ class TomographyModel(ParameterHandler):
             return filtered_sinogram                     # keep the device form
         return self._gather_sinogram(filtered_sinogram)  # default: numpy output
 
-    def initialize_recon(self, sinogram, weights=None, init_recon=None, max_iterations=25, first_iteration=0,
+    def initialize_recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, first_iteration=0,
                          compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True):
         """
         Do the device management and parameter initialization needed for recon and prox_map.
