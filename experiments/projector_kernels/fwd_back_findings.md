@@ -6,9 +6,21 @@
 `back_project_one_view_to_pixel_batch` (nightly model-level: fwd/back ≈ 1.4–1.9× GPU, ≈ 1.5× CPU)?
 
 **Answer in one line:** forward's psf loop is a **scatter-add with duplicated channel indices**
-(~3·P/C pixels collide per channel); back's is a conflict-free **gather** + dense accumulate.  The
+(~T·P/C pixels collide per channel); back's is a conflict-free **gather** + dense accumulate.  The
 `fwd_noscatter` control (identical arithmetic, no channel scatter) runs at 1–6% of the forward
 kernel on both platforms, so the scatter is essentially the whole kernel-level story.
+
+**Notation** (matching `tomography_model.py` where it overlaps):
+
+- **P** — pixels per kernel call (the driver's pixel batch; 2048 in production).
+- **C** — detector channels.
+- **B** — the slice-band width: how many recon slices (equivalently detector rows, by the
+  parallel-beam row r ↔ slice r identity) one kernel call processes.  This is the band length
+  `B` of `tomography_model._slice_band_length`; an unbanded call has B = the full slice count.
+  B is the column count of the channel reduction, so it is what the sorted reduce's fixed sort
+  cost amortizes over.
+- **V** — the view vmap width (`fwd_view_batch_size_for_vmap`, 128 in production).
+- **T** — psf taps per pixel (2·psf_radius + 1; 3 for these geometries).
 
 ## Method
 
@@ -28,10 +40,10 @@ geometry code; only the channel reduction differs), except `fwd_noscatter`.
 | variant | what it does | CPU (M3) | GPU (H100) |
 |---|---|---|---|
 | `fwd_asis` | library kernel: 3 sequential `.at[n,:].add` scatters, one per psf tap | 2.7–3.4× back | 1.07× back (448-size), 1.29× (1024-size) |
-| `fwd_1scatter` | ONE stacked scatter: (3P,) indices, (3P,S) updates | ~1.2× worse than as-is | ~1.45× worse than as-is |
+| `fwd_1scatter` | ONE stacked scatter: (T·P,) indices, (T·P, B) updates | ~1.2× worse than as-is | ~1.45× worse than as-is |
 | `fwd_segsum` | `jax.ops.segment_sum` over the stacked indices (unsorted; lowers to scatter) | ≈ `fwd_1scatter` | ≈ `fwd_1scatter` |
 | `fwd_sortsegsum` | argsort the stacked indices IN-kernel, `segment_sum(indices_are_sorted=True)` | **2–4× WORSE** | **2.3–3.2× BETTER** (0.34–0.57× back) |
-| `fwd_matmul` | dense (C,P) one-hot weight matrix @ (P,S) voxels — C/3× redundant flops | ties at C=160, loses at C=384 | **5.8× better — but TF32 only**; forced float32 it loses at 1024-size (1.93× back) |
+| `fwd_matmul` | dense (C, P) one-hot weight matrix @ (P, B) voxels — C/T× redundant flops | ties at C=160, loses at C=384 | **5.8× better — but TF32 only**; forced float32 it loses at 1024-size (1.93× back) |
 | `fwd_gathertable` | host-precomputed per-view channel→pixel tables padded to (C,K); kernel = pure gather + reshape-reduce | 19× worse | 16× worse |
 | `fwd_noscatter` | lower bound: all compute, psf reduce, NO channel scatter (wrong values) | 1–6% of as-is | 3–4% of as-is |
 
@@ -56,7 +68,7 @@ Notes per variant:
 | tier | fwd/back | where the extra time lives |
 |---|---|---|
 | kernel (production shape) | 1.07–1.29× | the channel scatter |
-| raw driver (full grid) | 1.06× (448) → **1.56×** (1024) | forward's ~480-step pixel scan accumulating into a ~512 MB (V,C,S) carry; back's driver has no equivalent |
+| raw driver (full grid) | 1.06× (448) → **1.56×** (1024) | forward's ~480-step pixel scan accumulating into a ~512 MB (V, B, C) carry; back's driver has no equivalent |
 | nightly model level | 1.4–1.9× | banded forward vs back's n=1 monolithic short-circuit; ragged view batches at odd view counts |
 
 On CPU the kernel tier dominates outright (kernel 2.7–3.4×, driver 2.4–3.1×); the nightly's
@@ -76,6 +88,36 @@ smaller 1.5× is because the deployed CPU paths use band kernels on both sides.
    gates (doubtful).
 5. **CPU:** accept for now — the scatter is XLA-CPU-inherent; the honest alternative is an
    algorithmic rewrite (shear/resample forward), a much larger project.
+
+## Phase A implementation results (2026-07-07, branch `greg/kernel_investigation`)
+
+Strategy 1 was implemented: `channel_scatter_reduce` in `projectors.py` (scatter-add vs
+`lax.sort_key_val`-based sorted segment-sum, with the sorted keys used AS the segment ids so
+they cannot disagree — robust against the rounding-bug divergence class), dispatched in the
+parallel forward kernel on `ProjectorParams.backend_gpu` (an int leaf — a str breaks where
+the namedtuple is traced) AND on the band width.  The CPU path keeps the original loop
+verbatim (compiled CPU HLO proven bit-identical to HEAD, modulo source-location metadata).
+
+H100 model-level A/B (isolation-clean harness cells, old → new; memory unchanged ≤2%):
+
+| parallel forward | old ms | new ms | speedup |
+|---|---|---|---|
+| 1024³ n=1 / n=2 / n=4 | 34974 / 17473 / 9325 | 16656 / 8312 / 7083 | 2.10 / 2.10 / 1.32× |
+| 513³ n=1 / n=2 | 1117 / 611 | 439 / 400 | 2.54 / 1.53× |
+| 513³ n=4 (bands B=24) | 285 | 525 → threshold added | see below |
+| 200³ n=1 | 33.5 | 11.0 | 3.05× |
+
+Forward is now FASTER than back at n=1 (439 vs 777 ms at 513³).  Guards: parallel back and
+cone forward byte-flat.
+
+**Band-width threshold.**  The sorted reduce's per-call cost is sort-dominated and nearly
+independent of the band width B (~0.65 ms per 128-view/2048-pixel call), while the scatter
+scales with B — so narrow bands (the banded forward at high device counts) favor the scatter.
+Standalone-kernel sweep crossover ≈ B=96 (both problem sizes); end-to-end anchors: sorted
+LOSES at B=24 (513³ n=4), WINS at B=63 (1024³ n=4) — the in-scan context favors sorted more
+than standalone timing suggests.  Dispatch threshold `SORTED_CHANNEL_REDUCE_MIN_COLS = 48`
+sits between the end-to-end anchors.  Follow-up: forward band sizing is inherited from back's
+memory-driven policy; longer forward bands (Phase B/C) would push everything to B ≥ 96.
 
 ## Numerics note (ties to the known JAX rounding bug)
 

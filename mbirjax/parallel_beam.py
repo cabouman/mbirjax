@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import mbirjax as mj
 import mbirjax._sharding as mjs
 from mbirjax import TomographyModel, tomography_utils
+from mbirjax.projectors import channel_scatter_reduce, SORTED_CHANNEL_REDUCE_MIN_COLS
 
 ParallelBeamParamNames = mj.ParamNames | Literal['angles']
 
@@ -248,16 +249,37 @@ class ParallelBeamModel(TomographyModel):
         # the channel count.  Transpose back to (slices, channels) on return (one
         # cheap pass, fused by XLA) so the output layout and all callers are
         # unchanged.
-        sinogram_view_T = jnp.zeros((num_det_channels, num_input_slices))
-
-        # Do the projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
-            n = n_p_center + n_offset
-            abs_delta_p_c_n = jnp.abs(n_p - n)
+        #
+        # The channel reduction is PLATFORM-SPLIT (see channel_scatter_reduce in projectors.py):
+        # on GPU the psf taps are stacked into (taps, num_pixels) arrays and reduced with a
+        # sorted segment-sum (~2-3x faster than the atomics-bound scatter); on CPU the ORIGINAL
+        # per-tap scatter-add loop is kept verbatim -- the stacked form measured a few percent
+        # slower there, and keeping the loop makes the CPU path identical to what it always was.
+        # The GPU path also requires a wide-enough band: the sort's fixed cost loses to the
+        # scatter on narrow slice bands (see SORTED_CHANNEL_REDUCE_MIN_COLS).  Both conditions
+        # are static here (projector_params is a static jit argument and num_input_slices is a
+        # shape), so this is a trace-time branch, not a runtime one.
+        if projector_params.backend_gpu and num_input_slices >= SORTED_CHANNEL_REDUCE_MIN_COLS:
+            # Stack the taps; per the reduce contract, n is CLIPPED into range with the weights
+            # zeroed where the unclipped tap was outside the detector.
+            n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
+            n = n_p_center[None, :] + n_offsets[:, None]                    # (taps, num_pixels)
+            abs_delta_p_c_n = jnp.abs(n_p[None, :] - n)
             L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
             A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
+            A_chan_n = A_chan_n * ((n >= 0) & (n < num_det_channels))
+            n = jnp.clip(n, 0, num_det_channels - 1)
+            sinogram_view_T = channel_scatter_reduce(n, A_chan_n, voxel_values, num_det_channels,
+                                                     use_gpu=True)
+        else:
+            sinogram_view_T = jnp.zeros((num_det_channels, num_input_slices))
+            for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+                n = n_p_center + n_offset
+                abs_delta_p_c_n = jnp.abs(n_p - n)
+                L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
+                A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
+                A_chan_n *= (n >= 0) * (n < num_det_channels)
+                sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
 
         return sinogram_view_T.T
 

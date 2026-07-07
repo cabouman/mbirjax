@@ -45,6 +45,11 @@ WARMUP = 2
 TRIALS = 5
 CHECK_VALUES = True   # verify every variant matches fwd_asis (robust fraction metric)
 RUN_DRIVER_LEVEL = True   # also time the REAL sparse_forward/back_project drivers (full grid)
+# Band-width sweep: the banded forward hands the kernel B-slice bands (band length B, as in
+# tomography_model._slice_band_length); the sorted reduce's per-view sort cost amortizes over
+# B, so it loses at small B (end-to-end: lost at B=24, won at B=63).  Sweep scatter vs sorted
+# at these band widths to place the dispatch threshold.
+SLICE_SWEEP = []          # e.g. [16, 24, 32, 40, 48, 64, 96]; [] = skip
 RUN_GATHERTABLE = False   # padded (C,K) tables: dead end (per-channel counts skew ~17x ->
                           # padding waste); the unpadded equivalent IS fwd_sortsegsum
 
@@ -64,9 +69,15 @@ def build(sino_shape):
     model = mbirjax.ParallelBeamModel(sino_shape, angles)
     model.configure_devices(1)   # single device: kernel-level comparison, no sharding
     from mbirjax.projectors import ProjectorParams
-    pp = ProjectorParams(tuple(model.get_params('sinogram_shape')),
-                         tuple(model.get_params('recon_shape')),
-                         model.get_geometry_parameters())
+    # backend_gpu mirrors create_projectors: the library kernel (fwd_asis) dispatches its
+    # channel reduction on this flag, so the bench must set it as production would.  Libraries
+    # predating the platform-split reduction have a 3-field ProjectorParams -- fall back so the
+    # bench runs against both sides of an A/B.
+    args = (tuple(model.get_params('sinogram_shape')), tuple(model.get_params('recon_shape')),
+            model.get_geometry_parameters())
+    if 'backend_gpu' in ProjectorParams._fields:
+        args += (int(model.sino_placement.devices[0].platform == 'gpu'),)
+    pp = ProjectorParams(*args)
     recon_shape = model.get_params('recon_shape')
     num_pixels = recon_shape[0] * recon_shape[1]
     rng = np.random.default_rng(0)
@@ -289,6 +300,19 @@ def main():
             ok = check(np.asarray(gather_batch(vox, Idx, Wt))) if CHECK_VALUES else ""
             report(f"fwd_gathertable (K={K})", t,
                    ok + f"  [table build {t_build:.2f}s host, cacheable]")
+
+        if SLICE_SWEEP:
+            # Band-width sweep: the kernel projects a B-slice band (voxel_values[:, :B]); time
+            # the scatter vs sorted reductions at each B to place the dispatch threshold.
+            print("  band-width sweep (band length B): scatter vs sorted, ms per 128-view call",
+                  flush=True)
+            for b_band in SLICE_SWEEP:
+                vox_band = vox[:, :b_band]
+                t_sc = time_fn(make_fwd_batch(fwd_lib), vox_band, idx, view_angles)
+                t_ss = time_fn(make_fwd_batch(fwd_sortsegsum), vox_band, idx, view_angles)
+                verdict = "sorted wins" if t_ss < t_sc else "scatter wins"
+                print(f"    B={b_band:4d}: scatter {1e3 * t_sc:7.2f}  sorted {1e3 * t_ss:7.2f}"
+                      f"   ({verdict}, ratio {t_ss / t_sc:4.2f})", flush=True)
 
         if RUN_DRIVER_LEVEL:
             # Ground truth: the REAL drivers on the full pixel grid (includes the pixel scan /

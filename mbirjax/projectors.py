@@ -11,7 +11,94 @@ from functools import partial
 # namedtuple() inside a function does) would give each instance a distinct pytree type and defeat
 # the shared module-level projector jit cache.  geometry_params gets the same treatment at its
 # source (ParameterHandler.make_geometry_params).
-ProjectorParams = namedtuple('ProjectorParams', ['sinogram_shape', 'recon_shape', 'geometry_params'])
+#
+# ``backend_gpu`` (int: 1 = the model's device layout is GPU, 0 = CPU; default 0) lets
+# scatter-type kernels pick the platform-appropriate reduction (see channel_scatter_reduce).
+# Set by create_projectors from the model's placement; the default keeps externally-constructed
+# instances (tests, experiments) on the portable CPU path.  It is an INT, not a string, because
+# ProjectorParams is a pytree: some helpers take it TRACED (e.g. cone's compute_y_mag_for_pixel),
+# where every leaf must be a valid jax type -- an unused int leaf traces harmlessly, a str
+# errors.  In the kernels projector_params is STATIC, so the flag is a concrete Python int there.
+ProjectorParams = namedtuple('ProjectorParams', ['sinogram_shape', 'recon_shape', 'geometry_params',
+                                                 'backend_gpu'], defaults=(0,))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Platform-split scatter reduction for the forward-projection kernels
+#
+# Forward projection scatters each pixel's contribution into its detector channel; with
+# num_pixels >> num_channels the duplicate-index scatter-add is the dominant kernel cost.
+# The best formulation is platform-OPPOSITE (measured, H100 + M3, 2026-07-07 -- see
+# experiments/projector_kernels/fwd_back_findings.md):
+#   * CPU: the plain unrolled scatter-add.  Sort-based alternatives are 2-4x WORSE (XLA's CPU
+#     sort/segment lowering), so CPU keeps the original formulation unchanged.
+#   * GPU: sort the (tap, pixel) contributions by channel and reduce with a SORTED segment-sum
+#     -- 2.3-3.2x faster than the atomics-bound scatter-add, same values.
+# This mirrors the platform-split precedent in back projection (monolithic vs band kernel).
+#
+# SORTED_CHANNEL_REDUCE_MIN_COLS: the sorted reduce's per-call cost is dominated by the SORT
+# (~0.65 ms per 128-view/2048-pixel call on H100, nearly independent of the column count),
+# while the scatter scales with the columns -- so for NARROW slice bands (band length B, in
+# the _slice_band_length sense: the banded forward hands the kernel B-slice bands) the scatter
+# wins.  Measured anchors: standalone-kernel crossover at B~96; END-TO-END (harness cells,
+# in-scan context) sorted LOSES at B=24 (parallel fwd 513^3 n=4: 285 -> 525 ms) and WINS at
+# B=63 (1024^3 n=4: 9325 -> 7083 ms).  48 sits between the end-to-end anchors, keeping the
+# measured B=63 win sorted.  The 25..62 interior is unmeasured end-to-end; revisit if forward
+# band sizing changes (which would also move most bands to B >= 96, deep in sorted territory).
+SORTED_CHANNEL_REDUCE_MIN_COLS = 48
+# ──────────────────────────────────────────────────────────────────────────────
+def channel_scatter_reduce(n, A, values, num_out, use_gpu=0):
+    """Reduce weighted per-pixel rows into channel bins: out[c, :] = sum_{k,p: n[k,p]==c} A[k,p] * values[p, :].
+
+    The shared reduction behind the forward kernels' channel scatter.  ``use_gpu`` picks the
+    platform-appropriate algorithm (see the note above); both produce the same values up to
+    float32 summation order.
+
+    Contract: callers must pass ``n`` CLIPPED to [0, num_out-1] with ``A`` zeroed wherever the
+    unclipped index was out of range (the kernels' existing range mask) -- both implementations
+    then handle boundaries identically, with no reliance on scatter drop semantics.
+
+    Args:
+        n (int array, (num_taps, num_pixels)): channel index per psf tap per pixel, pre-clipped.
+        A (array, (num_taps, num_pixels)): weight per tap per pixel, zero where out of range.
+        values (array, (num_pixels, num_cols)): the rows to be weighted and binned.
+        num_out (int): number of output channels (static).
+        use_gpu (int/bool): truthy = sorted segment-sum (GPU layouts), else scatter-add.
+            Must be CONCRETE at trace time (from the static ProjectorParams.backend_gpu).
+
+    Returns:
+        array of shape (num_out, num_cols).
+    """
+    if use_gpu:
+        return _channel_reduce_sort_segsum(n, A, values, num_out)
+    return _channel_reduce_scatter_add(n, A, values, num_out)
+
+
+def _channel_reduce_scatter_add(n, A, values, num_out):
+    """Unrolled per-tap scatter-add -- the original formulation (best on CPU)."""
+    out = jnp.zeros((num_out, values.shape[1]))
+    for k in range(n.shape[0]):        # unrolled over the few psf taps, as the original loop
+        out = out.at[n[k], :].add(A[k].reshape(-1, 1) * values)
+    return out
+
+
+def _channel_reduce_sort_segsum(n, A, values, num_out):
+    """Sort contributions by channel, then a SORTED segment-sum (best on GPU; atomics-free).
+
+    ``lax.sort_key_val`` returns the sorted keys and the permutation TOGETHER, and the sorted
+    keys themselves are used as the segment ids -- so the ids are consistent with the sort by
+    construction.  (Deliberate: an argsort-then-regather formulation would let the known
+    round-inside-jit XLA hazard -- see experiments/bugs_and_artifacts/jax rounding bug/ --
+    produce ids inconsistent with the order, which indices_are_sorted=True would silently
+    mis-reduce.)
+    """
+    num_pixels = values.shape[0]
+    flat_n = n.reshape(-1)                                   # (taps * P,) row-major: tap-major
+    sorted_n, order = jax.lax.sort_key_val(flat_n, jnp.arange(flat_n.shape[0]))
+    # Row p of tap block k sits at flat index k*P + p, so the values row is order % P; gathering
+    # A and values in sorted order avoids materializing a second (taps*P, num_cols) transient.
+    updates = A.reshape(-1)[order][:, None] * values[order % num_pixels]
+    return jax.ops.segment_sum(updates, sorted_n, num_segments=num_out, indices_are_sorted=True)
 
 
 class Projectors:
@@ -62,7 +149,16 @@ class Projectors:
         # jit cache is shared across instances (see the note on ProjectorParams at the top).
         geometry_params = self.tomography_model.get_geometry_parameters()
         sinogram_shape, recon_shape = self.tomography_model.get_params(['sinogram_shape', 'recon_shape'])
-        projector_params = ProjectorParams(sinogram_shape, recon_shape, geometry_params)
+        # backend: the platform of the model's device layout, so scatter-type kernels pick the
+        # platform-appropriate channel reduction (channel_scatter_reduce).  Placements exist by
+        # the time create_projectors runs (set_devices precedes it in __init__ and in the
+        # set_params recompile).  Edge: configure_devices() can re-pin devices WITHOUT a
+        # projector rebuild; a cross-PLATFORM re-pin that way would keep the old reduction --
+        # results stay correct (the reductions are value-equal), only the speed is suboptimal --
+        # and every sanctioned platform switch (use_gpu=...) goes through a set_params recompile.
+        placement = self.tomography_model.sino_placement
+        backend_gpu = int(placement is not None and placement.devices[0].platform == 'gpu')
+        projector_params = ProjectorParams(sinogram_shape, recon_shape, geometry_params, backend_gpu)
 
         view_params_name = self.tomography_model.get_params('view_params_name')
         # The view parameters are a RUNTIME input to the jitted projectors, not a baked
