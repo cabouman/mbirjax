@@ -4,22 +4,9 @@ channels:
   - defaults
 dependencies:
   - python>=3.9
-  - pytest
-  - matplotlib
-  - numpy
-  - setuptools
-  - jax
-  - jaxlib
-  - sphinx
-  - sphinxcontrib-bibtex
-  - sphinx-book-theme>=1.0.1
-  - sphinx-design
-  - sphinx-copybutton
-  - ruamel.yaml
-  - psutil
-  - striprtf
-  - h5py
-  - pip  # Add any additional packages here and in pyproject.toml
+  - pip
+  # All Python dependencies live in pyproject.toml (the single source of truth),
+  # including the "docs" and "test" extras. Conda only provides Python + pip here;
+  # everything else is installed editable via pip so there is one list to maintain.
   - pip:
-      - -e .
-      - easygui
+      - -e .[docs,test]

@@ -5,19 +5,26 @@
 # Required
 version: 2
 
-# Set the OS, Python version and other tools you might need
+# Set the OS, Python version, and any system libraries the build needs.
 build:
   os: ubuntu-22.04
   tools:
-    python: "mambaforge-latest"
+    python: "3.12"
+  apt_packages:
+    # opencv-python (pulled in transitively when autodoc imports mbirjax) needs
+    # these shared libraries at import time; RTD's base image does not ship them.
+    - libgl1
+    - libglib2.0-0
 
-submodules:
-  include: all
-  recursive: true
-conda:
-  environment: environment.yml
-
-# Build documentation in the "docs/" directory with Sphinx
+# Build the Sphinx docs.
 sphinx:
   configuration: docs/source/conf.py
-      
+
+# Install dependencies straight from pyproject.toml (the single source of truth):
+# the package itself plus its optional "docs" extra. No conda / environment.yml.
+python:
+  install:
+    - method: pip
+      path: .
+      extra_requirements:
+        - docs
