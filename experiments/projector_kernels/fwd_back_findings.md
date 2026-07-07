@@ -1,9 +1,40 @@
-# Parallel-beam forward vs back kernel: attribution and alternatives
+# Forward-projection kernel investigation: attribution, alternatives, and results
 
-**Written 2026-07-07** (branch `greg/performance_improvements`).  Companion to
-`fwd_back_kernel_ab.py` (this directory), which produced every number below.  Question: why is
-`parallel_beam.forward_project_pixel_batch_to_one_view` slower than
-`back_project_one_view_to_pixel_batch` (nightly model-level: fwd/back ≈ 1.4–1.9× GPU, ≈ 1.5× CPU)?
+**Written 2026-07-07, updated 2026-07-08** (branch `greg/kernel_investigation`).  Companion to
+`fwd_back_kernel_ab.py` and `fwd_band_pixel_sweep.py` (this directory), which produced every
+number below.
+
+## Developer overview — what changed relative to prerelease
+
+- **Projector tiling is consolidated into a `TilePolicy`** (`model.tiles`): every batching /
+  banding knob and kernel-algorithm flag, selected in ONE method
+  (`TomographyModel._select_tile_policy`, re-run on each device re-layout) and read late-bound
+  by all consumers.  Geometry classes override only what they have measured.  Experiment
+  override idiom: `model.tiles = model.tiles._replace(...)`.  The retired attribute names
+  (`view_batch_size_for_vmap` and its fwd/back split, `pixel_batch_size_for_vmap`,
+  `transfer_pixel_batch_size`) raise loudly with guidance.
+- **Per-op view batches** (from the view-batch work that preceded this investigation): forward
+  keeps an OOM-safe width (cap 128); back single-vmaps its per-device view shard (cap 512
+  sharded / 128 single-device) to avoid the accumulating-scan carry.
+- **GPU forward kernels use a sorted segment-sum channel reduction** (parallel beam AND the
+  cone horizontal fan) behind a single static flag, `ProjectorParams.sort_by_channel`, decided
+  by the tile policy.  The reduction lives in `projectors.channel_scatter_reduce`; the sorted
+  form uses `lax.sort_key_val` with the sorted keys AS the segment ids (immune to the known
+  round-in-jit divergence hazard).  CPU keeps the original scatter loop verbatim — the CPU
+  compiled programs are bit-identical to before (HLO-proven).
+- **Parallel-beam GPU forward tiling** (measured): slice band 256, pixel batch 8192.
+- **Float32 matmuls default to full float32** (TF32 opt-out via
+  `JAX_DEFAULT_MATMUL_PRECISION=float32` in `_device_setup`, environment-overridable).
+- **Measured results (H100, model level):** parallel forward 4.3× at 1024³ n=1 (35.0 → 8.2 s)
+  and 4.7× at n=4 (9.3 → 2.0 s) — now ~2.2× faster than back; cone forward 1.4–1.6×
+  everywhere.  Back projections, VCD, and all CPU paths unchanged (CPU HLO bit-identical).
+- **Known cost:** parallel small-cell GPU memory +27–58% relative (≤0.65 GB absolute) from the
+  wide-band/large-pixel-batch policy — trips the nightly's hard 8% memory gate; needs the
+  acknowledged-trade path.  Cone memory is flat.
+
+The original question: why is `parallel_beam.forward_project_pixel_batch_to_one_view` slower
+than `back_project_one_view_to_pixel_batch` (nightly model-level: fwd/back ≈ 1.4–1.9× GPU,
+≈ 1.5× CPU)?
 
 **Answer in one line:** forward's psf loop is a **scatter-add with duplicated channel indices**
 (~T·P/C pixels collide per channel); back's is a conflict-free **gather** + dense accumulate.  The
@@ -12,21 +43,21 @@ kernel on both platforms, so the scatter is essentially the whole kernel-level s
 
 **Notation** (matching `tomography_model.py` where it overlaps):
 
-- **P** — pixels per kernel call (the driver's pixel batch; 2048 in production).
+- **P** — pixels per kernel call (the driver's pixel batch, `tiles.fwd_pixel_batch`;
+  2048 default, 8192 for parallel-GPU forward).
 - **C** — detector channels.
 - **B** — the slice-band width: how many recon slices (equivalently detector rows, by the
   parallel-beam row r ↔ slice r identity) one kernel call processes.  This is the band length
   `B` of `tomography_model._slice_band_length`; an unbanded call has B = the full slice count.
   B is the column count of the channel reduction, so it is what the sorted reduce's fixed sort
   cost amortizes over.
-- **V** — the view vmap width (`fwd_view_batch_size_for_vmap`, 128 in production).
+- **V** — the view vmap width (`tiles.fwd_view_batch`, 128 in production).
 - **T** — psf taps per pixel (2·psf_radius + 1; 3 for these geometries).
 
 ## Method
 
 Kernel-level timings use the PRODUCTION kernel shape: a 2048-pixel batch (the driver's
-`pixel_batch_size_for_vmap` scan unit) vmapped over 128 view angles
-(`fwd_view_batch_size_for_vmap`), on one device.  Back is timed as its driver composes it
+pixel scan unit) vmapped over 128 view angles (the forward view batch), on one device.  Back is timed as its driver composes it
 (vmap over views, then the view sum).  A driver-level ground truth
 (`projector_functions.sparse_forward_project` / `sparse_back_project` on the full pixel grid)
 anchors the kernel numbers to reality.  Values are checked with a robust
@@ -74,20 +105,23 @@ Notes per variant:
 On CPU the kernel tier dominates outright (kernel 2.7–3.4×, driver 2.4–3.1×); the nightly's
 smaller 1.5× is because the deployed CPU paths use band kernels on both sides.
 
-## Strategy ranking (assessment of 2026-07-07; no library changes yet)
+## Strategy ranking (assessment of 2026-07-07; status updated 2026-07-08)
 
-1. **GPU platform-conditional sorted-segment-sum reduction** — verified 2.3–3.2× kernel win,
+1. **[DONE — Phase A + cone rollout]** **GPU platform-conditional sorted-segment-sum reduction** — verified 2.3–3.2× kernel win,
    exact values, pure XLA.  Structure: keep ONE shared kernel body (geometry → `n`, `A`) and
    platform-dispatch only the ~10-line channel reduction.  The same primitive drops into the
    cone/multiaxis/translation horizontal fans (same scatter structure).
-2. **Driver tier:** revisit `pixel_batch_size_for_vmap` for parallel forward (fewer scan steps →
+2. **[DONE — Phase B]** **Driver tier:** revisit the forward pixel batch for parallel (fewer scan steps →
    less carry traffic; 2048 was tuned for cone's gather path).
-3. **Model tier:** quantify banded-forward overhead at n=1 vs a monolithic short-circuit
-   mirroring back's.
-4. **TF32 matmul:** only if a reduced-precision forward is ever acceptable to the correctness
-   gates (doubtful).
-5. **CPU:** accept for now — the scatter is XLA-CPU-inherent; the honest alternative is an
-   algorithmic rewrite (shear/resample forward), a much larger project.
+3. **[DONE via the band policy — Phase B]** **Model tier:** quantify banded-forward overhead
+   at n=1.  The band × pixel grid answered it empirically: band 256 beats BOTH the default
+   narrow bands and the monolithic (whole-shard) form at n=1, so no short-circuit is needed.
+4. **[REJECTED]** **TF32 matmul:** only viable with a reduced-precision policy the
+   correctness gates rule out; instead the library now OPTS OUT of TF32 globally
+   (`_device_setup`).
+5. **[ACCEPTED/PARKED]** **CPU:** the scatter is XLA-CPU-inherent; every alternative measured
+   worse on CPU (kernels, bands, and pixel batches alike), so all CPU paths are unchanged.
+   The honest alternative remains an algorithmic rewrite (shear/resample forward) — parked.
 
 ## Phase A implementation results (2026-07-07, branch `greg/kernel_investigation`)
 
@@ -151,6 +185,32 @@ CUMULATIVE (Phase A + B) vs the original kernel: 1024³ forward 34.97 s → **8.
 NOTE for the nightly: the relative memory increases at the small cells (+27–58%, absolute
 ≤ 0.65 GB) exceed the hard 8% GPU memory gate — a deliberate time-for-memory trade that needs
 the acknowledged-regression path (or re-baseline) when this lands.
+
+## Cone horizontal-fan rollout results (2026-07-08, branch `greg/kernel_investigation`)
+
+Cone's forward horizontal fan is line-for-line the same channel scatter as parallel's kernel,
+so it received the same single-flag branch (`sort_by_channel` → stacked taps + sorted reduce;
+else the original loop verbatim).  Cone-specific details: `W_p_c` / `L_max` / `footprint_xy`
+are PER-PIXEL arrays (per-pixel magnification) — plain broadcasting covers them and both
+detector types (flat and curved are kernel-equality-tested); the reduce columns are the FULL
+detector rows (cone forward is not row-banded), so `ConeBeamModel._select_tile_policy` sets
+the flag whenever `num_det_rows >=` the crossover.  Band/pixel-batch knobs stay inherited —
+cone's own sweep is future work.
+
+H100 model-level A/B (old = pre-sorted-reduce cone):
+
+| cone forward | old ms | new ms | speedup | memory |
+|---|---|---|---|---|
+| 1024³ n=1 / n=2 / n=4 | 41491 / 22507 / 15329 | 29245 / 15648 / 10504 | 1.42 / 1.44 / 1.46× | flat |
+| 512³ n=1 / n=2 / n=4 | 1288 / 695 / 462 | 803 / 445 / 298 | 1.60 / 1.56 / 1.55× | flat |
+| 200³ n=1 | 42.1 | 30.7 | 1.37× | flat |
+
+Guards: cone back byte-flat; parallel forward at its Phase B value.  The smaller speedup than
+parallel's (1.4–1.6× vs 2–3×) is the vertical fan's untouched share of cone forward.  Watch
+item: the cone VCD guard cell moved +1.9% (single trial) — VCD calls forward on SMALL pixel
+subsets where the sort has less to amortize; if the nightly confirms it, the clean fix is a
+static pixel-count guard INSIDE `channel_scatter_reduce` (the kernel's single-flag branch
+stays).
 
 ## Numerics note (ties to the known JAX rounding bug)
 
