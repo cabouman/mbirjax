@@ -127,11 +127,15 @@ class TomographyModel(ParameterHandler):
         # by _qggmrf_interface_masks; invalidated by _set_device_layout on every recompile).
         self._qggmrf_interface_masks_cache = None
 
-        # view_batch_size_for_vmap is recomputed ADAPTIVELY from the device layout in
-        # _set_device_layout() -> _set_view_batch_size(); this is only the pre-layout initial value.
-        # The knob drives BOTH sparse_forward_project's transient (a large batch OOMs a single GPU at
-        # 1024^3) and sparse_back_project's multi-device scan penalty -- see _set_view_batch_size.
-        self.view_batch_size_for_vmap = 128
+        # PER-OP view-batch knobs, recomputed ADAPTIVELY from the device layout in
+        # _set_device_layout() -> _set_view_batch_sizes(); these are only the pre-layout initial
+        # values.  Forward and back projection want OPPOSITE view-batch policies (forward: small
+        # batches, its transient scales with the batch width per device; back: one vmap over the
+        # whole per-device view shard, the scan carry is the enemy) -- see _set_view_batch_sizes.
+        # The jitted projectors read these at CALL time (late binding in create_projectors), so a
+        # configure_devices() re-layout takes effect on the next projection call.
+        self.fwd_view_batch_size_for_vmap = 128
+        self.back_view_batch_size_for_vmap = 128
         self.pixel_batch_size_for_vmap = 2048
         self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
         self.set_devices()
@@ -373,37 +377,59 @@ class TomographyModel(ParameterHandler):
         num_slices = recon_shape[recon_axis % len(recon_shape)]
         self.recon_placement = mjs.Placement(devices, axis=recon_axis, real_size=num_slices)
         self.sino_placement = mjs.Placement(devices, axis=sino_axis, real_size=num_views)
-        self._set_view_batch_size(num_views, len(devices))
+        self._set_view_batch_sizes(num_views, len(devices))
 
-    def _set_view_batch_size(self, num_views, n_devices):
-        """Adaptively size view_batch_size_for_vmap from the device layout (pragmatic first cut).
+    def _set_view_batch_sizes(self, num_views, n_devices):
+        """Size the per-op view-batch knobs from the device layout.
 
-        One knob drives two OPPOSING memory pressures, so the right value depends on the layout:
-          * sparse_forward_project's transient scales with view_batch (coexisting
-            ``[view_batch x pixel_batch x det_rows]`` buffers).  On a SINGLE device at 1024^3 a large
-            batch OOMs the GPU -- the reason this default dropped 512 -> 128.
-          * sparse_back_project sums each device's view shard via ``sum_function_in_batches``.  When
-            view_batch < the per-device view count it drops into the accumulating-SCAN path, whose live
-            carry (the per-device recon shard) coexists with each batch's transient and inflates
-            per-device peak -- the multi-device memory regression that same 512 -> 128 change caused.
+        Forward and back projection want OPPOSITE view-batch policies, so each has its own knob:
 
-        Policy: SINGLE-vmap the per-device view shard (``view_batch >= per_shard_views``) so back
-        projection never scans, capped so the transient stays in budget.  The sinogram is VIEW-sharded,
-        so a multi-device run has already cut the per-device transient ~1/n_devices and can batch its
-        whole shard; a lone device cannot, so it keeps the small single-device cap.  At 1024^3 this gives
-        view_batch 128 / 512 / 256 for n=1 / 2 / 4 -> peak 16262 / 5952 / 3204 MB (multi-device back to
-        the pre-regression baseline; single-device keeps the OOM fix).
+          * FORWARD: the vmap transient scales with the batch width PER DEVICE (several coexisting
+            ``[view_batch x pixel_batch x det_rows]`` buffers), and view-sharding does NOT shrink
+            it -- sharding cuts the per-device view COUNT, so re-inflating the batch to match the
+            shard just re-creates the single-device transient on every device.  Forward therefore
+            keeps a flat OOM-safe width (512-wide OOMs a single GPU at 1024^3), clipped to the
+            per-device shard.
+          * BACK: sums each device's view shard via ``sum_function_in_batches``; a batch smaller
+            than the shard drops into the accumulating-SCAN path, whose live carry coexists with
+            each batch's transient and inflates the peak.  Back therefore SINGLE-vmaps the whole
+            per-device shard, capped at 512 on multi-device layouts and 128 on a single device
+            (an unsharded 1024^3 back at 512 peaks ~20.7 GB vs 16.3 at 128).
 
-        FULLY-ROBUST follow-up (deferred): replace the two empirical caps below with a cap derived from a
-        real per-device memory budget + a per-view transient estimate, and snap view_batch DOWN to a
-        DIVISOR of per_shard_views so a ragged tail batch adds no extra compiled kernel.  The regression
-        harness (cone / multiaxis back at 1024^3 / 513^3 x n=1/2/4) validates any change to this policy.
+        Measured H100 peaks at 1024^3 under this policy (GB, n=1/2/4): forward 16.3 / 10.6 / 9.0,
+        back 16.3 / 6.0 / 3.2.
+
+        BINDING: the jitted projectors read these attributes AT CALL TIME (late binding in
+        ``Projectors.create_projectors``), so a ``configure_devices()`` re-layout takes effect on
+        the next projection without recreating the projectors.  They are STATIC jit arguments: a
+        changed value retraces, never silently misbatches.
+
+        Deferred refinement: derive the caps from a per-device memory budget + a per-view
+        transient estimate, and snap the back batch DOWN to a DIVISOR of per_shard_views so a
+        ragged tail batch adds no extra compiled kernel.  The regression harness (cone
+        forward+back at 1024^3 x n=1/2/4) validates any change to this policy.
         """
-        SINGLE_DEVICE_CAP = 128   # forward-OOM-safe batch for a FULL (unsharded) recon at 1024^3
-        SHARDED_CAP = 512         # prior default; safe for a per-device shard on sharded hardware
+        FWD_CAP = 128                  # forward-OOM-safe vmap width at 1024^3, any layout
+        BACK_SINGLE_DEVICE_CAP = 128   # unsharded back: 512-wide peaks ~20.7 GB at 1024^3, 128 -> 16.3
+        BACK_SHARDED_CAP = 512         # safe for a per-device view shard
         per_shard_views = -(-num_views // max(1, n_devices))   # ceil: views per device after view-sharding
-        cap = SINGLE_DEVICE_CAP if n_devices <= 1 else SHARDED_CAP
-        self.view_batch_size_for_vmap = max(1, min(per_shard_views, cap))
+        back_cap = BACK_SINGLE_DEVICE_CAP if n_devices <= 1 else BACK_SHARDED_CAP
+        self.fwd_view_batch_size_for_vmap = max(1, min(per_shard_views, FWD_CAP))
+        self.back_view_batch_size_for_vmap = max(1, min(per_shard_views, back_cap))
+
+    @property
+    def view_batch_size_for_vmap(self):
+        raise AttributeError(
+            "view_batch_size_for_vmap was SPLIT into fwd_view_batch_size_for_vmap and "
+            "back_view_batch_size_for_vmap (2026-07-06): forward and back projection need opposite "
+            "view-batch policies (see _set_view_batch_sizes).  Read/set those attributes instead.")
+
+    @view_batch_size_for_vmap.setter
+    def view_batch_size_for_vmap(self, value):
+        raise AttributeError(
+            "view_batch_size_for_vmap was SPLIT into fwd_view_batch_size_for_vmap and "
+            "back_view_batch_size_for_vmap (2026-07-06); setting the old name would silently do "
+            "nothing.  Set the per-op attribute(s) instead.")
 
     # ------------------------------------------------------------------
     # Sharding hooks (uniform default scheme; override per geometry only
@@ -1567,8 +1593,9 @@ class TomographyModel(ParameterHandler):
         # Shard at entry so every sinogram slice below is already on the model's single device.
         sinogram = self._shard_sinogram(sinogram)
 
-        # Batch the views and pixels to bound vmap memory.
-        transfer_view_batch_size = self.view_batch_size_for_vmap
+        # Batch the views and pixels to bound vmap memory.  This is a BACK-projection driver, so
+        # the view slices follow the back knob (they feed sparse_back_project below).
+        transfer_view_batch_size = self.back_view_batch_size_for_vmap
         transfer_pixel_batch_size = self.transfer_pixel_batch_size
         num_views = sinogram.shape[0]
         all_view_indices = jnp.arange(num_views)          # all views (transfer-batched below)

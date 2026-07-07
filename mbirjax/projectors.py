@@ -72,8 +72,15 @@ class Projectors:
         # the angles/translations with NO recompile; a view-COUNT change is a geometry
         # change and rebuilds the projectors through set_params as before.
         self.view_params_array = jnp.asarray(self.tomography_model.get_params(view_params_name))
-        pixel_batch_size = self.tomography_model.pixel_batch_size_for_vmap
-        view_batch_size = self.tomography_model.view_batch_size_for_vmap
+        # The batch-size knobs are NOT captured here: the public wrappers below read them off the
+        # model AT CALL TIME (late binding), for the same reason view_params_array is late-bound.
+        # _set_view_batch_sizes recomputes them on every device re-layout, and configure_devices()
+        # re-lays-out WITHOUT recreating the projectors -- a construction-time capture would freeze
+        # the value computed for the automatic (all-devices) layout and silently run it at every
+        # later pinned device count.  The knobs are STATIC jit arguments, so a changed value
+        # retraces; it can never compute a wrong result.  Forward and back use SEPARATE knobs
+        # (opposite memory policies; see _set_view_batch_sizes).
+        tm = self.tomography_model
 
         # The jitted drivers are MODULE-LEVEL functions (defined at the end of this file),
         # not per-instance closures, so their jit cache is SHARED across model instances: a
@@ -98,8 +105,8 @@ class Projectors:
                 self.view_params_array, voxel_values, pixel_indices,
                 fwd_kernel=forward_project_pixel_batch_to_one_view,
                 projector_params=projector_params,
-                pixel_batch_size=pixel_batch_size,
-                view_batch_size=view_batch_size,
+                pixel_batch_size=tm.pixel_batch_size_for_vmap,
+                view_batch_size=tm.fwd_view_batch_size_for_vmap,
                 owned_view_indices=owned_view_indices)
 
         def sparse_back_project_public(sinogram, pixel_indices, coeff_power=1, owned_view_indices=()):
@@ -107,8 +114,8 @@ class Projectors:
                 self.view_params_array, sinogram, pixel_indices,
                 back_kernel=back_project_one_view_to_pixel_batch,
                 projector_params=projector_params,
-                pixel_batch_size=pixel_batch_size,
-                view_batch_size=view_batch_size,
+                pixel_batch_size=tm.pixel_batch_size_for_vmap,
+                view_batch_size=tm.back_view_batch_size_for_vmap,
                 coeff_power=coeff_power,
                 owned_view_indices=owned_view_indices)
 
@@ -128,8 +135,8 @@ class Projectors:
                     self.view_params_array, sinogram, pixel_indices, g0, num_band_slices,
                     back_band_kernel=back_project_one_view_to_band,
                     projector_params=projector_params,
-                    pixel_batch_size=pixel_batch_size,
-                    view_batch_size=view_batch_size,
+                    pixel_batch_size=tm.pixel_batch_size_for_vmap,
+                    view_batch_size=tm.back_view_batch_size_for_vmap,
                     coeff_power=coeff_power,
                     owned_view_indices=owned_view_indices)
 
