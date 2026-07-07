@@ -253,6 +253,25 @@ pays +1.5 ms for −226 MB.  Remaining headroom: the kernel is still ~90% gather
 **Combined scoreboard at 1024³ n=1 (H100), investigation start → now:** forward 34.97 →
 8.19 s (4.3×), back 18.23 → 10.92 s (1.67×) — the pair is roughly balanced again.
 
+## Cone follow-ups: back attribution (no-op) and forward pixel batch (2026-07-08)
+
+**Cone back: measured, and deliberately NOT changed.**  `cone_back_kernel_ab.py` split the
+monolithic kernel: the stacked-gather horizontal fan wins in ISOLATION (0.57–0.59× vs the
+loop's 0.91–1.04×), but substituted into the FULL kernel it changes nothing (1.00×, values
+identical) — and the shares don't add (hfan 1.04 + vfan 0.46 ≈ 1.5 ≫ 1.0), i.e. XLA already
+overlaps the horizontal-fan gather with the vertical-fan band work.  Parallel back has no
+vertical fan to hide behind, which is why the same change won 1.7–3.6× there.  The cone
+policy documents this as a deliberate non-setting of `back_stacked_gather`.
+
+**Cone forward: size-conditional pixel batch.**  `cone_fwd_tile_sweep.py` (H100, model
+level): at 1024³-class, `fwd_pixel_batch = 4096` gives **1.51 / 1.53 / 1.13× at n=1/2/4**
+(29.2 → 19.4 s at n=1); larger batches add little beyond 4096 while memory balloons (16384 →
+30–38 GB).  At 512³-class it is neutral-to-worse (0.95–1.00×) while paying +41% memory.
+Policy: `ConeBeamModel` uses 4096 on GPU only when `num_slices >= 768` (between the measured
+sizes).  Memory at 1024³: +9.6/+29/+46% at n=1/2/4 (1.5–4.1 GB absolute) — same
+memory-gate-ack situation as parallel forward.  View-batch 256 spot checks: small extra gains
+only at large memory multiples; not adopted.
+
 ## Numerics note (ties to the known JAX rounding bug)
 
 Early full-grid runs showed two *value-equal* compiled programs (`fwd_asis` vs the stacked
