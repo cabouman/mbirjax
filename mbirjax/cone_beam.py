@@ -269,21 +269,38 @@ class ConeBeamModel(TomographyModel):
 
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel, recon_slice_offset=recon_slice_offset)
 
-    def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
-        """Cone tiling: on GPU the horizontal fan uses the SORTED channel reduction.
+    # Measured GPU forward pixel batch for LARGE problems (cone_fwd_tile_sweep.py, H100,
+    # 2026-07-08): at 1024^3-class, fwd_pixel_batch=4096 gives 1.51/1.53/1.13x at n=1/2/4
+    # (29.2 -> 19.4 s at n=1); larger batches add little beyond 4096 while memory balloons.
+    # At 512^3-class it is NEUTRAL-TO-WORSE (0.95-1.00x) while paying +41% memory, so the
+    # larger batch applies only above the slice threshold (between the two measured sizes).
+    # Memory at 1024^3: +9.6/+29/+46% at n=1/2/4 (1.5-4.1 GB absolute) -- a deliberate
+    # time-for-memory trade, flagged for the nightly memory gate.
+    _FWD_PIXEL_BATCH_GPU_LARGE = 4096
+    _FWD_PIXEL_BATCH_MIN_SLICES = 768   # 1024-class (1008 slices) qualifies; 512-class (448) does not
 
-        Its reduce columns are the FULL detector rows (cone forward is not row-banded: the
-        horizontal fan always emits every row of the view), so the sorted reduce's per-call
+    def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
+        """Cone tiling: on GPU the horizontal fan uses the SORTED channel reduction, and large
+        problems get the measured larger forward pixel batch (constants above).
+
+        The sorted reduce's columns are the FULL detector rows (cone forward is not
+        row-banded: the horizontal fan always emits every row of the view), so its per-call
         sort amortizes at any realistic detector; the guard below only trips on tiny ones.
         The crossover constant was measured on the parallel-beam kernel, which shares the
-        reduce exactly (same psf structure and pixel batch); H100 A/B on the cone harness
-        cells validates the end-to-end win.  The batch/band knobs are inherited from the base
-        policy -- cone's own band/pixel-batch sweep is a separate, future measurement.
+        reduce exactly.
+
+        Deliberately NOT set: ``back_stacked_gather``.  Measured (cone_back_kernel_ab.py,
+        H100): the stacked horizontal-fan gather wins in isolation (0.57-0.59x) but changes
+        the FULL cone back kernel not at all (1.00x) -- the gather latency already hides
+        behind the vertical-fan band work in composition.  Parallel back has no vertical fan,
+        which is why the same change won 1.7-3.6x there.
         """
         tiles = super()._select_tile_policy(on_gpu, num_views, num_slices, n_devices)
         if not on_gpu:
             return tiles
         num_det_rows = self.get_params('sinogram_shape')[1]
+        if num_slices >= self._FWD_PIXEL_BATCH_MIN_SLICES:
+            tiles = tiles._replace(fwd_pixel_batch=self._FWD_PIXEL_BATCH_GPU_LARGE)
         return tiles._replace(sort_by_channel=num_det_rows >= SORTED_CHANNEL_REDUCE_MIN_COLS)
 
     @staticmethod

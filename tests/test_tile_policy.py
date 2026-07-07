@@ -163,13 +163,19 @@ class TestTilePolicy(unittest.TestCase):
         angles = np.linspace(0, np.pi, 32, endpoint=False)
         model = mbirjax.ConeBeamModel((32, 96, 64), angles,
                                       source_detector_dist=4 * 64, source_iso_dist=2 * 64)
-        gpu = model._select_tile_policy(True, 32, model.get_params('recon_shape')[2], 1)
+        num_slices = model.get_params('recon_shape')[2]
+        gpu = model._select_tile_policy(True, 32, num_slices, 1)
         self.assertTrue(gpu.sort_by_channel)            # 96 detector rows >= the minimum
-        cpu = model._select_tile_policy(False, 32, model.get_params('recon_shape')[2], 1)
+        cpu = model._select_tile_policy(False, 32, num_slices, 1)
         self.assertFalse(cpu.sort_by_channel)
-        # Batch/band knobs inherited from the base policy (cone unmeasured so far).
+        # Band inherited; pixel batch: default below the large-problem threshold, the measured
+        # larger batch above it; back_stacked_gather deliberately NOT set (measured no-op for
+        # cone -- the gather hides behind the vertical fan).
         self.assertIsNone(gpu.fwd_slice_band)
         self.assertEqual(gpu.fwd_pixel_batch, model._PIXEL_BATCH_DEFAULT)
+        self.assertFalse(gpu.back_stacked_gather)
+        big = model._select_tile_policy(True, 32, model._FWD_PIXEL_BATCH_MIN_SLICES, 1)
+        self.assertEqual(big.fwd_pixel_batch, model._FWD_PIXEL_BATCH_GPU_LARGE)
 
     def test_projection_runs_with_replaced_tiles(self):
         # End-to-end smoke: an overridden tile policy still projects correctly (values equal
