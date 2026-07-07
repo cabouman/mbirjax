@@ -1,13 +1,12 @@
 ### This script is for reconstructing cone beam CT data from ORNL Zeiss scanner
 
 import os
-import sys, os
 import numpy as np
-import jax.numpy as jnp
 import pprint
 import mbirjax as mj
 import mbirjax.preprocess as mjp
 import pickle
+import jax.numpy as jnp
 
 pp = pprint.PrettyPrinter(indent=4)
 
@@ -110,7 +109,11 @@ def main():
     # mj.slice_viewer(jnp.swapaxes(direct_recon, 0, 2), slice_axis=1)
     # Perform MBIR reconstruction
     print("\n********** Perform MBIR reconstruction **************")
-    mbir_recon, recon_dict = ct_model.recon(sinogram, init_recon=direct_recon, weights=weights, max_iterations=4)
+    import time
+    time0 = time.time()
+    mbir_recon, recon_dict = ct_model.recon(sinogram, init_recon=direct_recon, weights=weights, max_iterations=15)
+    print("Elapsed time: ", time.time()-time0)
+    mj.get_memory_stats()
 
     # # Save recon to hdf5
     # print("\n*********** save mbir and fdk recon in h5 format *************")
