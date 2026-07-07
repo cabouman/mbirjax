@@ -2650,7 +2650,7 @@ class TomographyModel(ParameterHandler):
             log_oom_guidance(self.logger, on_gpu=on_gpu)
         raise e
 
-    def recon(self, sinogram, weights=None, init_recon=None, max_iterations=25, stop_threshold_change_pct=0.2, first_iteration=0,
+    def recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2, first_iteration=0,
               compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True, output_sharded=False):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
