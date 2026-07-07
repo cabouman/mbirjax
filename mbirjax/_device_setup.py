@@ -205,5 +205,27 @@ def default_devices():
     return list(gpu_devices()) or list(cpu_devices())
 
 
+def _disable_tf32_matmul_default() -> None:
+    """Default float32 matmuls to FULL float32 precision (opt out of TF32).
+
+    On Ampere/Hopper GPUs, XLA lowers float32 matmul/tensordot (dot_general) to TF32 tensor
+    cores BY DEFAULT: the multiply INPUTS are rounded to a 10-bit mantissa (~1e-3 relative,
+    vs float32's ~1e-7; accumulation stays float32).  mbirjax is a quantitative library whose
+    correctness gates sit at ~1e-5 with a measured ~5e-6 cross-platform floor, so a silent
+    TF32 dot is a DIFFERENT OPERATOR, not a faster implementation -- and it would make GPU
+    and CPU results diverge at the 1e-3 level.  The projector kernels contain no dots, but
+    denoising.py (step-size tensordots), hsnt.py (subspace rehydration matmul), and vcls.py
+    (Gram matrices) do, and any future matmul would silently inherit TF32.
+
+    setdefault, per this module's convention: an environment value set by the user or job
+    script wins, and code that deliberately wants TF32 can still use a local
+    ``jax.default_matmul_precision(...)`` context, which overrides the global default.
+    JAX reads this env var at import, so it must be set before JAX initialises (this module
+    is imported first, and _setup_devices already warns when JAX beat us here).
+    """
+    os.environ.setdefault("JAX_DEFAULT_MATMUL_PRECISION", "float32")
+
+
 _quiet_benign_xla_logs()
+_disable_tf32_matmul_default()
 _setup_devices()
