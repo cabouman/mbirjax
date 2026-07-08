@@ -191,7 +191,7 @@ comparisons are unaffected (the flash is schedule-independent).
 ## Phases
 
 - **P0** — cache-builder script: one cached bundle per dataset.  (As of 2026-07-06 the whole
-  pipeline lives in `mbirjax_metrics/experiments/partition_sequence/`, driven by one
+  pipeline lives in `mbirjax_metrics/plans/experiments/partition_sequence/`, driven by one
   `config.yaml`; caches are on the shared depot dir
   `/depot/bouman/data/mbirjax_metrics/partition_sequence/cache/`.  See that folder's README.)
 - **P1** — references + trajectory harness (chunk-vs-rerun decision measured here).

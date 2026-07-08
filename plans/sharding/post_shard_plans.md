@@ -62,7 +62,7 @@ the 'flash' associated with objects partially outside the FoV.
 - ~~Simplify the sparse-projector batching machinery~~ — **CLOSED 2026-07-04 with the code
   UNCHANGED**: the full investigation (census, balanced-batching v2, windowed-read patch, band
   pixel-width tuning — each measured and retired; record in
-  `plans/experiments/projector_batching/batching_refactor_design.md`) established the scan/map/vmap nest
+  `plans/projector_batching/batching_refactor_design.md`) established the scan/map/vmap nest
   is load-bearing piece-by-piece and the batch constants are effectively optimal.  Repeated hard
   lesson: driver-level wins (band −10% at width 2016 on H100; 1.4–1.5× on CPU) did NOT survive the
   full recon path on either platform — micro benchmarks of shape-dependent kernel effects don't

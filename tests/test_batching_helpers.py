@@ -2,7 +2,7 @@
 
 sum_function_in_batches reads its full batches as dynamic_slice windows (the input-reshape
 form measurably copied the batched input on GPU; see
-plans/experiments/projector_batching/projector_batching_characterization.md).  These tests pin the
+plans/projector_batching/projector_batching_characterization.md).  These tests pin the
 helpers' CONTRACT against the un-batched ground truth -- the plain sum / the plain map --
 across every batching branch: n < B (single call), n == B, B | n (no remainder), ragged,
 and batch_size=None.  Tolerances are relative: batching regroups the summation, so exact

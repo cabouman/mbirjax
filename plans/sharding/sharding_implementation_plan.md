@@ -15,7 +15,7 @@ multi-device sharding, built fresh on `prerelease`.*
 **Companion docs**
 - `plans/sharding/sharding_status.md` — short living status (what
   phase we're in, what's blocked).
-- `plans/experiments/sharding/parallel_performance/fbp_parallel_options.md` —
+- `plans/sharding/parallel_performance/fbp_parallel_options.md` —
   shard_map-vs-threading parallelism comparison (migrated from research
   `.claude/parallel_options.md`); background for Phase F1.
 - Research-branch prior art: `…/Research/mbirjax/.claude/status.md` (slice-axis
@@ -59,7 +59,7 @@ multi-device sharding, built fresh on `prerelease`.*
   **silently zeroed** (non-default shard → zeros, no error).  Host-sourced
   (`device_put(np.asarray(x), …)`) and pre-placed-shard assembly
   (`make_array_from_single_device_arrays`) are correct.
-- Probe script: `experiments/sharding/parallel_performance/device_put_check.py`
+- Probe script: `plans/experiments/sharding/parallel_performance/device_put_check.py`
   (migrate from cluster scratch — see Migration).  Implication baked into §A.1.
 
 ---
@@ -159,11 +159,11 @@ projection and VCD.
 |---|---|---|
 | `tests/conftest.py` (CPU detect, `preferred_devices`) | migrate ~as-is (verify) | design-agnostic; needed before any test runs |
 | `mbirjax/_device_setup.py` (sets `XLA_FLAGS` / virtual CPU devices before JAX init) | migrate ~as-is (verify) | wire as **first** import in `mbirjax/__init__.py` |
-| `device_put_check.py` (cluster scratch `~/PycharmProjects/`) | migrate into `experiments/sharding/parallel_performance/` | version-control the probe; it validates §A.1 |
+| `device_put_check.py` (cluster scratch `~/PycharmProjects/`) | migrate into `plans/experiments/sharding/parallel_performance/` | version-control the probe; it validates §A.1 |
 | `tests/test_sharding_step0–3.py` | migrate as **reference only** | test old API/axes; harvest assertions into new phase tests, don't run wholesale |
-| `experiments/sharding/parallel_performance/*` (incl. `fbp_parallel_options.md`) | already migrated | fbp comparison still valid; forward/back perf numbers must be **re-measured** under view-sharding |
+| `plans/experiments/sharding/parallel_performance/*` (incl. `fbp_parallel_options.md`) | already migrated | fbp comparison still valid; forward/back perf numbers must be **re-measured** under view-sharding |
 | heterogeneous CPU-recon/GPU-sino design (`main_device`/`sinogram_device`) | redesign, not copy | see Open Question O1 |
-| `jax_rounding_bug` docs (`experiments/bugs_and_artifacts/`) | **leave on research branch** | beta inherits the bug knowingly; nothing to port |
+| `jax_rounding_bug` docs (`plans/experiments/bugs_and_artifacts/`) | **leave on research branch** | beta inherits the bug knowingly; nothing to port |
 | `.claude/status.md` | do **not** copy verbatim | research-specific; beta uses `sharding_status.md` |
 
 "Migrate ~as-is (verify)" = copy, then check against prerelease — prerelease may
@@ -181,7 +181,7 @@ have diverged in ways that need small adjustments; do not copy blindly.
       Linux affinity → fallback, capped at 8 (see `_device_setup.py`).
 - [x] Migrate `tests/conftest.py` (CPU detection + `preferred_devices(n)`).
 - [x] Recreate `device_put_check.py` into
-      `experiments/sharding/parallel_performance/` (cluster scratch copy was
+      `plans/experiments/sharding/parallel_performance/` (cluster scratch copy was
       gone; recreated with H100/L40S verified-results header).
 - [x] Sanity: `import mbirjax` spins up 8 virtual CPU devices on M3 Max;
       `jax.devices()` shows them; `MBIRJAX_NUM_CPU_DEVICES=3` override honored.
@@ -698,7 +698,7 @@ table above), so nothing is lost when it is deleted:
 - [ ] `device_put_check.py` (Phase 0).
 - [x] `fbp_parallel_options.md` (migrated to `parallel_performance/`).
 - [ ] Harvest assertions from `test_sharding_step0–3.py`.
-- [ ] Decide whether any of `experiments/bugs_and_artifacts/` (jax rounding bug
+- [ ] Decide whether any of `plans/experiments/bugs_and_artifacts/` (jax rounding bug
       docs, center-slice-noise notes) should live on a longer-lived branch
       rather than only on `greg/parallel_tests`.
 - [ ] (add items as discovered)

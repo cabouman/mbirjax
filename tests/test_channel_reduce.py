@@ -1,7 +1,7 @@
 """Ground-truth tests for channel_scatter_reduce (mbirjax/projectors.py).
 
 The forward kernels' channel scatter is platform-split: scatter-add (CPU) vs sorted
-segment-sum (GPU) -- see plans/experiments/projector_kernels/fwd_back_findings.md.  These tests pin
+segment-sum (GPU) -- see plans/projector_kernels/fwd_back_findings.md.  These tests pin
 BOTH implementations against a plain numpy reference, on both sides of the contract:
 
   * duplicate indices (many pixels binning into one channel -- the production regime),

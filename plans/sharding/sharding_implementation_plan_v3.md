@@ -472,7 +472,7 @@ it asks ("do I have a placement?" vs "do I have ≥2 physical devices?" = `len(s
   clique" timeout was a downstream symptom, not the cause; see the DIAGNOSED bullet below).
   A manual cone 2048³ recon on 8 H100s hung at the **first VCD subset update** (after FDK init +
   Hessian) with `Acquire clique … Expected 8 threads … not all arrived`; parallel beam at the same
-  config worked.  Repro tooling (REMOVED 2026-06-28 once the cone OOM was resolved): `experiments/sharding/cone_deadlock_repro/` (cone-vs-parallel ×
+  config worked.  Repro tooling (REMOVED 2026-06-28 once the cone OOM was resolved): `plans/experiments/sharding/cone_deadlock_repro/` (cone-vs-parallel ×
   size × device-count sweep, each config `timeout`-isolated, HLO dumped, build-ID printed).
   - **Mechanism:** no explicit collectives in mbirjax — projection is collective-free (thread pool
     + `make_array_from_single_device_arrays`).  The only multi-device collectives are XLA-GSPMD

@@ -12,7 +12,7 @@ worktree); `lib_root`/`golden_dir`/`REG_GOLDEN_DIR`/`REG_SMOKE` engine knobs; no
 `TOKEN_FILE` for the cluster; `TRACKED_BRANCHES=("greg/conebeam_sharding")` only (main/prerelease
 deferred — unported → degenerate multi-device sweep).  The engine, fingerprint, `vcd_nonconst`, record
 book, diff/gate, golden/main-baseline capture, and manual launcher are in
-`experiments/sharding/scaling_tests/` (usage: that dir's `README.md`).  This doc is the design
+`plans/experiments/sharding/scaling_tests/` (usage: that dir's `README.md`).  This doc is the design
 rationale; where as-built differs it is flagged inline (e.g. §10 gate-model, §6 no-auto-skip).
 **Still NOT built:** GPU `nightly_regression.slurm` + `scrontab` (§14 P6); `enable_nightly.sh` schedule
 not yet activated; deferred `compare_to_baseline.py` (.npy deep-diff, §14 P7) + visual surface (§14).
@@ -66,14 +66,14 @@ Three independent regression surfaces, each with its own gate:
           git worktree add <tmp> $BRANCH  # list two branches → two-track nightly
      3. install INTO the worktree:  weekly → clean_install_all.sh ; else pip install -e . (fast)
      4. run_tests.sh → capture summary + failure list → tests_<date>.yaml
-     5. python <worktree>/experiments/sharding/scaling_tests/performance_tracking.py \
+     5. python <worktree>/plans/experiments/sharding/scaling_tests/performance_tracking.py \
             --out-dir <STABLE> --date TODAY --tests-result tests_<date>.yaml
      6. exit code → notify (cron MAILTO / slurm --mail-user)
      7. git worktree remove <tmp>
                                   │ invokes
                                   ▼
  LAYER 2 — the measurement ENGINE  (stays in scaling_tests/, beside scaling_common.py)
-   experiments/sharding/scaling_tests/performance_tracking.py
+   plans/experiments/sharding/scaling_tests/performance_tracking.py
      • run(config): sweep GEOMETRY × OP × size × n_dev over the EXISTING scaling_common
        harness (isolated subprocess per (geom,op,size) by default; --inline for a
        debuggable single process)
@@ -83,7 +83,7 @@ Three independent regression surfaces, each with its own gate:
                                   ▲ imports
                                   │
  LAYER 3 — manual launcher (current working tree)
-   experiments/sharding/scaling_tests/run_performance_local.py
+   plans/experiments/sharding/scaling_tests/run_performance_local.py
      • params at the TOP (subset of geometries/ops/sizes/counts; INLINE; RUN_TAG)
      • forces out-dir = results/manual/<tag>/ and compare=off (or a chosen baseline)
        so it NEVER overwrites or gates against the nightly time series
@@ -100,7 +100,7 @@ env starts**; python owns only measurement + diff/gate.
 (`nightly_regression.sh`, `nightly_regression.slurm`) live in `dev_scripts/regression/`,
 beside the `clean_install_all.sh` / `run_tests.sh` they call.  The python measurement code
 (`performance_tracking.py`, `run_performance_local.py`, the golden-capture mode) stays in
-`experiments/sharding/scaling_tests/` because it is tightly coupled to `scaling_common.py`:
+`plans/experiments/sharding/scaling_tests/` because it is tightly coupled to `scaling_common.py`:
 both `import scaling_common` resolution (the script's own dir on `sys.path[0]`) and the
 `beta_root()` path derivation (`scaling_common.py:222` — three dirs up from scaling_tests/)
 depend on living there.  Moving the python into dev_scripts/ would force extra `sys.path`
@@ -618,7 +618,7 @@ survives login-node rotation.  Helpers mirror the Mac:
      (so the golden's git history is the audit trail of every deliberate baseline change).
 3. **Wrapper home → `dev_scripts/regression/`** (operational subfolder, beside the
    `clean_install_all.sh` / `run_tests.sh` it calls).  **The python engine / manual launcher /
-   golden-capture stay in `experiments/sharding/scaling_tests/`** — they are tightly coupled to
+   golden-capture stay in `plans/experiments/sharding/scaling_tests/`** — they are tightly coupled to
    `scaling_common.py` (both `import scaling_common` and the `beta_root()` path derivation
    depend on living in scaling_tests/; see §1 "File-location split").
 4. **Output storage → the dedicated repo `mbirjax_metrics`** (https://github.com/gbuzzard/mbirjax_metrics,

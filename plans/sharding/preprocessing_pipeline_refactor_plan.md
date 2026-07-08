@@ -97,7 +97,7 @@ Three tiers, cheapest first:
 2. **End-to-end nsi golden vs the real dataset (EPHEMERAL).** Source = the Lilly Autoinjector dataset
    (`/depot/bouman/data/Lilly/Autoinjector_HighRes_Horizontal/` on the cluster; Samba-mounted at
    `/Volumes/bouman/...` locally). Capture the current `(sino, cone_beam_params, optional_params)` once
-   (`experiments/sharding/collect_nsi_golden.py`, `ds4_sv20`) and verify the refactor against it with
+   (`plans/experiments/sharding/collect_nsi_golden.py`, `ds4_sv20`) and verify the refactor against it with
    `--ref`. **The golden is NOT kept/committed** — once the new implementation is verified, the new
    implementation is the gold standard.
 3. **Multi-GPU speedup (Phase 3).** Full Lilly dataset on the cluster; confirm near-linear scaling
@@ -198,7 +198,7 @@ the (already-validated) `scan_to_sino` swap; siblings now also shard the transmi
 Verified by an **ephemeral real-format before/after** (loaders run locally via olefile + Samba):
 zeiss foam512 `.txrm` (ds1/sv1) **PASS, max abs diff 0.0**; zeiss_tct purdue BGA `.xrm` **PASS, max abs
 diff 0.0** (sino + params + metadata/weights all match).  Baselines (`~/Documents/tmp/*.npz`) discarded
-after; collect/verify via `experiments/sharding/collect_sibling_baseline.py`.  Coverage note: foam is
+after; collect/verify via `plans/experiments/sharding/collect_sibling_baseline.py`.  Coverage note: foam is
 ds1, so the zeiss *downsample* branch is covered transitively by `scan_to_sino`'s validation (synthetic
 ds2 byte-identical, nsi ds4 exact), not a real-data ds>1 zeiss run.
 - **pymbir: OPTIONAL, not done.** If done, wire only the correction chain (`[bh, rotation]`) on the

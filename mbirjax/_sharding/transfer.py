@@ -18,7 +18,7 @@ is_dev2dev_safe() — we probe the actual hardware rather than maintaining a
 hard-coded list of good/bad GPU models, so the code auto-adapts to new hardware
 and to the eventual upstream fix.
 
-See experiments/sharding/parallel_performance/device_put_check.py for the
+See plans/experiments/sharding/parallel_performance/device_put_check.py for the
 standalone probe that established this behavior on H100 vs L40S.
 """
 

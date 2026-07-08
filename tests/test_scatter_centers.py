@@ -3,7 +3,7 @@ and the wrapper-level machinery around it).
 
 The projector wrappers make the horizontal fans' integer channel centers CONCRETE inputs to the projector
 programs, removing the round-inside-vmap/map/scatter precondition of the known XLA rounding
-bug (see plans/experiments/bugs_and_artifacts/jax rounding bug/phase_d_design.md).  These
+bug (see plans/bugs_and_artifacts/jax rounding bug/phase_d_design.md).  These
 tests pin: the centers computation against a direct round of the geometry coordinate (both
 layouts), the chunked wrapper path against the single-call path (the hybrid must only choose
 WHERE the view loop lives, never values), and the concreteness guard (the wrappers must

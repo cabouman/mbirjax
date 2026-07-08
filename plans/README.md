@@ -1,15 +1,18 @@
-# plans/ — internal design docs, plans, and findings
+# plans/ — internal design docs, plans, findings, and their supporting code
 
-This directory collects the project's internal (developer-facing) documentation: architecture
+This directory collects the project's internal (developer-facing) documentation — architecture
 decisions, program plans and status, and the findings/design documents produced by
-experiments.  User-facing documentation lives in `docs/` (readthedocs); experiment CODE and
-data stay in `experiments/` — the rule for findings docs is:
+experiments — together with the scripts that produced the numbers.  The layout rule:
 
-> **the documentation for `experiments/X` lives at `plans/experiments/X`.**
+> **documentation at `plans/<area>/`; that area's supporting scripts at
+> `plans/experiments/<area>/`.**
+
+(User-facing documentation lives in `docs/` (readthedocs); `experiments/` at the repo top
+level holds research areas unrelated to these plans.)
 
 Docs here are records: they capture the reasoning and measurements behind decisions at the
-time they were made, and are not rewritten as the code evolves (code comments carry the
-current state; these carry the why and the numbers).
+time they were made, and are not rewritten as the code evolves — code comments carry the
+current state; these carry the why and the numbers.
 
 ## Architecture and decision records
 
@@ -26,30 +29,37 @@ current state; these carry the why and the numbers).
   is the final plan of record (v1/v2 are its history); the remaining files are per-workstream
   designs (MAR refactor, preprocessing pipeline, correctness gating, performance tracking,
   increment designs).  `sharding/_file_index.md` has one line per file.
+  `sharding/parallel_performance/` holds the parallelization option studies (fbp filter
+  strategies, forward-vs-back discussion).
 - `partition_sequence_plan.md` — the VCD partition-sequence convergence study (ACTIVE as of
-  2026-07; its experiment code will live in `experiments/partition_sequence/`).
+  2026-07; its experiment code will live in `plans/experiments/partition_sequence/`).
 
-## Findings from experiments (companion code stays in `experiments/`)
+## Findings from experiments
 
-- `experiments/projector_kernels/fwd_back_findings.md` — THE record of the 2026-07
-  projector-kernel campaign: forward/back attribution, the sorted channel reduction and its
-  guard constants, the TilePolicy, per-geometry rollouts (including translation's measured
-  collision-cliff non-adoption), the DRY fan helpers, and the concrete-scatter-centers
-  rounding-bug fix with its verification chain.  Benches in
-  `experiments/projector_kernels/`.
-- `experiments/projector_batching/` — the earlier projector-batching characterization and
-  the retired v2 batching refactor (a worked example of driver-level wins failing to compose
-  end-to-end).  Probes in `experiments/projector_batching/`.
-- `experiments/sharding/parallel_performance/` — parallelization option studies (fbp filter
-  strategies, forward-vs-back discussion).  Scripts in
-  `experiments/sharding/parallel_performance/`.
-- `experiments/bugs_and_artifacts/jax rounding bug/` — the XLA round-in-jit miscompilation:
+- `projector_kernels/fwd_back_findings.md` — THE record of the 2026-07 projector-kernel
+  campaign: forward/back attribution, the sorted channel reduction and its guard constants,
+  the TilePolicy, per-geometry rollouts (including translation's measured collision-cliff
+  non-adoption), the DRY fan helpers, and the concrete-scatter-centers rounding-bug fix with
+  its verification chain.
+- `projector_batching/` — the earlier projector-batching characterization and the retired v2
+  batching refactor (a worked example of driver-level wins failing to compose end-to-end).
+- `bugs_and_artifacts/jax rounding bug/` — the XLA round-in-jit miscompilation:
   `jax_rounding_bug.md` (the bug record; the bug still exists in JAX) and `phase_d_design.md`
   (the concrete-input fix design + as-built notes; the horizontal fans are fixed, the
-  vertical fans' per-slice rounds are documented accepted risk).  Repros in
-  `experiments/bugs_and_artifacts/jax rounding bug/`.
-- `experiments/bugs_and_artifacts/center slice noise/` — the center-slice noise
-  investigation and preconditioner notes.
+  vertical fans' per-slice rounds are documented accepted risk).
+- `bugs_and_artifacts/center slice noise/` — the center-slice noise investigation and
+  preconditioner notes.
+
+## Supporting code (`plans/experiments/`)
+
+- `experiments/projector_kernels/` — the kernel-campaign benches (A/B microbenches, tile and
+  crossover sweeps).
+- `experiments/projector_batching/` — the batching characterization probes.
+- `experiments/bugs_and_artifacts/jax rounding bug/` — the rounding-bug repros
+  (`lax_map_scatter_bug/` has the minimized T1–T15j sweep that anchors the fix);
+  `center slice noise/` scripts alongside.
+- `experiments/sharding/` — the sharding program's scripts, feature probes
+  (`features/`), and the scaling-test collateral.
 
 ## Related working documents (not in this directory)
 

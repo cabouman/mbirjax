@@ -84,7 +84,7 @@ class ParallelBeamModel(TomographyModel):
             owned_view_indices=owned_view_indices, coeff_power=coeff_power)
 
     # Measured GPU forward tiling (band x pixel-batch grid: fwd_band_pixel_sweep.py; results
-    # digest in plans/experiments/projector_kernels/fwd_back_findings.md).  Model-level forward
+    # digest in plans/projector_kernels/fwd_back_findings.md).  Model-level forward
     # speedups of 2-3.6x over the inherited defaults.  CPU measured the OPPOSITE direction
     # on both knobs, so these apply to GPU layouts only; the base (CPU) policy is untouched.
     _FWD_SLICE_BAND_GPU = 256    # the measured knee; whole-shard bands are WORSE at scale
