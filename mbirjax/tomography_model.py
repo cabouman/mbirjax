@@ -26,7 +26,7 @@ import jax.numpy as jnp
 import mbirjax as mj
 from mbirjax import ParameterHandler
 from mbirjax._utils import is_oom, log_oom_guidance
-from mbirjax._device_setup import gpu_devices, cpu_devices, default_devices
+from mbirjax._device_setup import gpu_devices, cpu_devices, default_devices, get_device_platform
 # Internal sharding primitives (see _sharding), accessed with the `mjs` prefix.
 # Importing the SUBMODULE directly (not aliasing the top-level `mbirjax` and
 # reaching submodules as attributes) is safe even mid-import of mbirjax: it
@@ -308,8 +308,12 @@ class TomographyModel(ParameterHandler):
 
     @staticmethod
     def _platform_label(device):
-        """Short uppercase platform name for a jax device ('GPU' / 'CPU' / 'TPU')."""
-        return {'cpu': 'CPU', 'tpu': 'TPU'}.get(device.platform, 'GPU')
+        """Short uppercase platform name for a jax device ('GPU' / 'CPU' / 'TPU').
+
+        Thin delegator to :func:`mbirjax.get_device_platform` (the single source of truth);
+        kept for the existing internal/test call sites.
+        """
+        return get_device_platform(device)
 
     def _device_report(self):
         """A 'N x PLATFORM (sharded)' summary of the recon devices, for the recon log.
@@ -400,10 +404,9 @@ class TomographyModel(ParameterHandler):
         self.tiles = self._select_tile_policy(on_gpu, num_views, num_slices, len(devices))
 
     # Base tiling constants (geometry-independent defaults; geometry classes change measured
-    # values in their _select_tile_policy overrides, not by shadowing these).  Evidence: the
-    # 2026-07-05/06 view-batch work, experiments/sharding + the nightly memory cells at 1024^3.
-    _FWD_VIEW_CAP = 128                # forward-OOM-safe vmap width at 1024^3, any layout
-    _BACK_VIEW_CAP_SINGLE = 128        # unsharded back: 512-wide peaks ~20.7 GB at 1024^3, 128 -> 16.3
+    # values in their _select_tile_policy overrides, not by shadowing these).
+    _FWD_VIEW_CAP = 128                # forward vmap width that stays OOM-safe at the largest sizes
+    _BACK_VIEW_CAP_SINGLE = 128        # unsharded back: wider vmaps raise peak memory ~25%
     _BACK_VIEW_CAP_SHARDED = 512       # safe for a per-device view shard
     _PIXEL_BATCH_DEFAULT = 2048        # generic pixel tile (both ops); the long-standing default
 
@@ -415,12 +418,12 @@ class TomographyModel(ParameterHandler):
         change ONLY what they have measured (e.g. ParallelBeamModel's GPU forward tiling); the
         base policy preserves the long-standing defaults:
 
-          * VIEW batches -- forward and back want OPPOSITE policies.  Forward's vmap transient
-            scales with the batch width PER DEVICE (view-sharding does not shrink it), so it
-            keeps a flat OOM-safe width clipped to the shard.  Back single-vmaps its whole
-            per-device view shard (a smaller batch drops into the accumulating-SCAN path, whose
-            live carry inflates the peak), capped per the constants above.  Measured H100 peaks
-            at 1024^3 (GB, n=1/2/4): forward 16.3 / 10.6 / 9.0, back 16.3 / 6.0 / 3.2.
+          * VIEW batches -- forward and back want OPPOSITE policies (measured).  Forward's
+            vmap transient scales with the batch width PER DEVICE (view-sharding does not
+            shrink it), so it keeps a flat OOM-safe width clipped to the shard.  Back
+            single-vmaps its whole per-device view shard (a smaller batch drops into the
+            accumulating-SCAN path, whose live carry inflates the peak), capped per the
+            constants above.
           * PIXEL batches -- the generic default (_PIXEL_BATCH_DEFAULT) for both ops.
           * SLICE bands -- None = the memory-driven ``_slice_band_length`` formula.  A number
             here overrides it (clipped to the slice shard); the per-instance

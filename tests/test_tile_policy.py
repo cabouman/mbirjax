@@ -30,9 +30,13 @@ def centers_for(model_cls, idx, view_params, pp):
 class TestTilePolicy(unittest.TestCase):
 
     def test_base_policy_on_cpu(self):
-        # On CPU (these tests run on CPU) parallel beam inherits the base policy untouched.
+        # On CPU, parallel beam inherits the base policy untouched.  Skip on a GPU, where
+        # model.tiles carries the parallel-beam GPU overrides instead of the base defaults;
+        # that override path is covered hardware-independently by test_parallel_gpu_override.
         model = make_model()
         model.configure_devices(1)
+        if model._platform_label(model.shard_devices[0]) != 'CPU':
+            self.skipTest('base-policy defaults describe CPU selection; GPU path tested separately')
         t = model.tiles
         self.assertEqual(t.fwd_view_batch, 64)          # min(views, cap 128)
         self.assertEqual(t.back_view_batch, 64)

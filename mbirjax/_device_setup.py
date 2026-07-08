@@ -205,6 +205,25 @@ def default_devices():
     return list(gpu_devices()) or list(cpu_devices())
 
 
+def get_device_platform(device):
+    """Uppercase platform name for a JAX device: ``'CPU'``, ``'GPU'``, or ``'TPU'``.
+
+    Reads ``device.platform`` (JAX reports ``'gpu'`` for both CUDA and ROCm), so this is the
+    single place mbirjax turns a device into a human platform name -- prefer it over ad-hoc
+    ``device.platform == 'gpu'`` compares or ``device.device_kind`` sniffing.
+    """
+    return {'cpu': 'CPU', 'tpu': 'TPU'}.get(device.platform, 'GPU')
+
+
+def get_platform():
+    """Platform the default run will use: ``get_device_platform(default_devices()[0])``.
+
+    ``'GPU'`` when a GPU backend is present, else ``'CPU'``.  The zero-argument counterpart
+    to :func:`get_device_platform` for "what platform am I on right now."
+    """
+    return get_device_platform(default_devices()[0])
+
+
 def _disable_tf32_matmul_default() -> None:
     """Default float32 matmuls to FULL float32 precision (opt out of TF32).
 
