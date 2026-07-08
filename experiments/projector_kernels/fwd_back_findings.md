@@ -272,6 +272,60 @@ sizes).  Memory at 1024³: +9.6/+29/+46% at n=1/2/4 (1.5–4.1 GB absolute) — 
 memory-gate-ack situation as parallel forward.  View-batch 256 spot checks: small extra gains
 only at large memory multiples; not adopted.
 
+## Multiaxis + translation rollout results (2026-07-08, branch `greg/kernel_investigation`)
+
+Both geometries' forward horizontal fans are the same channel scatter as parallel/cone, and
+both received the same single-flag branch (`sort_by_channel` → stacked taps +
+`channel_scatter_reduce`; else the original loop verbatim).  CPU compiled programs
+bit-identical to HEAD (metadata-stripped HLO diff, model level, fwd + back, both
+geometries).  Outcome: **multiaxis enables the sorted reduce (guarded); translation keeps
+the scatter path** — the investigation below found a production-shape cliff that the
+harness's small cells could not see.
+
+**Multiaxis: H100 harness-cell A/B (isolated cells, old → new; memory flat ≤1%):**
+
+| multiaxis forward | old ms | new ms | speedup |
+|---|---|---|---|
+| 129x113x97 n=1 | 8.4 | 7.0 | 1.20× |
+| 256x224x192 n=1 | 122.4 | 87.1 | 1.41× |
+| 512x448x384 n=1 / n=2 / n=4 | 2301 / 1232 / 850 | 1738 / 930 / 638 | 1.32 / 1.32 / 1.33× |
+| 513x449x385 n=1 | 2402 | 1953 | 1.23× |
+
+Multiaxis back guard: 593 → 596 ms (flat, memory identical).
+
+**Back composition (`mt_back_kernel_ab.py`): cone's lesson replicates in BOTH geometries.**
+The stacked horizontal-fan gather wins in isolation (multiaxis 0.64–0.65×, translation
+0.78–0.83×, measured at psf_radius 1 AND 3) but substituted into the FULL kernels it changes
+nothing (1.00–1.02×, values identical) — the gather hides behind the vertical-fan band work.
+`back_stacked_gather` therefore stays deliberately unset for both (documented in the
+policies).  Three geometries now confirm the rule: measure compositions, not pieces.
+
+**The translation investigation — the channel-collision cliff.**  The harness cells were
+mixed (15x256 won 1.20×; 15x257 a REAL, repeat-verified 0.86×; 15x65 neutral), and the
+hypothesis chain ran: ragged-pixel-batch → REFUTED (an evenly-dividing pixel batch changed
+nothing, `pixel_count_crossover_ab.py` Part 2); detector-size sweep at square detectors
+256..1025 → sorted wins 0.65–0.90× at powers of 2, ties at odd sizes; then the decisive
+probe at the REAL TCT shapes (`demo_TCT_simulation`: 1936×3064; the phantom's 1883 rows):
+**sorted is 4.5–6.5× SLOWER**.  The controlling variable is the mean channel-collision
+count `psf_width · num_pixels / num_det_channels`: the scatter's cost IS duplicate-channel
+collisions, so at translation's few-views/wide-detector shape (~2 hits per channel) there
+is nothing for the sort to win back, and XLA's near-empty segment-sum lowering is a cliff
+(all parallel/cone/multiaxis wins sit at ratio ≥ 6).  Policy: translation's
+`_select_tile_policy` deliberately does not set `sort_by_channel` (the branch remains, for
+experiments); the 0.4 ms cell win at 15x256 is forfeited in favor of the production shapes.
+
+**Two new shared-reduce guard constants** (projectors.py), from the same investigation:
+
+- `SORTED_CHANNEL_REDUCE_MAX_PSF_RADIUS = 2` — the sorted reduce also inverts at wide psf
+  (`translation_fwd_psf_ab.py`, 256-column reduce, full forward kernel: 1.27× at psf_width
+  3, 1.02× at 5, **0.85× at 7**; compiled temps flat, so compute, not memory).  Multiaxis'
+  shared radius can widen via elevation, so its policy gates on this.
+- `SORTED_CHANNEL_REDUCE_MIN_COLLISION_RATIO = 4` — splits the measured bracket (ratio 2
+  loses 4.5–6.5×, ratio 6 wins 0.73–0.90×).  Multiaxis' policy gates on it (protects the
+  unmeasured wide-detector regime).  Follow-up: parallel/cone policies predate this
+  constant (their measured cells all sit at ratio ≥ 6); add the guard there if very wide
+  detectors with modest pixel batches become a real configuration.
+
 ## Numerics note (ties to the known JAX rounding bug)
 
 Early full-grid runs showed two *value-equal* compiled programs (`fwd_asis` vs the stacked

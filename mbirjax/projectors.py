@@ -52,6 +52,25 @@ ProjectorParams = namedtuple('ProjectorParams', ['sinogram_shape', 'recon_shape'
 # measured B=63 win sorted.  The 25..62 interior is unmeasured end-to-end; revisit if forward
 # band sizing changes (which would also move most bands to B >= 96, deep in sorted territory).
 SORTED_CHANNEL_REDUCE_MIN_COLS = 48
+# SORTED_CHANNEL_REDUCE_MAX_PSF_RADIUS: the sorted reduce also loses at WIDE psf.  Both the
+# sort's element count (psf_width * num_pixels) and the scatter's tap count scale with the
+# width, but measured end-to-end the sort's share grows faster (translation_fwd_psf_ab.py,
+# H100, 256-column reduce, full forward kernel): psf_width 3 -> 1.27x, 5 -> 1.02x,
+# 7 -> 0.85x (a loss), with compiled temps flat.  Radius 2 (width 5, the measured-neutral
+# point) is the inclusive cap; geometries whose psf can widen beyond it (translation at
+# large cone angle, multiaxis at large elevation) gate their policy on this.
+SORTED_CHANNEL_REDUCE_MAX_PSF_RADIUS = 2
+# SORTED_CHANNEL_REDUCE_MIN_COLLISION_RATIO: the sorted reduce's win comes from eliminating
+# duplicate-channel scatter collisions, so the controlling variable is the mean collisions
+# per channel, psf_width * num_pixels / num_det_channels.  Measured on the shared reduce
+# (pixel_count_crossover_ab.py, H100, P=2048): ratio 24/12/6 -> 0.67-0.90x sorted (wins;
+# odd-channel counts tie), ratio 2 (the REAL translation TCT shapes, ~3064 channels) ->
+# 4.5-6.5x SLOWER -- a cliff, not a taper (XLA's near-empty segment-sum lowering).  4 splits
+# the measured bracket [2 loses, 6 wins]; policies for geometries that can reach wide
+# detectors with modest pixel batches gate on it.  Follow-up: parallel/cone policies predate
+# this constant and their measured cells all sit at ratio >= 6; add the guard there if very
+# wide detectors (ratio < 4) become a real configuration.
+SORTED_CHANNEL_REDUCE_MIN_COLLISION_RATIO = 4
 # ──────────────────────────────────────────────────────────────────────────────
 def channel_scatter_reduce(n, A, values, num_out, use_sorted=0):
     """Reduce weighted per-pixel rows into channel bins: out[c, :] = sum_{k,p: n[k,p]==c} A[k,p] * values[p, :].

@@ -4,6 +4,9 @@ from functools import partial
 from collections import namedtuple
 import mbirjax as mj
 from mbirjax import TomographyModel
+from mbirjax.projectors import (channel_scatter_reduce, SORTED_CHANNEL_REDUCE_MIN_COLS,
+                                SORTED_CHANNEL_REDUCE_MAX_PSF_RADIUS,
+                                SORTED_CHANNEL_REDUCE_MIN_COLLISION_RATIO)
 from typing import Literal, Union, overload, Any
 import warnings
 
@@ -260,6 +263,41 @@ class MultiAxisParallelModel(TomographyModel):
         m = (v + det_row_offset) / delta_det_row + (num_det_rows - 1) / 2.0
         return m, n
 
+    def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
+        """Multiaxis tiling: on GPU the forward horizontal fan uses the SORTED channel
+        reduction (see projectors.channel_scatter_reduce); everything else inherits the base
+        policy.
+
+        The sorted reduce's columns are the FULL detector rows (the horizontal fan consumes
+        the vertical fan's (num_pixels, num_det_rows) output and is never row-banded), so its
+        per-call sort amortizes at any realistic detector -- the same reasoning as
+        ConeBeamModel, whose horizontal fan shares this structure; the column guard below
+        only trips on tiny detectors.  Measured on the harness cells (H100, 2026-07-08):
+        forward 1.20-1.41x at the 129/256/512/513-classes, memory flat.  Two further guards
+        from measurements of the SHARED reduce (constants in projectors.py): the psf guard
+        (the shared radius can widen at large elevation, and the sorted reduce measured a
+        LOSS at psf_width 7) and the channel-collision guard (at wide detectors with few
+        collisions per channel the sorted reduce is a measured 4.5-6.5x CLIFF -- the reason
+        TranslationModel keeps the scatter path entirely).
+
+        Deliberately NOT set: ``back_stacked_gather``.  Measured (mt_back_kernel_ab.py,
+        H100, 2026-07-08): the stacked horizontal-fan gather wins in isolation (0.64-0.65x)
+        but changes the FULL multiaxis back kernel not at all (1.00x, values identical) --
+        the gather latency hides behind the vertical-fan band work in composition, exactly
+        as cone measured.  Parallel back has no vertical fan, which is why the same change
+        won there.
+        """
+        tiles = super()._select_tile_policy(on_gpu, num_views, num_slices, n_devices)
+        if not on_gpu:
+            return tiles
+        num_det_rows, num_det_channels = self.get_params('sinogram_shape')[1:]
+        psf_width = 2 * self.get_psf_radius() + 1
+        collision_ratio = psf_width * tiles.fwd_pixel_batch / num_det_channels
+        return tiles._replace(
+            sort_by_channel=(num_det_rows >= SORTED_CHANNEL_REDUCE_MIN_COLS
+                             and self.get_psf_radius() <= SORTED_CHANNEL_REDUCE_MAX_PSF_RADIUS
+                             and collision_ratio >= SORTED_CHANNEL_REDUCE_MIN_COLLISION_RATIO))
+
     # =========================================================================
     # Split Projectors (Vertical then Horizontal)
     # =========================================================================
@@ -457,22 +495,42 @@ class MultiAxisParallelModel(TomographyModel):
         # CONTIGUOUS row (stride 1) instead of a column of stride num_det_channels.  A
         # power-of-2 num_det_channels column stride aliases the CPU cache; the contiguous
         # write avoids it.  Transpose back to (rows, channels) on return (one cheap pass,
-        # fused by XLA).  This mirrors ParallelBeamModel and ConeBeamModel.
-        sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
-
-        # Loop over horizontal kernel
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-            n = n_p_center + n_offset
+        # fused by XLA).  This mirrors ParallelBeamModel and ConeBeamModel -- including the
+        # channel-reduction choice: ONE precomputed flag (see channel_scatter_reduce in
+        # projectors.py and MultiAxisParallelModel._select_tile_policy) selects the sorted
+        # segment-sum (GPU layouts; the reduce columns here are the FULL detector rows, so the
+        # sort amortizes except at tiny detectors) vs the original per-tap scatter-add loop,
+        # kept verbatim.  projector_params is static, so this is a trace-time branch.
+        if projector_params.sort_by_channel:
+            # Stack the taps; per the reduce contract, n is CLIPPED into range with the
+            # weights zeroed where the unclipped tap was outside the detector.  W_p_c /
+            # L_max / scale are per-VIEW scalars here (the in-plane footprint depends only
+            # on the azimuth), so they broadcast against (psf_width, num_pixels) trivially.
+            n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
+            n = n_p_center[None, :] + n_offsets[:, None]              # (psf_width, num_pixels)
             dist = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - dist, 0.0, L_max)  # channel interpolation weight
+            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - dist, 0.0, L_max)
+            A_chan_n = L_p_c_n * scale
+            A_chan_n = A_chan_n * ((n >= 0) & (n < num_det_channels))
+            n = jnp.clip(n, 0, num_det_channels - 1)
+            sinogram_view_T = channel_scatter_reduce(n, A_chan_n, rows_data, num_det_channels,
+                                                     use_sorted=True)
+        else:
+            sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
 
-            valid = (n >= 0) & (n < num_det_channels)
+            # Loop over horizontal kernel
+            for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+                n = n_p_center + n_offset
+                dist = jnp.abs(n_p - n)
+                L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - dist, 0.0, L_max)  # channel interpolation weight
 
-            # A_chan_n: projection coefficient for this channel tap (matches ParallelBeamModel /
-            # ConeBeamModel: A_chan_n = scale * L_p_c_n * valid).  Scatter each pixel's detector
-            # column (rows_data[p, :]) into channel n[p].
-            A_chan_n = L_p_c_n * scale * valid
-            sinogram_view_T = sinogram_view_T.at[n, :].add(rows_data * A_chan_n[:, None])
+                valid = (n >= 0) & (n < num_det_channels)
+
+                # A_chan_n: projection coefficient for this channel tap (matches ParallelBeamModel /
+                # ConeBeamModel: A_chan_n = scale * L_p_c_n * valid).  Scatter each pixel's detector
+                # column (rows_data[p, :]) into channel n[p].
+                A_chan_n = L_p_c_n * scale * valid
+                sinogram_view_T = sinogram_view_T.at[n, :].add(rows_data * A_chan_n[:, None])
 
         return sinogram_view_T.T
 

@@ -7,6 +7,7 @@ from collections import namedtuple
 import numpy as np
 
 import mbirjax as mj
+from mbirjax.projectors import channel_scatter_reduce
 
 
 # Default slice-band size for the translation back projector's rolled vertical-fan loop.
@@ -202,6 +203,31 @@ class TranslationModel(mj.TomographyModel):
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel,
                         voxel_row_aspect=voxel_row_aspect)
 
+    def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
+        """Translation tiling: the base policy, unchanged -- with two MEASURED deliberate
+        non-settings (H100, 2026-07-08; experiments/projector_kernels).
+
+        Deliberately NOT set: ``sort_by_channel``.  The forward horizontal fan carries the
+        sorted-reduce branch (kept for experiments; see channel_scatter_reduce), but at the
+        REAL TCT detector shapes (1936x3064, 1883x3064) the sorted reduce is 4.5-6.5x SLOWER
+        than the scatter (pixel_count_crossover_ab.py).  The controlling variable is the
+        channel-collision ratio psf_width * pixel_batch / num_det_channels: the scatter's
+        cost is duplicate-channel collisions, and translation's few-views/wide-detector
+        shape yields ~2 hits per channel -- nothing for the sort to amortize against (the
+        parallel/cone/multiaxis wins all sit at ratio >= 6).  The harness's small square
+        cells (15x256x256, ratio 24) win 1.2x, but at ~0.4 ms absolute; the production
+        shapes dominate the decision.  Secondary measured effect, same conclusion: the
+        sorted reduce also degrades at wide psf (1.27x/1.02x/0.85x at psf_width 3/5/7,
+        translation_fwd_psf_ab.py), and translation at large cone angle runs psf_radius 2-3.
+
+        Deliberately NOT set: ``back_stacked_gather``.  Measured (mt_back_kernel_ab.py,
+        psf_radius 1 AND 3): the stacked horizontal-fan gather wins in isolation
+        (0.78-0.83x) but changes the FULL translation back kernel not at all (1.00-1.02x,
+        values identical) -- the gather latency hides behind the vertical-fan band work in
+        composition, exactly as cone measured.
+        """
+        return super()._select_tile_policy(on_gpu, num_views, num_slices, n_devices)
+
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
     def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, translation_vector, projector_params):
@@ -292,17 +318,39 @@ class TranslationModel(mj.TomographyModel):
         # power-of-2 num_det_channels column stride aliases the CPU cache; the contiguous write
         # avoids it (measured ~1.3x faster on the forward at 512 channels, GPU confirmation
         # pending).  Transpose back to (rows, channels) on return (one cheap pass, fused by XLA).
-        # Mirrors ParallelBeamModel / ConeBeamModel / MultiAxisParallelModel.
-        sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
-
-        # Do the horizontal projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-            n = n_p_center + n_offset
+        # Mirrors ParallelBeamModel / ConeBeamModel / MultiAxisParallelModel -- including the
+        # channel-reduction choice: ONE precomputed flag (see channel_scatter_reduce in
+        # projectors.py and TranslationModel._select_tile_policy) selects the sorted
+        # segment-sum (GPU layouts; the reduce columns here are the FULL detector rows) vs the
+        # original per-tap scatter-add loop, kept verbatim.  projector_params is static, so
+        # this is a trace-time branch.
+        if projector_params.sort_by_channel:
+            # Stack the taps; per the reduce contract, n is CLIPPED into range with the
+            # weights zeroed where the unclipped tap was outside the detector.  W_p_c /
+            # L_max / cos_theta_p are PER-PIXEL (num_pixels,) arrays for translation
+            # (pixel-dependent magnification); plain broadcasting against
+            # (psf_width, num_pixels) handles them, as in ConeBeamModel.  Translation is
+            # the wide-psf geometry (psf_radius often 2-3), so psf_width here can be 5-7.
+            n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
+            n = n_p_center[None, :] + n_offsets[:, None]              # (psf_width, num_pixels)
             abs_delta_p_c_n = jnp.abs(n_p - n)
             L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
             A_chan_n = delta_voxel_row * L_p_c_n / cos_theta_p
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
+            A_chan_n = A_chan_n * ((n >= 0) & (n < num_det_channels))
+            n = jnp.clip(n, 0, num_det_channels - 1)
+            sinogram_view_T = channel_scatter_reduce(n, A_chan_n, voxel_values, num_det_channels,
+                                                     use_sorted=True)
+        else:
+            sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
+
+            # Do the horizontal projection
+            for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
+                n = n_p_center + n_offset
+                abs_delta_p_c_n = jnp.abs(n_p - n)
+                L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
+                A_chan_n = delta_voxel_row * L_p_c_n / cos_theta_p
+                A_chan_n *= (n >= 0) * (n < num_det_channels)
+                sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
 
         return sinogram_view_T.T
 

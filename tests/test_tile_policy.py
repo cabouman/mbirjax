@@ -177,6 +177,105 @@ class TestTilePolicy(unittest.TestCase):
         big = model._select_tile_policy(True, 32, model._FWD_PIXEL_BATCH_MIN_SLICES, 1)
         self.assertEqual(big.fwd_pixel_batch, model._FWD_PIXEL_BATCH_GPU_LARGE)
 
+    def test_multiaxis_kernel_sorted_branch_matches_scatter_branch(self):
+        # Multiaxis' forward horizontal fan shares the channel reduction; its sorted branch
+        # must match the scatter branch.  Nonzero elevations exercise the tilted vertical fan
+        # feeding the reduce; the fan's weights are per-view SCALARS here (unlike cone's
+        # per-pixel arrays), covering the scalar-broadcast case.
+        from mbirjax.projectors import ProjectorParams
+        angles = np.stack([np.linspace(0, np.pi, 16, endpoint=False), np.full(16, 0.3)], axis=1)
+        model = mbirjax.MultiAxisParallelBeamModel((16, 96, 64), angles)
+        model.configure_devices(1)
+        pp_args = (tuple(model.get_params('sinogram_shape')),
+                   tuple(model.get_params('recon_shape')), model.get_geometry_parameters())
+        recon_shape = model.get_params('recon_shape')
+        idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=False)
+        rng = np.random.default_rng(5)
+        vox = rng.random((len(idx), recon_shape[2]), dtype=np.float32)
+        view_params = np.asarray(model.projector_functions.view_params_array)[3]
+        kern = mbirjax.MultiAxisParallelBeamModel.forward_project_pixel_batch_to_one_view
+        out_scatter = np.asarray(kern(vox, idx, view_params, ProjectorParams(*pp_args, 0)))
+        out_sorted = np.asarray(kern(vox, idx, view_params, ProjectorParams(*pp_args, 1)))
+        np.testing.assert_allclose(out_sorted, out_scatter, rtol=1e-5,
+                                   atol=1e-5 * np.abs(out_scatter).max())
+
+    def test_multiaxis_gpu_policy_sets_sort_flag(self):
+        angles = np.stack([np.linspace(0, np.pi, 16, endpoint=False), np.full(16, 0.2)], axis=1)
+        model = mbirjax.MultiAxisParallelBeamModel((16, 96, 64), angles)
+        num_slices = model.get_params('recon_shape')[2]
+        gpu = model._select_tile_policy(True, 16, num_slices, 1)
+        self.assertTrue(gpu.sort_by_channel)            # 96 detector rows >= the minimum
+        cpu = model._select_tile_policy(False, 16, num_slices, 1)
+        self.assertFalse(cpu.sort_by_channel)
+        # Tiny detectors stay on the scatter path; back_stacked_gather deliberately NOT set
+        # (measured composition no-op behind the vertical fan, as for cone).
+        tiny = mbirjax.MultiAxisParallelBeamModel(
+            (16, SORTED_CHANNEL_REDUCE_MIN_COLS - 8, 64), angles)
+        self.assertFalse(tiny._select_tile_policy(
+            True, 16, tiny.get_params('recon_shape')[2], 1).sort_by_channel)
+        self.assertFalse(gpu.back_stacked_gather)
+        # The channel-collision guard: at a WIDE detector the collision ratio
+        # psf_width * pixel_batch / channels drops below the measured cliff threshold and
+        # the flag stays off (the translation TCT lesson, applied to multiaxis' policy).
+        wide = mbirjax.MultiAxisParallelBeamModel((16, 96, 3064), angles)
+        self.assertFalse(wide._select_tile_policy(
+            True, 16, wide.get_params('recon_shape')[2], 1).sort_by_channel)
+
+    @staticmethod
+    def _make_translation_model(num_det_rows=64, pitch_factor=1.5):
+        # High magnification (source close to iso) is the large-cone-angle regime; scaling
+        # delta_voxel up from the auto value pushes psf_radius into the wide-psf range
+        # translation commonly runs at (the auto geometry here has a large voxel_row_aspect,
+        # so magnification grows quickly with the pitch: 1.25 -> radius 2, 1.5 -> radius 3).
+        from mbirjax.translation_model import TranslationModel
+        rng = np.random.default_rng(3)
+        translations = rng.uniform(-2.0, 2.0, (12, 3)).astype(np.float32)
+        model = TranslationModel((12, num_det_rows, 36), translations,
+                                 source_detector_dist=120.0, source_iso_dist=30.0)
+        model.auto_set_recon_geometry()
+        model.set_params(delta_voxel=pitch_factor * model.get_params('delta_voxel'))
+        return model
+
+    def test_translation_kernel_sorted_branch_matches_scatter_branch(self):
+        # Translation's forward horizontal fan: per-pixel W_p_c / cos_theta_p (pixel-dependent
+        # magnification) exercise the broadcast path, and translation is the WIDE-psf geometry
+        # (large cone angle), so run at psf_radius 2 AND 3 (psf_width 5 / 7) -- the crossover
+        # constant and the fused stacked transient were only measured at psf_width 3.
+        from mbirjax.projectors import ProjectorParams
+        from mbirjax.translation_model import TranslationModel
+        for pitch_factor, expected_radius in ((1.25, 2), (1.5, 3)):
+            model = self._make_translation_model(pitch_factor=pitch_factor)
+            self.assertEqual(model.get_psf_radius(), expected_radius)
+            model.configure_devices(1)
+            pp_args = (tuple(model.get_params('sinogram_shape')),
+                       tuple(model.get_params('recon_shape')), model.get_geometry_parameters())
+            recon_shape = model.get_params('recon_shape')
+            idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=False)
+            rng = np.random.default_rng(6)
+            vox = rng.random((len(idx), recon_shape[2]), dtype=np.float32)
+            view_params = np.asarray(model.projector_functions.view_params_array)[5]
+            kern = TranslationModel.forward_project_pixel_batch_to_one_view
+            out_scatter = np.asarray(kern(vox, idx, view_params, ProjectorParams(*pp_args, 0)))
+            out_sorted = np.asarray(kern(vox, idx, view_params, ProjectorParams(*pp_args, 1)))
+            np.testing.assert_allclose(out_sorted, out_scatter, rtol=1e-5,
+                                       atol=1e-5 * np.abs(out_scatter).max(),
+                                       err_msg=f'psf_radius={expected_radius}')
+
+    def test_translation_gpu_policy_keeps_scatter(self):
+        # Translation's policy deliberately does NOT set sort_by_channel: at the REAL TCT
+        # detector shapes (1936x3064-class) the sorted reduce measured 4.5-6.5x SLOWER (the
+        # channel-collision cliff; see TranslationModel._select_tile_policy).  The kernel
+        # branch exists (tested above) but only an explicit experiment override enables it.
+        for pitch_factor in (1.25, 1.5):
+            model = self._make_translation_model(num_det_rows=64, pitch_factor=pitch_factor)
+            num_slices = model.get_params('recon_shape')[2]
+            gpu = model._select_tile_policy(True, 12, num_slices, 1)
+            self.assertFalse(gpu.sort_by_channel)
+            self.assertFalse(gpu.back_stacked_gather)
+            # Everything else inherits the base policy untouched.
+            base = super(type(model), model)._select_tile_policy(True, 12, num_slices, 1)
+            self.assertEqual(gpu, base)
+
     def test_projection_runs_with_replaced_tiles(self):
         # End-to-end smoke: an overridden tile policy still projects correctly (values equal
         # to the default-policy projection up to reordering).
