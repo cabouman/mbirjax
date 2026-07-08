@@ -106,12 +106,11 @@ def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, H
     # Fixed seed for reproducibility
     key = jax.random.PRNGKey(129)
 
-    # ===== Multiplicative Optimization =====
-    def mu_cond(state):
+    def cond(state):
         _, _, _, i, converged = state
         return (i < max_steps) & (~converged)
 
-    def mu_body(state):
+    def body(state):
         W, H, prev_loss, i, converged = state
         W_new, H_new = update(W, H, T, update_H=update_H)
         loss_new = (jnp.exp(-W_new @ H_new) + T * (W_new @ H_new)).sum()
@@ -128,7 +127,7 @@ def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, H
 
     prev_loss = (jnp.exp(-W_init @ H_init) + T * (W_init @ H_init)).sum()
     state = (W_init, H_init, prev_loss, 0, False)
-    state = lax.while_loop(mu_cond, mu_body, state)
+    state = lax.while_loop(cond, body, state)
     W, H, _, i, _ = state
 
     return W, H, i
