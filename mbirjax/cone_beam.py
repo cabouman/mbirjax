@@ -270,31 +270,26 @@ class ConeBeamModel(TomographyModel):
 
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel, recon_slice_offset=recon_slice_offset)
 
-    # Measured GPU forward pixel batch for LARGE problems (cone_fwd_tile_sweep.py, H100,
-    # 2026-07-08): at 1024^3-class, fwd_pixel_batch=4096 gives 1.51/1.53/1.13x at n=1/2/4
-    # (29.2 -> 19.4 s at n=1); larger batches add little beyond 4096 while memory balloons.
-    # At 512^3-class it is NEUTRAL-TO-WORSE (0.95-1.00x) while paying +41% memory, so the
-    # larger batch applies only above the slice threshold (between the two measured sizes).
-    # Memory at 1024^3: +9.6/+29/+46% at n=1/2/4 (1.5-4.1 GB absolute) -- a deliberate
-    # time-for-memory trade, flagged for the nightly memory gate.
+    # Measured GPU forward pixel batch for LARGE problems (cone_fwd_tile_sweep.py):
+    # ~1.5x at the 1024^3 class for 1.5-4 GB more memory (a deliberate trade), but
+    # neutral-to-worse at the 512^3 class -- so it applies only above the slice threshold,
+    # which sits between the two measured sizes.
     _FWD_PIXEL_BATCH_GPU_LARGE = 4096
     _FWD_PIXEL_BATCH_MIN_SLICES = 768   # 1024-class (1008 slices) qualifies; 512-class (448) does not
 
     def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
-        """Cone tiling: on GPU the horizontal fan uses the SORTED channel reduction, and large
-        problems get the measured larger forward pixel batch (constants above).
+        """Cone tiling: on GPU the horizontal fan uses the SORTED channel reduction
+        (defined at projectors.channel_scatter_reduce), and large problems get the measured
+        larger forward pixel batch (constants above).
 
-        The sorted reduce's columns are the FULL detector rows (cone forward is not
-        row-banded: the horizontal fan always emits every row of the view), so its per-call
-        sort amortizes at any realistic detector; the guard below only trips on tiny ones.
-        The crossover constant was measured on the parallel-beam kernel, which shares the
-        reduce exactly.
+        The sorted reduce's columns are the FULL detector rows (cone forward is never
+        row-banded), so its per-call sort amortizes at any realistic detector; the guard
+        below only trips on tiny ones.
 
-        Deliberately NOT set: ``back_stacked_gather``.  Measured (cone_back_kernel_ab.py,
-        H100): the stacked horizontal-fan gather wins in isolation (0.57-0.59x) but changes
-        the FULL cone back kernel not at all (1.00x) -- the gather latency already hides
-        behind the vertical-fan band work in composition.  Parallel back has no vertical fan,
-        which is why the same change won 1.7-3.6x there.
+        Deliberately NOT set: ``back_stacked_gather``.  The stacked horizontal-fan gather
+        wins in isolation but changes the FULL cone back kernel not at all -- the gather
+        latency already hides behind the vertical-fan band work (cone_back_kernel_ab.py).
+        Parallel back, with no vertical fan to hide behind, is where it wins.
         """
         tiles = super()._select_tile_policy(on_gpu, num_views, num_slices, n_devices)
         if not on_gpu:
@@ -335,7 +330,8 @@ class ConeBeamModel(TomographyModel):
         vertical_fan_projector = ConeBeamModel.forward_vertical_fan_pixel_batch_to_one_view
         horizontal_fan_projector = ConeBeamModel.forward_horizontal_fan_pixel_batch_to_one_view
 
-        # named_scope tags the HLO/trace with a stable, code-localized region name (profiling
+        # named_scope tags the compiled program (HLO, XLA's intermediate representation) and
+        # profiler traces with a stable, code-localized region name (profiling
         # attribution that survives recompiles + jax-version renames; see experiments/profiling).
         with jax.named_scope("cone/forward/vertical_fan"):
             new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, single_view_params, projector_params)
@@ -616,36 +612,16 @@ class ConeBeamModel(TomographyModel):
                                    use_stacked=projector_params.back_stacked_gather)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Banded vertical fans + per-view banded kernels
+    # Banded vertical fans + per-view banded kernels.  The shared contract (global-index
+    # z anchoring / tiling-invariance, inert padding, single-device band walk + the
+    # multi-device per-band entry) is documented ONCE at the canonical note above
+    # projectors.vertical_fan_band_gather.
     #
-    # These back-project a view onto a contiguous band of GLOBAL recon-slice indices
-    # [g0, g0+L): the vertical fan is restricted to that slice range, while the
-    # horizontal fan is the same for every band and is computed once per view.  This
-    # is the interface the multi-device back projector uses -- the recon's slice axis
-    # is split into bands so each device handles a slice range, and the per-band
-    # results are concatenated.  It also lets a single device process the slices in
-    # bands instead of holding the whole cylinder at once.
-    #
-    # The FORWARD projection does NOT band.  A band of input slices reaches a wide,
-    # mostly-empty window of detector rows, so a banded forward recomputes the
-    # dominant horizontal stage per band for little memory gain (measured: streaming
-    # the bands was 5-14x slower on CPU for ~13-23% transient memory -- a bad trade).
-    # The multi-device forward instead gathers the slice cylinder per pixel-batch and
-    # runs the monolithic forward, so there is no banded forward kernel here.
-    #
-    # Physical z-coordinates come from the problem's recon_shape and the GLOBAL slice
-    # index (k = g0 + k_local), never from the length of the band that is passed in,
-    # so a sub-band gives exactly the same coordinates as the full cylinder.  A slice
-    # whose global index is at or beyond the real slice count (a padded slice, used
-    # when the slice axis is padded to split evenly across devices) receives nothing,
-    # so padding is inert.
-    #
-    # These are the production cone back vertical fan: back_project_one_view_to_pixel_batch
-    # walks the slice axis in bands of these via back_vertical_fan_band_pixel_batch (the
-    # monolithic vertical fan they replaced has been removed).  back_project_one_view_to_band
-    # (horizontal fan once + one band) is the per-band entry the multi-device back projector
-    # will use.  The monolithic forward stays -- the sharded forward gathers the slice
-    # cylinder and calls it.
+    # Cone-specific: the FORWARD projection does NOT band -- a band of input slices reaches
+    # a wide, mostly-empty window of detector rows, so a banded forward recomputes the
+    # dominant horizontal stage per band for little memory gain (measured: 5-14x slower for
+    # ~13-23% transient memory).  The multi-device forward instead gathers the slice
+    # cylinder per pixel-batch and runs the monolithic forward.
     # ──────────────────────────────────────────────────────────────────────────
 
     @staticmethod

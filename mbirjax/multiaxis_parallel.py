@@ -286,27 +286,21 @@ class MultiAxisParallelModel(TomographyModel):
 
     def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
         """Multiaxis tiling: on GPU the forward horizontal fan uses the SORTED channel
-        reduction (see projectors.channel_scatter_reduce); everything else inherits the base
-        policy.
+        reduction (defined at projectors.channel_scatter_reduce; measured 1.2-1.4x forward);
+        everything else inherits the base policy.
 
         The sorted reduce's columns are the FULL detector rows (the horizontal fan consumes
-        the vertical fan's (num_pixels, num_det_rows) output and is never row-banded), so its
-        per-call sort amortizes at any realistic detector -- the same reasoning as
-        ConeBeamModel, whose horizontal fan shares this structure; the column guard below
-        only trips on tiny detectors.  Measured on the harness cells (H100, 2026-07-08):
-        forward 1.20-1.41x at the 129/256/512/513-classes, memory flat.  Two further guards
-        from measurements of the SHARED reduce (constants in projectors.py): the psf guard
-        (the shared radius can widen at large elevation, and the sorted reduce measured a
-        LOSS at psf_width 7) and the channel-collision guard (at wide detectors with few
-        collisions per channel the sorted reduce is a measured 4.5-6.5x CLIFF -- the reason
-        TranslationModel keeps the scatter path entirely).
+        the vertical fan's (num_pixels, num_det_rows) output and is never row-banded), so
+        its per-call sort amortizes at any realistic detector; the column guard below only
+        trips on tiny ones.  The psf and channel-collision guards protect the regimes where
+        the sorted form is a measured LOSS -- wide psf (large elevation widens the shared
+        radius) and wide detectors with few scatter collisions per channel (the reason
+        TranslationModel keeps the scatter path entirely).  See the guard constants in
+        projectors.py for the measured crossovers.
 
-        Deliberately NOT set: ``back_stacked_gather``.  Measured (mt_back_kernel_ab.py,
-        H100, 2026-07-08): the stacked horizontal-fan gather wins in isolation (0.64-0.65x)
-        but changes the FULL multiaxis back kernel not at all (1.00x, values identical) --
-        the gather latency hides behind the vertical-fan band work in composition, exactly
-        as cone measured.  Parallel back has no vertical fan, which is why the same change
-        won there.
+        Deliberately NOT set: ``back_stacked_gather``.  The stacked horizontal-fan gather
+        wins in isolation but changes the FULL multiaxis back kernel not at all -- the
+        gather latency hides behind the vertical-fan band work (mt_back_kernel_ab.py).
         """
         tiles = super()._select_tile_policy(on_gpu, num_views, num_slices, n_devices)
         if not on_gpu:
@@ -608,21 +602,10 @@ class MultiAxisParallelModel(TomographyModel):
                                    use_stacked=projector_params.back_stacked_gather)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Banded vertical fan + per-view banded back kernel
-    #
-    # These back-project a view onto a contiguous band of GLOBAL recon-slice indices
-    # [g0, g0+L): the vertical fan is restricted to that slice range, while the horizontal fan
-    # is the same for every band and is computed once per view.  The single-device back
-    # projector (back_project_one_view_to_pixel_batch) walks the slice axis in bands of
-    # MULTIAXIS_SLICE_BAND_SIZE via back_vertical_fan_band_pixel_batch; back_project_one_view_to_band
-    # (horizontal fan once + one band) is the per-band entry the multi-device back projector will
-    # use (reduce-scatter, when sharding is turned on).
-    #
-    # Physical z-coordinates come from the problem's recon_shape and the GLOBAL slice index
-    # (k = g0 + k_local), never from the length of the band passed in, so a sub-band gives
-    # exactly the same coordinates as the full cylinder.  A slice whose global index is at or
-    # beyond the real slice count (a padded slice, used when the slice axis is padded to split
-    # evenly across devices) receives nothing, so padding is inert.
+    # Banded vertical fan + per-view banded back kernel.  The shared contract (global-index
+    # z anchoring / tiling-invariance, inert padding, single-device band walk in bands of
+    # MULTIAXIS_SLICE_BAND_SIZE + the multi-device per-band entry) is documented ONCE at the
+    # canonical note above projectors.vertical_fan_band_gather.
     # ──────────────────────────────────────────────────────────────────────────
 
     @staticmethod

@@ -206,26 +206,24 @@ class TranslationModel(mj.TomographyModel):
 
     def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
         """Translation tiling: the base policy, unchanged -- with two MEASURED deliberate
-        non-settings (H100, 2026-07-08; experiments/projector_kernels).
+        non-settings.
 
         Deliberately NOT set: ``sort_by_channel``.  The forward horizontal fan carries the
-        sorted-reduce branch (kept for experiments; see channel_scatter_reduce), but at the
-        REAL TCT detector shapes (1936x3064, 1883x3064) the sorted reduce is 4.5-6.5x SLOWER
-        than the scatter (pixel_count_crossover_ab.py).  The controlling variable is the
-        channel-collision ratio psf_width * pixel_batch / num_det_channels: the scatter's
-        cost is duplicate-channel collisions, and translation's few-views/wide-detector
-        shape yields ~2 hits per channel -- nothing for the sort to amortize against (the
-        parallel/cone/multiaxis wins all sit at ratio >= 6).  The harness's small square
-        cells (15x256x256, ratio 24) win 1.2x, but at ~0.4 ms absolute; the production
-        shapes dominate the decision.  Secondary measured effect, same conclusion: the
-        sorted reduce also degrades at wide psf (1.27x/1.02x/0.85x at psf_width 3/5/7,
-        translation_fwd_psf_ab.py), and translation at large cone angle runs psf_radius 2-3.
+        SORTED-channel-reduction branch (defined at projectors.channel_scatter_reduce; kept
+        for experiments), but at
+        translation's REAL detector shapes (~1900x3000 TCT panels) the sorted reduce is
+        4.5-6.5x SLOWER than the scatter: with few views and thousands of channels there
+        are only ~2 scatter collisions per channel -- nothing for the sort to win back
+        (pixel_count_crossover_ab.py; the collision-ratio guard constant in projectors.py
+        records the crossover).  Small square test shapes DO show a win, but at
+        sub-millisecond stakes; the production shapes dominate the decision.  The wide psf
+        translation runs at large cone angle (psf_radius 2-3) degrades the sorted form
+        further.
 
-        Deliberately NOT set: ``back_stacked_gather``.  Measured (mt_back_kernel_ab.py,
-        psf_radius 1 AND 3): the stacked horizontal-fan gather wins in isolation
-        (0.78-0.83x) but changes the FULL translation back kernel not at all (1.00-1.02x,
-        values identical) -- the gather latency hides behind the vertical-fan band work in
-        composition, exactly as cone measured.
+        Deliberately NOT set: ``back_stacked_gather``.  The stacked horizontal-fan gather
+        wins in isolation but changes the FULL translation back kernel not at all -- the
+        gather latency hides behind the vertical-fan band work (mt_back_kernel_ab.py,
+        measured at psf_radius 1 and 3).
         """
         return super()._select_tile_policy(on_gpu, num_views, num_slices, n_devices)
 
@@ -322,7 +320,7 @@ class TranslationModel(mj.TomographyModel):
         # deliberately NOT enabled by translation's policy: the channel-collision cliff at
         # real TCT shapes, see _select_tile_policy).  The weight scale is PER-PIXEL
         # (pixel-dependent cone angle); precomputing delta_voxel_row / cos_theta_p once here
-        # (instead of the historical per-tap dvr * L / cos) is a deliberate ULP-class
+        # (instead of the historical per-tap dvr * L / cos) is a deliberate last-bit-level
         # reassociation, accepted for the shared-helper form.
         weight_scale = delta_voxel_row / cos_theta_p
         sinogram_view_T = horizontal_fan_project(n_p, n_p_centers, W_p_c, weight_scale,
@@ -526,7 +524,7 @@ class TranslationModel(mj.TomographyModel):
         # which owns the channel-major layout rationale and the back_stacked_gather branch
         # -- deliberately NOT enabled by translation's policy: measured a 1.00-1.02x
         # composition no-op behind the vertical fan).  Weight scale mirrors the forward fan
-        # (per-pixel; same accepted ULP-class reassociation).
+        # (per-pixel; same accepted last-bit-level reassociation).
         sinogram_view_T = sinogram_view.T            # (num_det_channels, num_det_rows)
         weight_scale = delta_voxel_row / cos_theta_p
         return horizontal_fan_back(sinogram_view_T, n_p, n_p_centers, W_p_c, weight_scale,
@@ -534,22 +532,10 @@ class TranslationModel(mj.TomographyModel):
                                    use_stacked=projector_params.back_stacked_gather)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Banded vertical fan + per-view banded back kernels
-    #
-    # These back-project a view onto a contiguous band of GLOBAL recon-slice indices
-    # [g0, g0+L): the vertical fan is restricted to that slice range, while the
-    # horizontal fan is the same for every band and is computed once per view.  The
-    # single-device back projector (back_project_one_view_to_pixel_batch) walks the slice
-    # axis in bands of TRANSLATION_SLICE_BAND_SIZE via back_vertical_fan_band_pixel_batch;
-    # back_project_one_view_to_band (horizontal fan once + one band) is the per-band entry
-    # the multi-device back projector will use (reduce-scatter, when sharding is turned on).
-    #
-    # Physical z-coordinates come from the problem's recon_shape and the GLOBAL slice index
-    # (k = g0 + k_local) via compute_vertical_data_single_pixel, never from the length of the
-    # band that is passed in, so a sub-band gives exactly the same coordinates as the full
-    # cylinder.  A slice whose global index is at or beyond the real slice count (a padded
-    # slice, used when the slice axis is padded to split evenly across devices) receives
-    # nothing, so padding is inert.
+    # Banded vertical fan + per-view banded back kernels.  The shared contract (global-index
+    # z anchoring / tiling-invariance, inert padding, single-device band walk in bands of
+    # TRANSLATION_SLICE_BAND_SIZE + the multi-device per-band entry) is documented ONCE at
+    # the canonical note above projectors.vertical_fan_band_gather.
     # ──────────────────────────────────────────────────────────────────────────
 
     @staticmethod

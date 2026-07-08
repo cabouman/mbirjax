@@ -83,15 +83,13 @@ class ParallelBeamModel(TomographyModel):
             view_data[:, g0:g1, :], pixel_indices,
             owned_view_indices=owned_view_indices, coeff_power=coeff_power)
 
-    # Measured GPU forward tiling (H100 band x pixel-batch grid, 2026-07-07; see
-    # experiments/projector_kernels/fwd_back_findings.md and fwd_band_pixel_sweep.py).
-    # Model-level forward speedups vs the inherited defaults: 2.0/2.0/3.6x at 1024^3 n=1/2/4,
-    # 1.3/2.0/2.0x at 513^3, with memory within +0.7 GB per device.  CPU measured the OPPOSITE
-    # (wide bands neutral-to-worse, large pixel batches 0.6-0.85x), so these apply to GPU
-    # layouts only and the base (CPU) policy is untouched.
-    _FWD_SLICE_BAND_GPU = 256    # band knee; whole-shard is WORSE at 1024^3 n=1 (+3 GB, 0.97x)
-    _FWD_PIXEL_BATCH_GPU = 8192  # larger sorts use the GPU better + 4x fewer scan-carry steps;
-                                 # 16384 is not uniformly better (non-monotonic at 513^3/1024^3 n=1/2)
+    # Measured GPU forward tiling (band x pixel-batch grid: fwd_band_pixel_sweep.py; results
+    # digest in experiments/projector_kernels/fwd_back_findings.md).  Model-level forward
+    # speedups of 2-3.6x over the inherited defaults.  CPU measured the OPPOSITE direction
+    # on both knobs, so these apply to GPU layouts only; the base (CPU) policy is untouched.
+    _FWD_SLICE_BAND_GPU = 256    # the measured knee; whole-shard bands are WORSE at scale
+    _FWD_PIXEL_BATCH_GPU = 8192  # larger sorts use the GPU better + fewer scan-carry steps;
+                                 # 16384 is NOT uniformly better (non-monotonic in size)
 
     def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
         """Parallel-beam tiling: GPU forward gets the measured band/pixel-batch/sorted-reduce
@@ -99,7 +97,8 @@ class ParallelBeamModel(TomographyModel):
         tiles = super()._select_tile_policy(on_gpu, num_views, num_slices, n_devices)
         if not on_gpu:
             return tiles
-        # The sorted channel reduction pays a per-call sort that amortizes over the band width;
+        # The sorted channel reduction (defined at projectors.channel_scatter_reduce) pays a
+        # per-call sort that amortizes over the band width;
         # with the 256-band policy the bands are wide everywhere except tiny problems, where the
         # BALANCED band width (bands split ±1, so ~slices_per_dev/n_bands) can drop below the
         # measured crossover and the scatter-add stays faster.
@@ -110,9 +109,10 @@ class ParallelBeamModel(TomographyModel):
             fwd_slice_band=self._FWD_SLICE_BAND_GPU,
             fwd_pixel_batch=self._FWD_PIXEL_BATCH_GPU,
             sort_by_channel=balanced_band >= SORTED_CHANNEL_REDUCE_MIN_COLS,
-            # Back kernel: one stacked (psf_width * num_pixels, num_rows) gather (H100:
-            # 1.6-1.8x, the kernel is ~95% gather-bound there; CPU keeps the per-tap loop --
-            # 3.6-4.4x worse stacked).
+            # Back kernel: one stacked gather covering every psf tap.  A GPU win because the
+            # back kernel is almost entirely gather-bound and parallel beam has no vertical
+            # fan behind which the gather latency could hide; measured WORSE on CPU, which
+            # keeps the per-tap loop (see projectors.horizontal_fan_back).
             back_stacked_gather=True,
         )
 
@@ -266,16 +266,11 @@ class ParallelBeamModel(TomographyModel):
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # The output detector-row axis is sized from the actual input cylinder
-        # (values.shape[1] inside the fan helper), not from
-        # projector_params.sinogram_shape, so a caller may pass a slice-band of the
-        # cylinder (a contiguous subset of slices) and get back only the
-        # corresponding detector rows.  Slice r maps only to detector row r in
-        # parallel beam (the horizontal projection mixes channels, never rows), so
-        # restricting the input slices restricts the output rows with no other
-        # change.  When the full cylinder is passed this equals num_det_rows, so
-        # single-device behavior is unchanged.  This is the adjoint of the
-        # row-sliced back projection kernel, and is what lets sharded forward
-        # projection stream the slice axis in bands.
+        # (values.shape[1] inside the fan helper), NOT from projector_params: parallel beam
+        # maps slice r only to detector row r, so a caller may pass a slice-BAND of the
+        # cylinder and get back just the corresponding detector rows -- this is what lets
+        # sharded forward projection stream the slice axis in bands (adjoint of the
+        # row-sliced back kernel below).
         #
         # The horizontal projection is the shared trapezoid-rule fan (see
         # horizontal_fan_project in projectors.py, which also owns the channel-major
@@ -318,13 +313,10 @@ class ParallelBeamModel(TomographyModel):
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # The output slice axis is sized from the actual input view (sino_T.shape[1] inside
-        # the fan helper), not from projector_params.sinogram_shape, so a caller may pass a
-        # row-sliced view (a contiguous subset of detector rows) and get back only the
-        # corresponding recon slices.  Detector row r maps only to slice r in parallel beam
-        # (the horizontal projection mixes channels, never rows), so restricting the input
-        # rows restricts the output slices with no other change.  When the full view is
-        # passed this equals num_det_rows, so single-device behavior is unchanged.  This is
-        # what lets sharded back projection stream the slice axis in bands.
+        # the fan helper), NOT from projector_params: detector row r maps only to slice r,
+        # so a caller may pass a row-SLICED view and get back just the corresponding recon
+        # slices -- this is what lets sharded back projection stream the slice axis in bands
+        # (adjoint of the slice-banded forward above).
         #
         # The gather itself is the shared adjoint trapezoid-rule fan (see horizontal_fan_back
         # in projectors.py, which owns the channel-major layout rationale and the

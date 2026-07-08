@@ -16,7 +16,8 @@ from functools import partial
 # ``sort_by_channel`` (int: 1 = use the sorted segment-sum channel reduction in the FORWARD
 # kernels, 0 = scatter-add; default 0) and ``back_stacked_gather`` (int: 1 = the BACK kernel
 # gathers all psf taps in one stacked (psf_width * num_pixels, num_rows) gather followed by a
-# reshape-sum over taps, 0 = the per-tap gather+FMA loop; default 0) are the kernel-algorithm
+# reshape-sum over taps, 0 = the per-tap gather + FMA (fused multiply-add) loop; default 0)
+# are the kernel-algorithm
 # flags DECIDED by the model's tile policy
 # (TomographyModel._select_tile_policy: GPU layouts whose slice bands are wide enough to
 # amortize the sort) and baked in here by create_projectors.  The default keeps
@@ -31,46 +32,40 @@ ProjectorParams = namedtuple('ProjectorParams', ['sinogram_shape', 'recon_shape'
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Platform-split scatter reduction for the forward-projection kernels
+# Platform-split channel reduction for the forward-projection kernels
 #
-# Forward projection scatters each pixel's contribution into its detector channel; with
-# num_pixels >> num_channels the duplicate-index scatter-add is the dominant kernel cost.
-# The best formulation is platform-OPPOSITE (measured, H100 + M3, 2026-07-07 -- see
+# Forward projection scatters each pixel's contribution into its detector channel.  Many
+# pixels hit the same channel, and on GPU those colliding scatter-adds serialize (each is an
+# ATOMIC memory update), making the duplicate-index scatter the dominant kernel cost.  The
+# best formulation is platform-OPPOSITE (measured; the full study is
 # experiments/projector_kernels/fwd_back_findings.md):
-#   * CPU: the plain unrolled scatter-add.  Sort-based alternatives are 2-4x WORSE (XLA's CPU
-#     sort/segment lowering), so CPU keeps the original formulation unchanged.
-#   * GPU: sort the (tap, pixel) contributions by channel and reduce with a SORTED segment-sum
-#     -- 2.3-3.2x faster than the atomics-bound scatter-add, same values.
-# This mirrors the platform-split precedent in back projection (monolithic vs band kernel).
+#   * CPU: the plain per-tap scatter-add loop.  Sort-based alternatives are several times
+#     WORSE there, so the CPU path is the original formulation, unchanged.
+#   * GPU: the "SORTED channel reduction" (the term used throughout the geometry policies):
+#     sort the (tap, pixel) contributions by channel, then a sorted segment-sum --
+#     collision-free, 2-3x faster than the atomic scatter, same values.
+# channel_scatter_reduce below implements both; ProjectorParams.sort_by_channel selects.
 #
-# SORTED_CHANNEL_REDUCE_MIN_COLS: the sorted reduce's per-call cost is dominated by the SORT
-# (~0.65 ms per 128-view/2048-pixel call on H100, nearly independent of the column count),
-# while the scatter scales with the columns -- so for NARROW slice bands (band length B, in
-# the _slice_band_length sense: the banded forward hands the kernel B-slice bands) the scatter
-# wins.  Measured anchors: standalone-kernel crossover at B~96; END-TO-END (harness cells,
-# in-scan context) sorted LOSES at B=24 (parallel fwd 513^3 n=4: 285 -> 525 ms) and WINS at
-# B=63 (1024^3 n=4: 9325 -> 7083 ms).  48 sits between the end-to-end anchors, keeping the
-# measured B=63 win sorted.  The 25..62 interior is unmeasured end-to-end; revisit if forward
-# band sizing changes (which would also move most bands to B >= 96, deep in sorted territory).
+# The three constants below guard WHEN the sorted form actually wins.  Each encodes a
+# measured crossover; the named scripts in experiments/projector_kernels/ reproduce them.
+#
+# The sort's cost is per-call and nearly independent of the reduction's COLUMN count, while
+# the scatter's grows with it -- so narrow slice bands favor the scatter.  End-to-end
+# anchors: sorted loses at band length 24, wins at 63; 48 sits between them.
 SORTED_CHANNEL_REDUCE_MIN_COLS = 48
-# SORTED_CHANNEL_REDUCE_MAX_PSF_RADIUS: the sorted reduce also loses at WIDE psf.  Both the
-# sort's element count (psf_width * num_pixels) and the scatter's tap count scale with the
-# width, but measured end-to-end the sort's share grows faster (translation_fwd_psf_ab.py,
-# H100, 256-column reduce, full forward kernel): psf_width 3 -> 1.27x, 5 -> 1.02x,
-# 7 -> 0.85x (a loss), with compiled temps flat.  Radius 2 (width 5, the measured-neutral
-# point) is the inclusive cap; geometries whose psf can widen beyond it (translation at
-# large cone angle, multiaxis at large elevation) gate their policy on this.
+# The sorted form also loses at WIDE psf (point-spread function: how many detector channels
+# one voxel projects onto): full-kernel speedup 1.27x at psf_width 3, 1.02x at 5, 0.85x at 7
+# (translation_fwd_psf_ab.py).  Radius 2 (width 5, the measured neutral point) is the
+# inclusive cap; geometries whose psf can widen (translation at large cone angle, multiaxis
+# at large elevation) gate their policy on this.
 SORTED_CHANNEL_REDUCE_MAX_PSF_RADIUS = 2
-# SORTED_CHANNEL_REDUCE_MIN_COLLISION_RATIO: the sorted reduce's win comes from eliminating
-# duplicate-channel scatter collisions, so the controlling variable is the mean collisions
-# per channel, psf_width * num_pixels / num_det_channels.  Measured on the shared reduce
-# (pixel_count_crossover_ab.py, H100, P=2048): ratio 24/12/6 -> 0.67-0.90x sorted (wins;
-# odd-channel counts tie), ratio 2 (the REAL translation TCT shapes, ~3064 channels) ->
-# 4.5-6.5x SLOWER -- a cliff, not a taper (XLA's near-empty segment-sum lowering).  4 splits
-# the measured bracket [2 loses, 6 wins]; policies for geometries that can reach wide
-# detectors with modest pixel batches gate on it.  Follow-up: parallel/cone policies predate
-# this constant and their measured cells all sit at ratio >= 6; add the guard there if very
-# wide detectors (ratio < 4) become a real configuration.
+# The sorted form's win comes from eliminating scatter collisions, so the controlling
+# variable is the mean collisions per channel: psf_width * num_pixels / num_det_channels.
+# Sorted wins at ratio >= 6; at ratio ~2 (wide detectors -- translation's real ~3000-channel
+# TCT shapes) it is 4.5-6.5x SLOWER, a cliff rather than a taper
+# (pixel_count_crossover_ab.py).  4 splits the measured bracket.  Parallel/cone policies
+# predate this constant and their measured configurations all sit at ratio >= 6; add the
+# guard there if very wide detectors with modest pixel batches become a real configuration.
 SORTED_CHANNEL_REDUCE_MIN_COLLISION_RATIO = 4
 # ──────────────────────────────────────────────────────────────────────────────
 def channel_scatter_reduce(n, A, values, num_out, use_sorted=0):
@@ -110,7 +105,8 @@ def _channel_reduce_scatter_add(n, A, values, num_out):
 
 
 def _channel_reduce_sort_segsum(n, A, values, num_out):
-    """Sort contributions by channel, then a SORTED segment-sum (best on GPU; atomics-free).
+    """Sort contributions by channel, then a SORTED segment-sum (best on GPU: no colliding
+    atomic adds).
 
     ``lax.sort_key_val`` returns the sorted keys and the permutation TOGETHER, and the sorted
     keys themselves are used as the segment ids -- so the ids are consistent with the sort by
@@ -132,29 +128,28 @@ def _channel_reduce_sort_segsum(n, A, values, num_out):
 # ──────────────────────────────────────────────────────────────────────────────
 # Concrete integer scatter centers (the horizontal-fan rounding-bug fix)
 #
-# The horizontal fans' integer channel centers n_p_center = round(n_p) used to be computed
-# INSIDE the projector programs -- the precondition of the known XLA rounding bug (round of
-# an in-jit continuous projection coordinate feeding a scatter/gather inside a
-# vmap -> (lax.map) -> scatter chain; see experiments/bugs_and_artifacts/jax rounding bug/,
-# esp. phase_d_design.md).  They are now computed in THIS separate small jit, called
-# EAGERLY by the public projector wrappers, so they reach the projector programs as
-# concrete arrays: the round no longer exists inside those programs (parallel beam's
-# compiled forward/back contain no round at all), and forward/back share ONE authoritative
-# center value (adjointness at rounding ties by construction).  The vertical fans' per-slice
-# rounds ((views x pixels x slices)-shaped -- not materializable) are documented
-# accepted risk; see phase_d_design.md section 7.
+# The horizontal fans' integer channel centers, round(n_p), are computed in THIS separate
+# small jit -- called eagerly by the public projector wrappers -- and passed into the
+# projector programs as concrete arrays.  Reason: computing the round INSIDE those programs
+# is the precondition of a known XLA miscompilation (round of an in-jit continuous
+# projection coordinate feeding a scatter/gather inside a vmap -> (lax.map) -> scatter
+# chain; see experiments/bugs_and_artifacts/jax rounding bug/, esp. phase_d_design.md).
+# Two consequences worth knowing: parallel beam's compiled forward/back programs contain no
+# round at all, and forward/back consume ONE shared center value per (view, pixel), so the
+# pair stays adjoint even at rounding ties.  The vertical fans' per-slice rounds remain
+# in-jit -- a (views x pixels x slices) precompute is not materializable -- a documented,
+# monitored risk (phase_d_design.md section 7).
 #
-# channel_coord_fn is the geometry's compute_channel_coordinate (static, hashable staticmethod
-# -- the same float coordinate chain the kernels use, so the centers are consistent with the
-# in-kernel weights by construction).  pixels_major picks the output layout: False -> (V, P)
-# (the back/band drivers batch views on the leading axis), True -> (P, V) written directly in
-# pixels-major layout via out_axes (the forward driver batches pixels on the leading axis).
+# channel_coord_fn is the geometry's compute_channel_coordinate: the SAME float coordinate
+# chain the kernels use for their weights, so centers and weights cannot disagree.
+# pixels_major picks the output layout: False -> (views, pixels) for the back/band drivers
+# (which batch views on the leading axis), True -> (pixels, views) for the forward driver
+# (which batches pixels on the leading axis).
 #
-# N_PC_SINGLE_CALL_MAX_BYTES: above this size the public wrappers CHUNK the view axis (by the
-# op's view batch) instead of materializing the full (V, P) int32 array as one driver input --
-# bounding the resident centers transient at ~(view_batch x P) int32 (~0.5 GB at the 1024^3
-# full grid).  The threshold only chooses where the view loop lives, never values.  Initial
-# value pending the planned sweep; at typical VCD pixel-subset sizes every call is far below it.
+# N_PC_SINGLE_CALL_MAX_BYTES: above this size the public wrappers CHUNK the view axis (by
+# the op's view batch) instead of materializing the full (views, pixels) int32 array as one
+# driver input, bounding the resident centers array (~0.5 GB at a 1024^3 full grid).  The
+# threshold only chooses where the view loop lives, never values.
 N_PC_SINGLE_CALL_MAX_BYTES = 256 * 2**20
 
 
@@ -164,9 +159,9 @@ def _jit_compute_scatter_centers(view_params_array, pixel_indices, channel_coord
     """int32 channel centers round(n_p) for every (owned view, pixel); see the note above.
 
     owned_view_indices restricts to a view subset IN-JIT (a traced gather), exactly as the
-    projector drivers do -- the wrappers must never gather view params EAGERLY: one eager
-    array op per projector call costs ~1 ms of host time, which dominates host-bound
-    small-call workloads (measured: the VCD +35% regression was exactly this).
+    projector drivers do.  The wrappers must never gather view params EAGERLY: one eager
+    array op per projector call costs ~1 ms of host time, which dominates workloads made of
+    many small calls (this was a measured +35% on a VCD reconstruction).
     """
     if len(owned_view_indices) > 0:
         view_params_array = view_params_array[jnp.asarray(owned_view_indices)]
@@ -202,7 +197,8 @@ _accumulate_donated = jax.jit(lambda acc, x: acc + x, donate_argnums=0)
 # detector.  weight_scale is a scalar or per-pixel (num_pixels,) array (e.g. in-plane voxel
 # area / footprint length); precomputing it outside the tap loop is value-identical to the
 # historical in-loop expressions except translation, where dvr * L / cos became
-# (dvr / cos) * L -- a deliberate, accepted ULP-class reassociation.
+# (dvr / cos) * L -- a deliberate, accepted reassociation at the ~1 ULP (unit in the last
+# place, i.e. last-bit) level.
 # ──────────────────────────────────────────────────────────────────────────────
 def horizontal_fan_project(n_p, n_p_center, W_p_c, weight_scale, values, num_channels,
                            psf_radius, use_sorted=0):
@@ -264,11 +260,12 @@ def horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
         n_p / n_p_center / W_p_c / weight_scale / psf_radius: as in horizontal_fan_project.
         coeff_power (int, static): weights raised to this power (2 = the Hessian diagonal).
         use_stacked (int/bool): truthy = ONE stacked (psf_width * num_pixels, num_rows)
-            gather + reshape-sum over taps (measured 1.6-1.8x on H100 for parallel beam,
-            whose back has no vertical fan to hide the gather; a 1.00x composition no-op for
-            cone/multiaxis/translation, whose policies leave it off), else the per-tap
-            gather+FMA loop (CPU, and the vertical-fan geometries).  Concrete at trace time
-            (ProjectorParams.back_stacked_gather).
+            gather covering every tap, then a reshape-sum over taps.  A measured GPU win
+            only for parallel beam, whose back kernel has no vertical fan behind which the
+            gather latency can hide; in the vertical-fan geometries it changes nothing in
+            composition, so their policies leave it off.  Falsy = the per-tap gather + FMA
+            (fused multiply-add) loop, which is also the best CPU form.  Concrete at trace
+            time (ProjectorParams.back_stacked_gather).
 
     Returns:
         (num_pixels, num_rows) array of per-pixel weighted detector rows.
@@ -290,7 +287,7 @@ def horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
         weighted = A_chan_n.reshape(-1)[:, None] * gathered
         return weighted.reshape(n.shape[0], num_pixels, -1).sum(axis=0)
 
-    # The per-tap gather+FMA loop (the historical formulation).  Out-of-range taps gather a
+    # The per-tap gather + fused-multiply-add loop (the historical formulation).  Out-of-range taps gather a
     # CLAMPED row (jax clamps out-of-bounds gather indices) with zero weight, so no explicit
     # clip is needed here.
     det_rows = jnp.zeros((num_pixels, sinogram_view_T.shape[1]))
@@ -306,17 +303,31 @@ def horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Shared banded vertical-fan gather (cone + translation)
+# The banded back vertical fan -- the shared contract (canonical note; the geometry files
+# point here)
 #
-# The cone and translation banded back vertical fans are word-for-word twins: the same
-# trapezoid tap loop over detector ROWS (the vertical analogue of the horizontal fans
-# above), weights L / cos_alpha, applied to one pixel's detector column over a band of
-# GLOBAL slice indices, with padded slices zeroed.  The geometry enters only through the
-# per-slice coordinates (m_p, m_p_center, W_p_r, cos_alpha) from each geometry's
-# compute_vertical_data_single_pixel.  MULTIAXIS deliberately does NOT use this helper:
-# its vertical fan is structurally different (pure-L interpolation weights with the
-# mass-conserving amplitude applied POST-loop on the cylinder, mirroring its forward fan)
-# -- see MultiAxisParallelModel.back_vertical_fan_band_one_pixel.
+# Geometries whose back projection spreads one recon slice across a RANGE of detector rows
+# (cone, multiaxis, translation) structure their back kernels as: HORIZONTAL fan once per
+# view (it does not depend on the recon slice), then a VERTICAL fan evaluated over
+# contiguous BANDS of global recon-slice indices [g0, g0 + L).  The banded vertical fan's
+# contract, identical across those geometries:
+#
+#   * Physical z-coordinates come from the problem's recon_shape and the GLOBAL slice index
+#     (k = g0 + k_local), never from the band length -- so any tiling of the slice axis
+#     reproduces the full cylinder exactly (tiling-invariance; tested per geometry).
+#   * A slice whose global index is at or beyond the real slice count receives zero, so the
+#     zero-padding used to split the slice axis evenly across devices stays inert.
+#   * Consumers: the single-device back projector walks the slice axis in fixed-size bands
+#     with a ROLLED jax.lax.map (the band body compiles once and iterates at runtime, so
+#     compiled-program size is independent of the slice count; the band size is the memory
+#     knob).  back_project_one_view_to_band (horizontal fan once + ONE band) is the
+#     per-band entry the multi-device reduce-scatter back projector uses.
+#
+# vertical_fan_band_gather below is the tap loop itself, shared VERBATIM by cone and
+# translation (weights L / cos_alpha applied per tap).  MULTIAXIS deliberately keeps its own
+# loop: its vertical fan is structurally different (pure-L interpolation weights with the
+# mass-conserving amplitude applied POST-loop on the cylinder, mirroring its forward fan) --
+# see MultiAxisParallelModel.back_vertical_fan_band_one_pixel.
 # ──────────────────────────────────────────────────────────────────────────────
 def vertical_fan_band_gather(detector_column_values, slice_indices, m_p, m_p_center, W_p_r,
                              weight_divisor, num_det_rows, num_recon_slices,
@@ -427,15 +438,12 @@ class Projectors:
         # the angles/translations with NO recompile; a view-COUNT change is a geometry
         # change and rebuilds the projectors through set_params as before.
         self.view_params_array = jnp.asarray(self.tomography_model.get_params(view_params_name))
-        # The batch-size knobs are NOT captured here: the public wrappers below read the model's
-        # TILE POLICY (tm.tiles) AT CALL TIME (late binding), for the same reason
-        # view_params_array is late-bound.  _select_tile_policy recomputes it on every device
-        # re-layout, and configure_devices()
-        # re-lays-out WITHOUT recreating the projectors -- a construction-time capture would freeze
-        # the value computed for the automatic (all-devices) layout and silently run it at every
-        # later pinned device count.  The knobs are STATIC jit arguments, so a changed value
-        # retraces; it can never compute a wrong result.  Forward and back use SEPARATE knobs
-        # (opposite memory policies; see _set_view_batch_sizes).
+        # The batch-size knobs are NOT captured here: the public wrappers below read the
+        # model's TILE POLICY (tm.tiles) AT CALL TIME, for the same reason
+        # view_params_array is late-bound -- configure_devices() re-lays-out WITHOUT
+        # recreating the projectors, and a construction-time capture would silently keep
+        # running the first layout's values.  The knobs are STATIC jit arguments, so a
+        # changed value retraces; it can never compute a wrong result.
         tm = self.tomography_model
 
         # The jitted drivers are MODULE-LEVEL functions (defined at the end of this file),
@@ -464,8 +472,8 @@ class Projectors:
 
         # PERFORMANCE CONTRACT for these wrappers: NO eager array operations per call.
         # They run once per projector call -- hundreds of times per VCD iteration -- and one
-        # eager gather/slice costs ~1 ms of host time (measured: an eager per-call gather of
-        # the view params was the entire VCD +35% regression).  owned_view_indices passes
+        # eager gather/slice costs ~1 ms of host time (an eager per-call view-params gather
+        # measured as +35% on a VCD recon).  owned_view_indices passes
         # THROUGH to the jitted programs, which gather in-trace, exactly as the drivers
         # always did.
         def scatter_centers(pixel_indices, pixels_major, owned_view_indices):
