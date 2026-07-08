@@ -355,6 +355,27 @@ def makedirs(filepath):
             raise Exception(f"Could not create save directory '{save_dir}': {e}")
 
 
+def merge_log_files(merged_path, labeled_paths):
+    """Merge temp log files into one file, each under a section header, and remove the temps.
+
+    Missing temps are skipped; if none exist, no file is written.
+
+    Args:
+        merged_path (str): Path of the merged output file.
+        labeled_paths (iterable): (label, path) pairs in the order they should appear.
+    """
+    labeled_paths = [(label, path) for label, path in labeled_paths
+                     if path is not None and os.path.exists(path)]
+    if not labeled_paths:
+        return
+    with open(merged_path, 'w') as merged:
+        for label, path in labeled_paths:
+            merged.write('======== {} ========\n'.format(label))
+            with open(path, 'r') as f:
+                merged.write(f.read())
+            os.remove(path)
+
+
 def download_and_extract(download_url, save_dir):
     """
     Download or copy a file from a URL or local file path. If the file is a tarball (.tar, .tar.gz, etc.), extract it

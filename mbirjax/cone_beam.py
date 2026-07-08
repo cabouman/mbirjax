@@ -1354,14 +1354,9 @@ class ConeBeamModel(TomographyModel):
                                                              bot_recon_slice_offset, taper_top=False,
                                                              half_logfile_path=half_log_paths[1])
         finally:
-            if log_path and any(os.path.exists(p) for p in half_log_paths):
-                with open(log_path, 'w') as merged:
-                    for label, path in zip(('top', 'bottom'), half_log_paths):
-                        if os.path.exists(path):
-                            merged.write('======== split_sino_recon: {} half ========\n'.format(label))
-                            with open(path, 'r') as half_log:
-                                merged.write(half_log.read())
-                            os.remove(path)
+            if log_path:
+                mj.merge_log_files(log_path, zip(('split_sino_recon: top half', 'split_sino_recon: bottom half'),
+                                                 half_log_paths))
 
         # -------- Stitch together top and bottom reconstructions --------
         # Both halves were device_get'd to the host above, so stitch_arrays (host-preserving) assembles
