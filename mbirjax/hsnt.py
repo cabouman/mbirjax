@@ -15,13 +15,14 @@ from jax import numpy as jnp
 # Hyperspectral Neutron Radiographic/Tomographic Data Denoising Functions
 # -----------------------------------------------------------------------
 @jax.jit
-def newton_update(W, H, T):
+def newton_update(W, H, T, update_H=True):
     """JAX-optimized Newton update with automatic differentiation and line search.
 
     Args:
         W: Feature matrix (spatial pixels × num_materials), JAX array
         H: Spectral basis matrix (num_materials × spectral channels), JAX array
         T: Data term matrix (spatial pixels × spectral channels), JAX array
+        update_H: If False, keep H fixed and only update W.
 
     Returns:
         Updated (W, H) pair as JAX arrays
@@ -46,7 +47,7 @@ def newton_update(W, H, T):
     d2L_dH2 = (W.T**2) @ Z
 
     dW = grad_W / (d2L_dW2 + 1e-10)
-    dH = grad_H / (d2L_dH2 + 1e-10)
+    dH = lax.cond(update_H, lambda: grad_H / (d2L_dH2 + 1e-10), lambda: jnp.zeros_like(H))
 
     # Line search over learning rates (vectorized)
     learning_rates = jnp.logspace(0.33, -1, 5)
@@ -54,7 +55,7 @@ def newton_update(W, H, T):
     def line_search_step(carry, lr):
         W_best, H_best, loss_best, found = carry
         W_temp = jnp.maximum(W - lr * dW, 1e-10)
-        H_temp = jnp.maximum(H - lr * dH, 1e-10)
+        H_temp = lax.cond(update_H, lambda: jnp.maximum(H - lr * dH, 1e-10), lambda: H)
         X_temp = W_temp @ H_temp
         temp_loss = (jnp.exp(-X_temp) + T * X_temp).sum()
 
@@ -72,61 +73,33 @@ def newton_update(W, H, T):
     return W_new, H_new
 
 @jax.jit
-def multiplicative_update(W, H, T):
+def multiplicative_update(W, H, T, update_H=True):
     """JAX-optimized multiplicative update for non-negative factorization.
 
     Args:
         W: Feature matrix (spatial pixels × num_materials), JAX array
         H: Spectral basis matrix (num_materials × spectral channels), JAX array
         T: Data term matrix (spatial pixels × spectral channels), JAX array
+        update_H: If False, keep H fixed and only update W.
 
     Returns:
         Updated (W, H) pair as JAX arrays
     """
     Z = jnp.exp(-W @ H)
 
-    W_mult = ((Z @ H.T) / (T @ H.T) + 1) / 2
-    H_mult = ((W.T @ Z) / (W.T @ T) + 1) / 2
+    def update_W_only():
+        W_mult = ((Z @ H.T) / (T @ H.T) + 1) / 2
+        return W * W_mult, H
 
-    return W * W_mult, H * H_mult
+    def update_both():
+        W_mult = ((Z @ H.T) / (T @ H.T) + 1) / 2
+        H_mult = ((W.T @ Z) / (W.T @ T) + 1) / 2
+        return W * W_mult, H * H_mult
 
-def optimize_newt_body(T, num_materials, max_steps, rel_tol):
-    """Optimize W, H using Newton updates."""
-    num_pixels = T.shape[0]
-    num_wavelengths = T.shape[1]
+    return lax.cond(update_H, update_both, update_W_only)
 
-    # Fixed seed for reproducibility
-    key = jax.random.PRNGKey(jnp.array(129, dtype=int))
-
-    # ===== Newton Optimization =====
-    def newton_cond(state):
-        _, _, _, i, converged = state
-        return (i < max_steps) & (~converged)
-
-    def newton_body(state):
-        W, H, prev_loss, i, converged = state
-        W_new, H_new = newton_update(W, H, T)
-        loss_new = (jnp.exp(-W_new @ H_new) + T * (W_new @ H_new)).sum()
-        is_converged = jnp.abs(loss_new - prev_loss) / (prev_loss + 1e-10) < rel_tol
-        W_out = jnp.where(converged, W, W_new)
-        H_out = jnp.where(converged, H, H_new)
-        loss_out = jnp.where(converged, prev_loss, loss_new)
-        return (W_out, H_out, loss_out, i + 1, converged | is_converged)
-
-    key1, key2 = jax.random.split(key)
-    W_newt_init = jax.random.uniform(key1, shape=(num_pixels, num_materials), dtype=jnp.float32)
-    H_newt_init = jax.random.uniform(key2, shape=(num_materials, num_wavelengths), dtype=jnp.float32)
-
-    prev_loss_newt = (jnp.exp(-W_newt_init @ H_newt_init) + T * (W_newt_init @ H_newt_init)).sum()
-    state_newt = (W_newt_init, H_newt_init, prev_loss_newt, 0, False)
-    state_newt = lax.while_loop(newton_cond, newton_body, state_newt)
-    W_newt, H_newt, _, i, _ = state_newt
-
-    return W_newt, H_newt, i
-optimize_newt = jax.jit(optimize_newt_body, static_argnames=['num_materials', 'max_steps', 'rel_tol'])
-
-def optimize_mu_body(T, num_materials, max_steps, rel_tol):
-    """Optimize W, H using multiplicative updates."""
+def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, H_init=None):
+    """Factorize T into W and H by minimizing nonnegative attenuation loss."""
     num_pixels = T.shape[0]
     num_wavelengths = T.shape[1]
 
@@ -140,7 +113,7 @@ def optimize_mu_body(T, num_materials, max_steps, rel_tol):
 
     def mu_body(state):
         W, H, prev_loss, i, converged = state
-        W_new, H_new = multiplicative_update(W, H, T)
+        W_new, H_new = update(W, H, T, update_H=update_H)
         loss_new = (jnp.exp(-W_new @ H_new) + T * (W_new @ H_new)).sum()
         is_converged = jnp.abs(loss_new - prev_loss) / (prev_loss + 1e-10) < rel_tol
         W_out = jnp.where(converged, W, W_new)
@@ -148,18 +121,71 @@ def optimize_mu_body(T, num_materials, max_steps, rel_tol):
         loss_out = jnp.where(converged, prev_loss, loss_new)
         return (W_out, H_out, loss_out, i + 1, converged | is_converged)
 
-    key3, key4 = jax.random.split(key)
-    W_mu_init = jax.random.uniform(key3, shape=(num_pixels, num_materials), dtype=jnp.float32)
-    H_mu_init = jax.random.uniform(key4, shape=(num_materials, num_wavelengths), dtype=jnp.float32)
+    key1, key2 = jax.random.split(key)
+    W_init = jax.random.uniform(key1, shape=(num_pixels, num_materials), dtype=jnp.float32)
+    if H_init is None:
+        H_init = jax.random.uniform(key2, shape=(num_materials, num_wavelengths), dtype=jnp.float32)
 
-    prev_loss_mu = (jnp.exp(-W_mu_init @ H_mu_init) + T * (W_mu_init @ H_mu_init)).sum()
-    state_mu = (W_mu_init, H_mu_init, prev_loss_mu, 0, False)
-    state_mu = lax.while_loop(mu_cond, mu_body, state_mu)
-    W_mu, H_mu, _, i, _ = state_mu
+    prev_loss = (jnp.exp(-W_init @ H_init) + T * (W_init @ H_init)).sum()
+    state = (W_init, H_init, prev_loss, 0, False)
+    state = lax.while_loop(mu_cond, mu_body, state)
+    W, H, _, i, _ = state
 
-    return W_mu, H_mu, i
-optimize_mu = jax.jit(optimize_mu_body, static_argnames=['num_materials', 'max_steps', 'rel_tol'])
+    return W, H, i
+optimize = jax.jit(optimize_body, static_argnames=['update', 'num_materials', 'max_steps', 'rel_tol', 'update_H'])
 
+def nnal_factorization(T, method='quasi_newton', num_materials=3, max_steps=1000, rel_tol=1e-8, batch_size=None):
+    if method == 'quasi_newton':
+        update = newton_update
+    elif method == 'mann_multiplicative':
+        update = multiplicative_update
+    else:
+        raise ValueError("Invalid method. Choose 'quasi_newton' or 'mann_multiplicative'.")
+
+    kwargs = {
+        'update': update,
+        'num_materials': num_materials,
+        'max_steps': max_steps,
+        'rel_tol': rel_tol
+    }
+
+    if type(T) is not jnp.ndarray:
+        T = jnp.asarray(T, dtype=jnp.float32)
+
+    if batch_size is None:
+        return optimize(T, **kwargs)
+
+    num_pixels = T.shape[0]
+    num_batches = int(np.ceil(num_pixels / batch_size))
+
+    # Factor a spectra for each batch
+    H_list = []
+    i_list = []
+    for batch in range(num_batches):
+        start_idx = batch * batch_size
+        end_idx = min((batch + 1) * batch_size, num_pixels)
+        T_batch = T[start_idx:end_idx]
+        _, H_batch, i = optimize(T_batch, **kwargs)
+        H_list.append(H_batch)
+        i_list.append(i)
+    i_total = sum(i_list)
+
+    # Factor the combined spectra to estimate a single spectra for all batches
+    H_combined = jnp.vstack(H_list)
+    _, H, i = optimize(H_combined, **kwargs)
+    i_total += i
+
+    # Compute material coefficients for each batch using the unified spectra
+    W = jnp.zeros((num_pixels, num_materials), dtype=jnp.float32)
+    for batch in range(num_batches):
+        start_idx = batch * batch_size
+        end_idx = min((batch + 1) * batch_size, num_pixels)
+        T_batch = T[start_idx:end_idx]
+        W_batch, _, i = optimize(T_batch, **kwargs, update_H=False, H_init=H)
+        W = W.at[start_idx:end_idx].set(W_batch)
+        i_total += i
+
+    return W, H, i_total
 
 def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius',
                   max_iter=300, tolerance=1e-10, batch_size=2 ** 27, subspace_basis=None, verbose=1):

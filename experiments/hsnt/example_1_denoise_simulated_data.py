@@ -18,16 +18,16 @@ from jax import lax
 
 from scipy import optimize
 
-from mbirjax.hsnt import dehydrate, generate_hyper_data, optimize_newt, optimize_mu
+from mbirjax.hsnt import dehydrate, generate_hyper_data, nnal_factorization
 from plot_utils import plot_images
 
 
 def main():
     # Simulation parameters
     num_angles = 1  # Number of projection angles
-    detector_rows = 64  # Number of rows in the detector
+    detector_rows = 640  # Number of rows in the detector
     detector_columns = 64  # Number of columns in the detector
-    dosage_rate = 3  # Neutron dosage rate
+    dosage_rate = 300  # Neutron dosage rate
     material_density = {"Ni": 0.25, "Cu": 0.25, "Al": 0.75}  # Define material density (vol. fraction)
     dataset_type = 'attenuation'  # Choose between 'attenuation' or 'transmission'
 
@@ -78,21 +78,28 @@ def main():
     # Convert to JAX array
     T_jax = jnp.asarray(T, dtype=jnp.float32)
 
+    kwargs = {
+        'num_materials': num_materials,
+        'max_steps': 1000,
+        'rel_tol': 1e-8,
+        'batch_size': 100,
+    }
+
     # Perform hyperspectral denoising
-    W_newt, H_newt, i_newt = optimize_newt(
-        T_jax, num_materials=num_materials, max_steps=1000, rel_tol=1e-8
+    W_newt, H_newt, i_newt = nnal_factorization(
+        T_jax, method='quasi_newton', **kwargs
     )
     start_time = time.time()
-    W_newt, H_newt, i_newt = optimize_newt(
-        T_jax, num_materials=num_materials, max_steps=1000, rel_tol=1e-8
+    W_newt, H_newt, i_newt = nnal_factorization(
+        T_jax, method='quasi_newton', **kwargs
     )
     print('Newton reconstruction completed in: ', time.time() - start_time, ' seconds after ', i_newt, ' iterations')
-    W_mu, H_mu, i_mu = optimize_mu(
-        T_jax, num_materials=num_materials, max_steps=1000, rel_tol=1e-8
+    W_mu, H_mu, i_mu = nnal_factorization(
+        T_jax, method='mann_multiplicative', **kwargs
     )
     start_time = time.time()
-    W_mu, H_mu, i_mu = optimize_mu(
-        T_jax, num_materials=num_materials, max_steps=1000, rel_tol=1e-8
+    W_mu, H_mu, i_mu = nnal_factorization(
+        T_jax, method='mann_multiplicative', **kwargs
     )
     print('Multiplicative reconstruction completed in: ', time.time() - start_time, ' seconds after ', i_mu, ' iterations')
 
