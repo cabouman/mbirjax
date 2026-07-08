@@ -6,13 +6,162 @@ from scipy.ndimage import gaussian_filter1d
 from sklearn.decomposition import non_negative_factorization as nmf
 from sklearn.utils.extmath import randomized_svd
 
+import jax
+from jax import lax
+from jax import numpy as jnp
+
 
 # -----------------------------------------------------------------------
 # Hyperspectral Neutron Radiographic/Tomographic Data Denoising Functions
 # -----------------------------------------------------------------------
+@jax.jit
+def newton_update(W, H, T):
+    """JAX-optimized Newton update with automatic differentiation and line search.
+
+    Args:
+        W: Feature matrix (spatial pixels × num_materials), JAX array
+        H: Spectral basis matrix (num_materials × spectral channels), JAX array
+        T: Data term matrix (spatial pixels × spectral channels), JAX array
+
+    Returns:
+        Updated (W, H) pair as JAX arrays
+    """
+    def loss_fn(W_h_pair):
+        W_, H_ = W_h_pair
+        X = W_ @ H_
+        return (jnp.exp(-X) + T * X).sum()
+
+    # Use JAX's automatic differentiation
+    loss_grad_fn = jax.grad(loss_fn)
+
+    X = W @ H
+    Z = jnp.exp(-X)
+    init_loss = (Z + T * X).sum()
+
+    # Compute gradients via automatic differentiation
+    grad_W, grad_H = loss_grad_fn((W, H))
+
+    # Compute Hessian diagonal approximation manually (kept explicit for numerical stability)
+    d2L_dW2 = Z @ (H.T**2)
+    d2L_dH2 = (W.T**2) @ Z
+
+    dW = grad_W / (d2L_dW2 + 1e-10)
+    dH = grad_H / (d2L_dH2 + 1e-10)
+
+    # Line search over learning rates (vectorized)
+    learning_rates = jnp.logspace(0.33, -1, 5)
+
+    def line_search_step(carry, lr):
+        W_best, H_best, loss_best, found = carry
+        W_temp = jnp.maximum(W - lr * dW, 1e-10)
+        H_temp = jnp.maximum(H - lr * dH, 1e-10)
+        X_temp = W_temp @ H_temp
+        temp_loss = (jnp.exp(-X_temp) + T * X_temp).sum()
+
+        # Update if loss improved
+        improved = temp_loss < loss_best
+        W_best = jnp.where(improved, W_temp, W_best)
+        H_best = jnp.where(improved, H_temp, H_best)
+        loss_best = jnp.where(improved, temp_loss, loss_best)
+        found = found | improved
+
+        return (W_best, H_best, loss_best, found), None
+
+    (W_new, H_new, _, _), _ = lax.scan(line_search_step, (W, H, init_loss, False), learning_rates)
+
+    return W_new, H_new
+
+@jax.jit
+def multiplicative_update(W, H, T):
+    """JAX-optimized multiplicative update for non-negative factorization.
+
+    Args:
+        W: Feature matrix (spatial pixels × num_materials), JAX array
+        H: Spectral basis matrix (num_materials × spectral channels), JAX array
+        T: Data term matrix (spatial pixels × spectral channels), JAX array
+
+    Returns:
+        Updated (W, H) pair as JAX arrays
+    """
+    Z = jnp.exp(-W @ H)
+
+    W_mult = ((Z @ H.T) / (T @ H.T) + 1) / 2
+    H_mult = ((W.T @ Z) / (W.T @ T) + 1) / 2
+
+    return W * W_mult, H * H_mult
+
+def optimize_newt_body(T, num_materials, max_steps, rel_tol):
+    """Optimize W, H using Newton updates."""
+    num_pixels = T.shape[0]
+    num_wavelengths = T.shape[1]
+
+    # Fixed seed for reproducibility
+    key = jax.random.PRNGKey(jnp.array(129, dtype=int))
+
+    # ===== Newton Optimization =====
+    def newton_cond(state):
+        _, _, _, i, converged = state
+        return (i < max_steps) & (~converged)
+
+    def newton_body(state):
+        W, H, prev_loss, i, converged = state
+        W_new, H_new = newton_update(W, H, T)
+        loss_new = (jnp.exp(-W_new @ H_new) + T * (W_new @ H_new)).sum()
+        is_converged = jnp.abs(loss_new - prev_loss) / (prev_loss + 1e-10) < rel_tol
+        W_out = jnp.where(converged, W, W_new)
+        H_out = jnp.where(converged, H, H_new)
+        loss_out = jnp.where(converged, prev_loss, loss_new)
+        return (W_out, H_out, loss_out, i + 1, converged | is_converged)
+
+    key1, key2 = jax.random.split(key)
+    W_newt_init = jax.random.uniform(key1, shape=(num_pixels, num_materials), dtype=jnp.float32)
+    H_newt_init = jax.random.uniform(key2, shape=(num_materials, num_wavelengths), dtype=jnp.float32)
+
+    prev_loss_newt = (jnp.exp(-W_newt_init @ H_newt_init) + T * (W_newt_init @ H_newt_init)).sum()
+    state_newt = (W_newt_init, H_newt_init, prev_loss_newt, 0, False)
+    state_newt = lax.while_loop(newton_cond, newton_body, state_newt)
+    W_newt, H_newt, _, i, _ = state_newt
+
+    return W_newt, H_newt, i
+optimize_newt = jax.jit(optimize_newt_body, static_argnames=['num_materials', 'max_steps', 'rel_tol'])
+
+def optimize_mu_body(T, num_materials, max_steps, rel_tol):
+    """Optimize W, H using multiplicative updates."""
+    num_pixels = T.shape[0]
+    num_wavelengths = T.shape[1]
+
+    # Fixed seed for reproducibility
+    key = jax.random.PRNGKey(129)
+
+    # ===== Multiplicative Optimization =====
+    def mu_cond(state):
+        _, _, _, i, converged = state
+        return (i < max_steps) & (~converged)
+
+    def mu_body(state):
+        W, H, prev_loss, i, converged = state
+        W_new, H_new = multiplicative_update(W, H, T)
+        loss_new = (jnp.exp(-W_new @ H_new) + T * (W_new @ H_new)).sum()
+        is_converged = jnp.abs(loss_new - prev_loss) / (prev_loss + 1e-10) < rel_tol
+        W_out = jnp.where(converged, W, W_new)
+        H_out = jnp.where(converged, H, H_new)
+        loss_out = jnp.where(converged, prev_loss, loss_new)
+        return (W_out, H_out, loss_out, i + 1, converged | is_converged)
+
+    key3, key4 = jax.random.split(key)
+    W_mu_init = jax.random.uniform(key3, shape=(num_pixels, num_materials), dtype=jnp.float32)
+    H_mu_init = jax.random.uniform(key4, shape=(num_materials, num_wavelengths), dtype=jnp.float32)
+
+    prev_loss_mu = (jnp.exp(-W_mu_init @ H_mu_init) + T * (W_mu_init @ H_mu_init)).sum()
+    state_mu = (W_mu_init, H_mu_init, prev_loss_mu, 0, False)
+    state_mu = lax.while_loop(mu_cond, mu_body, state_mu)
+    W_mu, H_mu, _, i, _ = state_mu
+
+    return W_mu, H_mu, i
+optimize_mu = jax.jit(optimize_mu_body, static_argnames=['num_materials', 'max_steps', 'rel_tol'])
 
 
-def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius', 
+def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius',
                   max_iter=300, tolerance=1e-10, batch_size=2 ** 27, subspace_basis=None, verbose=1):
     """
     Denoise a hyperspectral dataset using dehydration and rehydration as described in:
@@ -63,7 +212,7 @@ def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_f
     return denoised_data
 
 
-def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius', 
+def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius',
               max_iter=300, tolerance=1e-10, batch_size=2 ** 27, subspace_basis=None, verbose=1):
     """
     Dehydrate/compress a hyperspectral dataset onto a low-dimensional subspace as described in:
@@ -75,7 +224,7 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
     Args:
         data: Hyperspectral data array with arbitrary axes and a spectral axis of length :math:`N_k` in the last position.
         dataset_type: 'attenuation' or 'transmission' where attenuation = -log(transmission). Defaults to 'attenuation'.
-        num_materials: Number of materials in the sample :math:`N_m`. If None, the number is estimated automatically from 
+        num_materials: Number of materials in the sample :math:`N_m`. If None, the number is estimated automatically from
             the data. Defaults to None.
         safety_factor: A multiplier (≥ 1) applied to the number of materials to set the subspace dimension :math:`N_s`.
             Defaults to 2.
@@ -172,7 +321,7 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
                                                         tol=tolerance,
                                                         max_iter=max(50, max_iter // num_batches),
                                                         update_H=True)
-                
+
         # Estimate final subspace basis from batch estimations using NMF
         subspace_basis_batch = np.reshape(np.array(subspace_basis_batch), (-1, num_bands))
         with warnings.catch_warnings():
@@ -578,7 +727,7 @@ def export_hsnt_data_hdf5(filename, data, metadata):
 # -----------------------------------------------------------------------
 
 
-def generate_hyper_data(material_basis, num_angles=1, detector_rows=64, detector_columns=64, dosage_rate=300, 
+def generate_hyper_data(material_basis, num_angles=1, detector_rows=64, detector_columns=64, dosage_rate=300,
                         material_density=None, verbose=1):
     """
     Simulate noisy hyperspectral neutron attenuation data for :math:`N_m=3` materials (Ni, Cu, Al) and :math:`N_k` wavelength bins.
@@ -625,7 +774,7 @@ def generate_hyper_data(material_basis, num_angles=1, detector_rows=64, detector
     epsilon = 1e-8
     number_of_materials = material_basis.shape[0]
     number_of_wavelengths = material_basis.shape[1]
-    
+
     # Generate view angles
     angles = np.linspace(0, np.pi, num_angles)
 
