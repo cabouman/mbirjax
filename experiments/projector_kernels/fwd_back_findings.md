@@ -341,6 +341,13 @@ reassociation.  A side effect: every geometry's back kernel now HONORS `back_sta
 (measured composition no-op elsewhere), and a kernel-equality test pins the branch for
 multiaxis (scalar weights) and translation (per-pixel weights, psf_radius 3).
 
+**Vertical-fan twins (follow-up, same day):** the cone and translation banded back
+vertical fans were word-for-word twins (same L / cos_alpha tap loop, padded-slice zeroing);
+they now share `projectors.vertical_fan_band_gather` VERBATIM — bitwise-preserving, no ULP
+license needed.  Multiaxis' vertical fan deliberately stays its own (structurally different:
+pure-L weights, mass-conserving amplitude applied post-loop — documented at the function).
+The forward vertical fans remain per-geometry (genuinely divergent batching structures).
+
 Verification (old = the committed rollout 9cfe52e):
 - **Value gate (the primary gate, stronger than HLO parity): parallel, cone, and multiaxis
   kernels are BITWISE EQUAL on every production path** (fwd both flag states; back both

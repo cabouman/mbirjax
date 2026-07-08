@@ -251,6 +251,59 @@ def horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
     return det_rows
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Shared banded vertical-fan gather (cone + translation)
+#
+# The cone and translation banded back vertical fans are word-for-word twins: the same
+# trapezoid tap loop over detector ROWS (the vertical analogue of the horizontal fans
+# above), weights L / cos_alpha, applied to one pixel's detector column over a band of
+# GLOBAL slice indices, with padded slices zeroed.  The geometry enters only through the
+# per-slice coordinates (m_p, m_p_center, W_p_r, cos_alpha) from each geometry's
+# compute_vertical_data_single_pixel.  MULTIAXIS deliberately does NOT use this helper:
+# its vertical fan is structurally different (pure-L interpolation weights with the
+# mass-conserving amplitude applied POST-loop on the cylinder, mirroring its forward fan)
+# -- see MultiAxisParallelModel.back_vertical_fan_band_one_pixel.
+# ──────────────────────────────────────────────────────────────────────────────
+def vertical_fan_band_gather(detector_column_values, slice_indices, m_p, m_p_center, W_p_r,
+                             weight_divisor, num_det_rows, num_recon_slices,
+                             psf_radius, coeff_power=1):
+    """Gather one pixel's detector column onto a band of global recon slices.
+
+    Args:
+        detector_column_values (array, (num_det_rows,)): this pixel's detector column.
+        slice_indices (int array, (num_band_slices,)): GLOBAL slice indices g0 + arange(L).
+        m_p (array, (num_band_slices,)): continuous projected detector-row coordinate
+            per band slice.
+        m_p_center (int array, (num_band_slices,)): rounded center row per band slice.
+        W_p_r (scalar or (num_band_slices,)): projected voxel width in row units.
+        weight_divisor (scalar or (num_band_slices,)): the geometry weight divisor
+            (cos_alpha_p_z; divides the trapezoid term VERBATIM, preserving the historical
+            arithmetic bit-for-bit).
+        num_det_rows (int, static): detector rows.
+        num_recon_slices (int, static): the REAL slice count (padded slices beyond it are
+            zeroed, keeping padding inert).
+        psf_radius (int, static): tap radius.
+        coeff_power (int, static): weights raised to this power (2 = the Hessian diagonal).
+
+    Returns:
+        (num_band_slices,) voxel values for global slices [g0, g0 + L).
+    """
+    L_max = jnp.minimum(1, W_p_r)
+    new_cylinder = jnp.zeros(slice_indices.shape[0])
+    for m_offset in jnp.arange(start=-psf_radius, stop=psf_radius + 1):
+        m = m_p_center + m_offset
+        abs_delta_p_r_m = jnp.abs(m_p - m)
+        L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
+        A_row_m = L_p_r_m / weight_divisor
+        A_row_m *= (m >= 0) * (m < num_det_rows)
+        A_row_m = A_row_m ** coeff_power
+        new_cylinder = jnp.add(new_cylinder, A_row_m * detector_column_values[m])
+    # Padded global slices (index >= the real slice count) are inert.  No-op when
+    # g0 + L <= num_recon_slices.
+    new_cylinder = new_cylinder * (slice_indices < num_recon_slices)
+    return new_cylinder
+
+
 class Projectors:
 
     def __init__(self, tomography_model):

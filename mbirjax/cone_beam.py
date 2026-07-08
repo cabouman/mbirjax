@@ -10,7 +10,7 @@ import numpy as np
 import mbirjax as mj
 from mbirjax import TomographyModel, tomography_utils, ParameterHandler
 from mbirjax.projectors import (horizontal_fan_project, horizontal_fan_back,
-                                SORTED_CHANNEL_REDUCE_MIN_COLS)
+                                vertical_fan_band_gather, SORTED_CHANNEL_REDUCE_MIN_COLS)
 
 ConeBeamParamNames = mj.ParamNames | Literal['view_params_array', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
 
@@ -660,20 +660,13 @@ class ConeBeamModel(TomographyModel):
         slice_indices = g0 + jnp.arange(num_band_slices)            # GLOBAL band indices
         m_p, m_p_center, W_p_r, cos_alpha_p_z = ConeBeamModel.compute_vertical_data_single_pixel(
             pixel_index, slice_indices, single_view_params, projector_params)
-        L_max = jnp.minimum(1, W_p_r)
-
-        new_cylinder = jnp.zeros(num_band_slices)
-        for m_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-            m = m_p_center + m_offset
-            abs_delta_p_r_m = jnp.abs(m_p - m)
-            L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
-            A_row_m = L_p_r_m / cos_alpha_p_z
-            A_row_m *= (m >= 0) * (m < num_det_rows)
-            A_row_m = A_row_m ** coeff_power
-            new_cylinder = jnp.add(new_cylinder, A_row_m * detector_column_values[m])
-        # Padded global slices (index >= S_real) are inert.  No-op when g0+L <= S_real.
-        new_cylinder = new_cylinder * (slice_indices < num_recon_slices)
-        return new_cylinder
+        # The shared banded vertical-fan gather (see vertical_fan_band_gather in
+        # projectors.py; translation shares it verbatim -- weights L / cos_alpha, padded
+        # slices zeroed).
+        return vertical_fan_band_gather(detector_column_values, slice_indices, m_p,
+                                        m_p_center, W_p_r, cos_alpha_p_z, num_det_rows,
+                                        num_recon_slices, gp.psf_radius,
+                                        coeff_power=coeff_power)
 
     @staticmethod
     def back_vertical_fan_band_pixel_batch(det_voxel_cylinder, pixel_indices, single_view_params,

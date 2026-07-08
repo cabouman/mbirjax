@@ -617,6 +617,12 @@ class MultiAxisParallelModel(TomographyModel):
                                          g0, num_band_slices, coeff_power=1):
         """Back vertical fan for one pixel, producing a BAND of output slices.
 
+        Deliberately NOT the shared projectors.vertical_fan_band_gather (which cone and
+        translation use verbatim): multiaxis' vertical fan is structurally different --
+        pure-L interpolation weights with the mass-conserving amplitude applied POST-loop
+        on the cylinder (the adjoint of its forward fan folding the amplitude into the
+        voxel VALUES), not an L / cos_alpha per-tap weight.
+
         Back-projects this pixel's detector column onto the GLOBAL recon slices [g0, g0+L)
         (output length L = num_band_slices).  The z<->row map is anchored on the problem's real
         slice count (recon_shape[2]), so this just offsets the band indices by g0; padded global
