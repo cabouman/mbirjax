@@ -231,7 +231,8 @@ class TranslationModel(mj.TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, translation_vector, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, translation_vector, n_p_centers,
+                                                projector_params):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -240,6 +241,8 @@ class TranslationModel(mj.TomographyModel):
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             translation_vector (jax array of floats):  1D translation vector in ALU units for this view.
+            n_p_centers (jax array of int): (num_pixels,) integer channel centers for this view,
+                computed OUTSIDE this program (see compute_channel_coordinate).
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -255,7 +258,8 @@ class TranslationModel(mj.TomographyModel):
         horizontal_fan_projector = TranslationModel.forward_horizontal_fan_pixel_batch_to_one_view
 
         new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, translation_vector, projector_params)
-        sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, translation_vector, projector_params)
+        sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, translation_vector,
+                                                 n_p_centers, projector_params)
 
         return sinogram_view
 
@@ -285,7 +289,8 @@ class TranslationModel(mj.TomographyModel):
         return new_pixels
 
     @staticmethod
-    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, translation_vector, projector_params):
+    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, translation_vector,
+                                                       n_p_centers, projector_params):
         """
         Apply a horizontal fan beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a horizontal fan beam maps a cylinder slice to a detector row.
@@ -309,7 +314,7 @@ class TranslationModel(mj.TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, cos_theta_p = TranslationModel.compute_horizontal_data(pixel_indices, translation_vector, projector_params)
+        n_p, W_p_c, cos_theta_p = TranslationModel.compute_horizontal_data(pixel_indices, translation_vector, projector_params)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # The shared trapezoid-rule fan (see horizontal_fan_project in projectors.py, which
@@ -320,7 +325,7 @@ class TranslationModel(mj.TomographyModel):
         # (instead of the historical per-tap dvr * L / cos) is a deliberate ULP-class
         # reassociation, accepted for the shared-helper form.
         weight_scale = delta_voxel_row / cos_theta_p
-        sinogram_view_T = horizontal_fan_project(n_p, n_p_center, W_p_c, weight_scale,
+        sinogram_view_T = horizontal_fan_project(n_p, n_p_centers, W_p_c, weight_scale,
                                                  voxel_values, num_det_channels, gp.psf_radius,
                                                  use_sorted=projector_params.sort_by_channel)
         return sinogram_view_T.T
@@ -431,8 +436,8 @@ class TranslationModel(mj.TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames=['projector_params', 'slice_band_size'])
-    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params,
-                                             coeff_power=1, slice_band_size=None):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, n_p_centers,
+                                             projector_params, coeff_power=1, slice_band_size=None):
         """
         Back project one view to multiple pixels (voxel cylinders).
 
@@ -465,7 +470,8 @@ class TranslationModel(mj.TomographyModel):
 
         # Horizontal fan once per view -> detector-based voxel cylinder (num_pixels, num_det_rows).
         det_voxel_cylinder = TranslationModel.back_horizontal_fan_one_view_to_pixel_batch(
-            sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
+            sinogram_view, pixel_indices, single_view_params, n_p_centers, projector_params,
+            coeff_power=coeff_power)
 
         # Tile the slice axis into uniform bands; jax.lax.map needs equal-shape iterations, so
         # the last band runs past num_recon_slices and is cropped off below.
@@ -490,7 +496,7 @@ class TranslationModel(mj.TomographyModel):
 
     @staticmethod
     def back_horizontal_fan_one_view_to_pixel_batch(sinogram_view, pixel_indices, translation_vector,
-                                                    projector_params, coeff_power=1):
+                                                    n_p_centers, projector_params, coeff_power=1):
         """
         Apply the back projection of a horizontal fan beam transformation to a single sinogram view
         and return the resulting voxel cylinders.
@@ -513,7 +519,7 @@ class TranslationModel(mj.TomographyModel):
         num_pixels = pixel_indices.shape[0]
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, cos_theta_p = TranslationModel.compute_horizontal_data(pixel_indices, translation_vector, projector_params)
+        n_p, W_p_c, cos_theta_p = TranslationModel.compute_horizontal_data(pixel_indices, translation_vector, projector_params)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # The shared adjoint trapezoid-rule fan (see horizontal_fan_back in projectors.py,
@@ -523,7 +529,7 @@ class TranslationModel(mj.TomographyModel):
         # (per-pixel; same accepted ULP-class reassociation).
         sinogram_view_T = sinogram_view.T            # (num_det_channels, num_det_rows)
         weight_scale = delta_voxel_row / cos_theta_p
-        return horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
+        return horizontal_fan_back(sinogram_view_T, n_p, n_p_centers, W_p_c, weight_scale,
                                    gp.psf_radius, coeff_power=coeff_power,
                                    use_stacked=projector_params.back_stacked_gather)
 
@@ -602,8 +608,8 @@ class TranslationModel(mj.TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames=['projector_params', 'num_band_slices'])
-    def back_project_one_view_to_band(sinogram_view, pixel_indices, single_view_params, projector_params,
-                                      g0, num_band_slices, coeff_power=1):
+    def back_project_one_view_to_band(sinogram_view, pixel_indices, single_view_params, n_p_centers,
+                                      projector_params, g0, num_band_slices, coeff_power=1):
         """Banded back projection of one view onto GLOBAL recon slices [g0, g0+L).
 
         Horizontal fan once (full det rows) -> banded vertical fan.  Returns
@@ -611,7 +617,8 @@ class TranslationModel(mj.TomographyModel):
         static.  This is the per-band entry the multi-device reduce-scatter back projector
         uses on each view-owner's shard."""
         det_voxel_cylinder = TranslationModel.back_horizontal_fan_one_view_to_pixel_batch(
-            sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
+            sinogram_view, pixel_indices, single_view_params, n_p_centers, projector_params,
+            coeff_power=coeff_power)
         return TranslationModel.back_vertical_fan_band_pixel_batch(
             det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
             g0, num_band_slices, coeff_power=coeff_power)
@@ -670,9 +677,20 @@ class TranslationModel(mj.TomographyModel):
         return vertical_data
 
     @staticmethod
+    def compute_channel_coordinate(pixel_indices, single_view_params, projector_params):
+        """Continuous projected channel coordinate n_p for one view (the float chain whose
+        rounded value is the horizontal fans' integer center; see the base-class docstring
+        for the concrete-input contract).  Reuses compute_horizontal_data verbatim
+        so the centers are consistent with the in-kernel weights by construction."""
+        return TranslationModel.compute_horizontal_data(pixel_indices, single_view_params,
+                                                        projector_params)[0]
+
+    @staticmethod
     def compute_horizontal_data(pixel_indices, translation_vector, projector_params):
         """
-        Compute the quantities n_p, n_p_center, W_p_c, cos_alpha_p_xy needed for vertical projection.
+        Compute the quantities n_p, W_p_c, cos_theta_p needed for horizontal projection.
+        (The integer center round(n_p) is deliberately NOT computed here -- see
+        compute_channel_coordinate.)
 
         Args:
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
@@ -703,9 +721,9 @@ class TranslationModel(mj.TomographyModel):
         u_p = pixel_mag * x_p
         det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
 
-        # Calculate indices on the detector grid
+        # Calculate indices on the detector grid.  NOTE: no round here -- the integer center
+        # is computed outside the projector programs (see compute_channel_coordinate).
         n_p = (u_p + gp.det_channel_offset) / gp.delta_det_channel + det_center_channel  # Sync with detector_uv_to_mn
-        n_p_center = jnp.round(n_p).astype(int)
 
         # Compute horizontal and vertical cone angle of pixel
         theta_p = jnp.arctan2(u_p, gp.source_detector_dist)
@@ -716,7 +734,7 @@ class TranslationModel(mj.TomographyModel):
         # Compute projected voxel width along columns and rows (in fraction of detector size)
         W_p_c = pixel_mag * (gp.delta_voxel / gp.delta_det_channel)
 
-        horizontal_data = (n_p, n_p_center, W_p_c, cos_theta_p)
+        horizontal_data = (n_p, W_p_c, cos_theta_p)
 
         return horizontal_data
 

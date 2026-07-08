@@ -123,6 +123,16 @@ short jax/perf tips in `claude_prompt.md`.
 - **cuSolver-family calls (`jnp.linalg.solve/svd/eig/...`) on small systems → host `np.linalg`.**
   Their workspaces allocate outside XLA's pool (see §7) and the async failure surfaces only at first
   read.  (`jnp.linalg.norm` is pure XLA — fine, but jit it; see §7.)
+- **Keep per-call wrappers free of EAGER array ops.**  One eager gather/slice of a device array
+  costs ~1 ms of HOST time (jax's eager dispatch path), invisible to device profiles and to
+  micro-benches that hit a different argument path.  (Phase D's VCD +35%: ONE eager
+  view-params gather per projector call, 547×/recon — the micro-bench used the empty-default
+  `owned_view_indices` and measured flat.)  Restrict view/pixel subsets INSIDE the jitted
+  program (traced gather); wrappers on hot paths carry an explicit no-eager-ops contract
+  (`projectors.py` create_projectors).  Attribution playbook when a loop is HOST-bound
+  (device trace shows device-time ≪ wall, e.g. VCD at 200³ is ~95% host): cProfile the warm
+  run and diff old-vs-new by cumtime/ncalls — kernel benches and dispatch-count probes
+  cannot see it.
 - **`lax.map(batch_size=…)` is unsafe for large batches (jax#27591)** — use `vmap` for parallelism
   and scan without `batch_size`.
 - **A heterogeneous (CPU+GPU) mesh is fragile** — the hybrid mode is two separate single-device

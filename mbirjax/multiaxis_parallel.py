@@ -264,6 +264,26 @@ class MultiAxisParallelModel(TomographyModel):
         m = (v + det_row_offset) / delta_det_row + (num_det_rows - 1) / 2.0
         return m, n
 
+    @staticmethod
+    def compute_channel_coordinate(pixel_indices, single_view_params, projector_params):
+        """Continuous projected channel coordinate n_p for one view, via the shared
+        coordinate stages (u = azimuth-rotated x).  This is the ONE chain behind the fwd and
+        back horizontal fans AND the scatter-centers precompute (the integer center
+        round(n_p) is computed OUTSIDE the projector programs; see the base-class docstring
+        for the concrete-input contract)."""
+        gp = projector_params.geometry_params
+        num_det_rows, num_det_channels = projector_params.sinogram_shape[1:]
+        azimuth = single_view_params[0]
+        row_idx, col_idx = jnp.unravel_index(pixel_indices, projector_params.recon_shape[:2])
+        x, _, _ = MultiAxisParallelModel.recon_ijk_to_xyz(
+            row_idx, col_idx, 0, gp.delta_voxel, gp.voxel_row_aspect, gp.voxel_slice_aspect,
+            projector_params.recon_shape, gp.recon_slice_offset, azimuth)
+        u_p = x  # geometry_xyz_to_uv: the channel coordinate u is the azimuth-rotated x
+        _, n_p = MultiAxisParallelModel.detector_uv_to_mn(
+            u_p, 0.0, gp.delta_det_channel, gp.delta_det_row, gp.det_channel_offset,
+            gp.det_row_offset, num_det_rows, num_det_channels)
+        return n_p
+
     def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
         """Multiaxis tiling: on GPU the forward horizontal fan uses the SORTED channel
         reduction (see projectors.channel_scatter_reduce); everything else inherits the base
@@ -307,10 +327,13 @@ class MultiAxisParallelModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, single_view_params, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, single_view_params, n_p_centers,
+                                                projector_params):
         """
         Forward project a set of voxel cylinders to one view.
         Splits the operation into Vertical (Z -> V) and Horizontal (V -> U) steps (mirrors ConeBeamModel).
+        n_p_centers: this view's (num_pixels,) concrete integer channel centers (see
+        compute_channel_coordinate) -- consumed by the horizontal fan.
         """
         # The vertical fan anchors the slice<->row map on the REAL slice count (recon_shape[2]);
         # require the input cylinder to have exactly that length so the params anchor and the
@@ -329,7 +352,8 @@ class MultiAxisParallelModel(TomographyModel):
         # 2. Horizontal Projection: Scatter pixel-rows to detector channels
         # Output: (num_det_rows, num_det_channels)
         horizontal_projector = MultiAxisParallelModel.forward_horizontal_fan_pixel_batch_to_one_view
-        sinogram_view = horizontal_projector(rows_data, pixel_indices, single_view_params, projector_params)
+        sinogram_view = horizontal_projector(rows_data, pixel_indices, single_view_params,
+                                             n_p_centers, projector_params)
 
         return sinogram_view
 
@@ -456,29 +480,25 @@ class MultiAxisParallelModel(TomographyModel):
         return det_column
 
     @staticmethod
-    def forward_horizontal_fan_pixel_batch_to_one_view(rows_data, pixel_indices, single_view_params, projector_params):
+    def forward_horizontal_fan_pixel_batch_to_one_view(rows_data, pixel_indices, single_view_params,
+                                                       n_p_centers, projector_params):
         """
         Maps (pixels, rows) -> (rows, channels) (mirrors horizontal fan in ConeBeamModel and TranslationModel).
-        Scatters the vertical strips into the correct horizontal channels.
+        Scatters the vertical strips into the correct horizontal channels.  n_p_centers is this
+        view's concrete integer channel centers (see compute_channel_coordinate).
         """
         gp = projector_params.geometry_params
-        num_det_rows, num_det_channels = projector_params.sinogram_shape[1:]
+        num_det_channels = projector_params.sinogram_shape[2]
         azimuth = single_view_params[0]
 
         # Anisotropic in-plane pitches: the row (y) axis uses delta_voxel_row, the column (x)
         # axis uses delta_voxel.
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Map pixels to channel coordinates via the shared coordinate stages (u = rotated x).
-        row_idx, col_idx = jnp.unravel_index(pixel_indices, projector_params.recon_shape[:2])
-        x, _, _ = MultiAxisParallelModel.recon_ijk_to_xyz(
-            row_idx, col_idx, 0, gp.delta_voxel, gp.voxel_row_aspect, gp.voxel_slice_aspect,
-            projector_params.recon_shape, gp.recon_slice_offset, azimuth)
-        u_p = x  # geometry_xyz_to_uv: the channel coordinate u is the azimuth-rotated x
-        _, n_p = MultiAxisParallelModel.detector_uv_to_mn(
-            u_p, 0.0, gp.delta_det_channel, gp.delta_det_row, gp.det_channel_offset,
-            gp.det_row_offset, num_det_rows, num_det_channels)
-        n_p_center = jnp.round(n_p).astype(int)
+        # The continuous channel coordinate via the ONE shared chain (also behind the centers
+        # precompute, so centers and weights can never disagree).
+        n_p = MultiAxisParallelModel.compute_channel_coordinate(pixel_indices, single_view_params,
+                                                                projector_params)
 
         # In-plane footprint of the voxel on the channels: the larger of the two in-plane pitches
         # projected onto the u-axis (matches ParallelBeamModel.compute_proj_data).  Reduces to
@@ -493,7 +513,7 @@ class MultiAxisParallelModel(TomographyModel):
         # static).  The weight scale -- in-plane voxel cross-section area over the footprint
         # length -- is a per-VIEW scalar here (the footprint depends only on the azimuth).
         weight_scale = (gp.delta_voxel * delta_voxel_row) / footprint_xy
-        sinogram_view_T = horizontal_fan_project(n_p, n_p_center, W_p_c, weight_scale,
+        sinogram_view_T = horizontal_fan_project(n_p, n_p_centers, W_p_c, weight_scale,
                                                  rows_data, num_det_channels, gp.psf_radius,
                                                  use_sorted=projector_params.sort_by_channel)
         return sinogram_view_T.T
@@ -504,8 +524,8 @@ class MultiAxisParallelModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames=['projector_params', 'slice_band_size'])
-    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params,
-                                             coeff_power=1, slice_band_size=None):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, n_p_centers,
+                                             projector_params, coeff_power=1, slice_band_size=None):
         """
         Back project one view to multiple voxel cylinders: horizontal fan (channels -> rows)
         ONCE, then walk the recon slice axis in fixed-size bands with a ROLLED jax.lax.map
@@ -535,7 +555,7 @@ class MultiAxisParallelModel(TomographyModel):
 
         # Horizontal fan once per view -> (num_pixels, num_det_rows).
         rows_data = MultiAxisParallelModel.back_horizontal_fan_one_view_to_pixel_batch(
-            sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power)
+            sinogram_view, pixel_indices, single_view_params, n_p_centers, projector_params, coeff_power)
 
         # Tile the slice axis into uniform bands; jax.lax.map needs equal-shape iterations, so
         # the last band runs past num_recon_slices and is cropped off below.
@@ -559,26 +579,19 @@ class MultiAxisParallelModel(TomographyModel):
         return back_projection
 
     @staticmethod
-    def back_horizontal_fan_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params,
-                                                    coeff_power=1):
+    def back_horizontal_fan_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params,
+                                                    n_p_centers, projector_params, coeff_power=1):
         gp = projector_params.geometry_params
-        num_det_rows, num_det_channels = projector_params.sinogram_shape[1:]
+        num_det_channels = projector_params.sinogram_shape[2]
         azimuth = single_view_params[0]
-        num_pixels = pixel_indices.shape[0]
 
         # Anisotropic in-plane pitches (must match the forward horizontal fan for adjointness).
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Geometry U via the shared coordinate stages (must match the forward horizontal fan).
-        row_idx, col_idx = jnp.unravel_index(pixel_indices, projector_params.recon_shape[:2])
-        x, _, _ = MultiAxisParallelModel.recon_ijk_to_xyz(
-            row_idx, col_idx, 0, gp.delta_voxel, gp.voxel_row_aspect, gp.voxel_slice_aspect,
-            projector_params.recon_shape, gp.recon_slice_offset, azimuth)
-        u_p = x  # geometry_xyz_to_uv: the channel coordinate u is the azimuth-rotated x
-        _, n_p = MultiAxisParallelModel.detector_uv_to_mn(
-            u_p, 0.0, gp.delta_det_channel, gp.delta_det_row, gp.det_channel_offset,
-            gp.det_row_offset, num_det_rows, num_det_channels)
-        n_p_center = jnp.round(n_p).astype(int)
+        # The continuous channel coordinate via the ONE shared chain (matches the forward fan
+        # and the centers precompute -- adjoint by construction, even at rounding ties).
+        n_p = MultiAxisParallelModel.compute_channel_coordinate(pixel_indices, single_view_params,
+                                                                projector_params)
 
         footprint_xy = jnp.maximum(jnp.abs(jnp.cos(azimuth)) * gp.delta_voxel,
                                    jnp.abs(jnp.sin(azimuth)) * delta_voxel_row)
@@ -590,7 +603,7 @@ class MultiAxisParallelModel(TomographyModel):
         # no-op behind the vertical fan).  Weight scale mirrors the forward fan.
         sinogram_view_T = sinogram_view.T            # (num_det_channels, num_det_rows)
         weight_scale = (gp.delta_voxel * delta_voxel_row) / footprint_xy
-        return horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
+        return horizontal_fan_back(sinogram_view_T, n_p, n_p_centers, W_p_c, weight_scale,
                                    gp.psf_radius, coeff_power=coeff_power,
                                    use_stacked=projector_params.back_stacked_gather)
 
@@ -712,16 +725,18 @@ class MultiAxisParallelModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames=['projector_params', 'num_band_slices'])
-    def back_project_one_view_to_band(sinogram_view, pixel_indices, single_view_params, projector_params,
-                                      g0, num_band_slices, coeff_power=1):
+    def back_project_one_view_to_band(sinogram_view, pixel_indices, single_view_params, n_p_centers,
+                                      projector_params, g0, num_band_slices, coeff_power=1):
         """Banded back projection of one view onto GLOBAL recon slices [g0, g0+L).
 
         Horizontal fan once (full detector) -> banded vertical fan.  Returns
         (num_pixels, num_band_slices).  ``g0`` is traced; ``num_band_slices`` (= L) is static.
+        ``n_p_centers`` is this view's concrete integer channel centers (see compute_channel_coordinate).
         This is the per-band entry the multi-device reduce-scatter back projector uses on each
         view-owner's shard."""
         rows_data = MultiAxisParallelModel.back_horizontal_fan_one_view_to_pixel_batch(
-            sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
+            sinogram_view, pixel_indices, single_view_params, n_p_centers, projector_params,
+            coeff_power=coeff_power)
         return MultiAxisParallelModel.back_vertical_fan_band_pixel_batch(
             rows_data, pixel_indices, single_view_params, projector_params,
             g0, num_band_slices, coeff_power=coeff_power)

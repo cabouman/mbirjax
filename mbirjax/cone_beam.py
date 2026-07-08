@@ -306,7 +306,8 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, single_view_params, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, single_view_params, n_p_centers,
+                                                projector_params):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -315,11 +316,16 @@ class ConeBeamModel(TomographyModel):
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             single_view_params: These are the angle and helical_z_shift for the view being forward projected.
+            n_p_centers (jax array of int): (num_pixels,) integer channel centers for this view,
+                computed OUTSIDE this program (see compute_channel_coordinate).
+                Consumed by the horizontal fan; the vertical fan's per-slice rounds remain
+                in-jit (documented accepted risk; a per-slice precompute is not
+                materializable).
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
-        """        
+        """
         recon_shape = projector_params.recon_shape
         num_recon_slices = recon_shape[2]
         if voxel_values.shape[0] != pixel_indices.shape[0] or len(voxel_values.shape) < 2 or \
@@ -334,7 +340,8 @@ class ConeBeamModel(TomographyModel):
         with jax.named_scope("cone/forward/vertical_fan"):
             new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, single_view_params, projector_params)
         with jax.named_scope("cone/forward/horizontal_fan"):
-            sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, single_view_params, projector_params)
+            sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, single_view_params,
+                                                     n_p_centers, projector_params)
 
         return sinogram_view
 
@@ -364,7 +371,8 @@ class ConeBeamModel(TomographyModel):
         return new_pixels
 
     @staticmethod
-    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, single_view_params, projector_params):
+    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, single_view_params,
+                                                       n_p_centers, projector_params):
         """
         Apply a horizontal fan beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a horizontal fan beam maps a cylinder slice to a detector row.
@@ -387,7 +395,7 @@ class ConeBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
+        n_p, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # The shared trapezoid-rule fan (see horizontal_fan_project in projectors.py, which
@@ -398,7 +406,7 @@ class ConeBeamModel(TomographyModel):
         # footprint length -- is a PER-PIXEL (num_pixels,) array (per-pixel magnification);
         # the helper broadcasts it.
         weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
-        sinogram_view_T = horizontal_fan_project(n_p, n_p_center, W_p_c, weight_scale,
+        sinogram_view_T = horizontal_fan_project(n_p, n_p_centers, W_p_c, weight_scale,
                                                  voxel_values, num_det_channels, gp.psf_radius,
                                                  use_sorted=projector_params.sort_by_channel)
         return sinogram_view_T.T
@@ -503,8 +511,8 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames=['projector_params', 'slice_band_size'])
-    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params,
-                                             coeff_power=1, slice_band_size=None):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, n_p_centers,
+                                             projector_params, coeff_power=1, slice_band_size=None):
         """
         Back project one view to multiple pixels (voxel cylinders).
 
@@ -539,7 +547,8 @@ class ConeBeamModel(TomographyModel):
         # named_scope: stable, code-localized profiling regions (see experiments/profiling).
         with jax.named_scope("cone/back/pixel/horizontal_fan"):
             det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
-                sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
+                sinogram_view, pixel_indices, single_view_params, n_p_centers, projector_params,
+                coeff_power=coeff_power)
 
         # Tile the slice axis into uniform bands; jax.lax.map needs equal-shape iterations, so
         # the last band runs past num_recon_slices and is cropped off below.
@@ -568,7 +577,7 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     def back_horizontal_fan_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params,
-                                                    projector_params, coeff_power=1):
+                                                    n_p_centers, projector_params, coeff_power=1):
         """
         Apply the back projection of a horizontal fan beam transformation to a single sinogram view
         and return the resulting voxel cylinders.
@@ -592,7 +601,7 @@ class ConeBeamModel(TomographyModel):
         num_pixels = pixel_indices.shape[0]
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
+        n_p, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # The shared adjoint trapezoid-rule fan (see horizontal_fan_back in projectors.py,
@@ -602,7 +611,7 @@ class ConeBeamModel(TomographyModel):
         # mirrors the forward fan.
         sinogram_view_T = sinogram_view.T            # (num_det_channels, num_det_rows)
         weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
-        return horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
+        return horizontal_fan_back(sinogram_view_T, n_p, n_p_centers, W_p_c, weight_scale,
                                    gp.psf_radius, coeff_power=coeff_power,
                                    use_stacked=projector_params.back_stacked_gather)
 
@@ -682,8 +691,8 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames=['projector_params', 'num_band_slices'])
-    def back_project_one_view_to_band(sinogram_view, pixel_indices, single_view_params, projector_params,
-                                      g0, num_band_slices, coeff_power=1):
+    def back_project_one_view_to_band(sinogram_view, pixel_indices, single_view_params, n_p_centers,
+                                      projector_params, g0, num_band_slices, coeff_power=1):
         """Banded back projection of one view onto GLOBAL recon slices [g0, g0+L).
 
         Horizontal fan once (full det rows) -> banded vertical fan.  Returns
@@ -693,7 +702,8 @@ class ConeBeamModel(TomographyModel):
         # is where the L1-bound transpose lives; see experiments/profiling/key_findings.md).
         with jax.named_scope("cone/back/band/horizontal_fan"):
             det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
-                sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
+                sinogram_view, pixel_indices, single_view_params, n_p_centers, projector_params,
+                coeff_power=coeff_power)
         with jax.named_scope("cone/back/band/vertical_fan"):
             return ConeBeamModel.back_vertical_fan_band_pixel_batch(
                 det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
@@ -756,9 +766,20 @@ class ConeBeamModel(TomographyModel):
         return vertical_data
 
     @staticmethod
+    def compute_channel_coordinate(pixel_indices, single_view_params, projector_params):
+        """Continuous projected channel coordinate n_p for one view (the float chain whose
+        rounded value is the horizontal fans' integer center; see the base-class docstring
+        for the concrete-input contract).  Reuses compute_horizontal_data verbatim
+        so the centers are consistent with the in-kernel weights by construction."""
+        return ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params,
+                                                     projector_params)[0]
+
+    @staticmethod
     def compute_horizontal_data(pixel_indices, single_view_params, projector_params):
         """
-        Compute the quantities n_p, n_p_center, W_p_c, footprint_xy needed for horizontal projection.
+        Compute the quantities n_p, W_p_c, footprint_xy needed for horizontal projection.
+        (The integer center round(n_p) is deliberately NOT computed here -- see
+        compute_channel_coordinate.)
 
         Behavior differs by detector type:
 
@@ -773,7 +794,7 @@ class ConeBeamModel(TomographyModel):
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
-            n_p, n_p_center, W_p_c, footprint_xy
+            n_p, W_p_c, footprint_xy
         """
         angle = single_view_params[0]
         helical_z_shift = single_view_params[1]
@@ -804,7 +825,8 @@ class ConeBeamModel(TomographyModel):
 
         # Calculate indices on the detector grid
         n_p = (u_p + gp.det_channel_offset) / gp.delta_det_channel + det_center_channel  # Sync with detector_uv_to_mn
-        n_p_center = jnp.round(n_p).astype(int)
+        # NOTE: no round here -- the integer center is computed outside the projector
+        # programs (see compute_channel_coordinate).
 
         # theta_p and W_p_c computation differ between flat and curved detectors
         if not gp.use_curved_detector: # 'flat'
@@ -822,7 +844,7 @@ class ConeBeamModel(TomographyModel):
             # No cos(theta_p) denominator: arc parameterisation absorbs the foreshortening
             W_p_c = pixel_mag * (footprint_xy / gp.delta_det_channel)
 
-        horizontal_data = (n_p, n_p_center, W_p_c, footprint_xy)
+        horizontal_data = (n_p, W_p_c, footprint_xy)
 
         return horizontal_data
 

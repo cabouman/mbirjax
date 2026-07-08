@@ -1,9 +1,10 @@
 # Phase D design: the `n_p_center` concrete-input precompute
 
-*Drafted 2026-07-08 (branch `greg/kernel_investigation`), for design discussion — no
-implementation yet.  Supersedes §4 of `jax_rounding_bug.md` as the implementation plan (that
-document remains the authoritative record of the bug itself, which is still present in JAX);
-this one reflects the June module-jit refactor and the July TilePolicy/kernel work.*
+*Drafted 2026-07-08 (branch `greg/kernel_investigation`); IMPLEMENTED as designed the same
+day — see §10 (as built) at the end.  Supersedes §4 of `jax_rounding_bug.md` as the
+implementation plan (that document remains the authoritative record of the bug itself, which
+is still present in JAX); this one reflects the June module-jit refactor and the July
+TilePolicy/kernel work.*
 
 ## 1. Goal and the fix principle
 
@@ -185,3 +186,38 @@ recompute).  The later sort-permutation cache (GPU refinement) can revisit this.
 3. **Class V acceptance** (§7, option 1) — agreed, or should option 3 get design time now?
 4. **Layout plumbing** (§5.3): pass per-op natural layouts vs extend the batching helpers
    to batch a chosen axis — either is contained; pick at implementation review.
+
+## 10. As built (2026-07-08)
+
+Implemented per §5 with these resolutions: int32 + hybrid chunking (§9-1); threshold
+`projectors.N_PC_SINGLE_CALL_MAX_BYTES = 256 MB` initial, chunk size = the op's view batch
+(§9-2); Class V accepted + monitored (§9-3); per-op natural layouts, batching helpers
+untouched (§9-4 — they already batch tuples, so forward passes pixels-major (P, V) and
+back/band views-major (V, P), one batch-sized transpose each inside the drivers).
+
+Key pieces: per-geometry `compute_channel_coordinate` (the [0] of the existing float chain;
+multiaxis extracted its inline chain into one shared method used by BOTH hfans and the
+precompute); `projectors._jit_compute_scatter_centers` (vmapped round, `out_axes` picks the
+layout); kernels take `n_p_centers` per view; wrappers compute centers eagerly with a
+tracer-guard assert and never chunk a multi-device view axis (back chunking slices the
+sinogram eagerly, single-device only).
+
+Verification highlights (full record in `experiments/projector_kernels/fwd_back_findings.md`):
+the minimized repro on jax 0.10.1 still fires and T15j (this pattern) is clean on all 24
+batches; the compiled parallel fwd AND back programs contain ZERO round ops; value gates
+bitwise except a benign multiaxis-back fusion-context ULP (hfan-only probe bitwise);
+`tests/test_scatter_centers.py` pins the centers, the chunked path, and the outer-jit
+refusal.
+
+**Post-implementation episode (same day): the eager-gather VCD regression.**  The first GPU
+round showed VCD +35% at 200³.  Attribution chain: repeat-trials (real, tight) → wrapper
+micro-bench (flat!) → dispatch-count probe (exonerated) → exact-shape sweep (flat) → device
+trace (device time DOWN — the cell is ~95% HOST-bound) → cProfile (the answer: ONE eager
+`view_params[asarray(owned)]` gather per projector call, ~1 ms host each, 547×/recon; the
+micro-bench had used the empty-default `owned_view_indices` path).  Fix: `owned_view_indices`
+passes THROUGH to the jitted programs (the drivers' historical in-jit gather restored; the
+centers jit gained the same in-jit gather), leaving the wrappers with ZERO eager array ops on
+the single-call path — now an explicit performance contract in create_projectors.  After the
+fix: VCD 200³ neutral-to-better (2092 → 1950 ms), 1024³ fwd/back −3%, memory unchanged.
+Remaining accepted costs: mid-size fwd cells +~0.5 GB (materialized centers + chunk concat;
+memory-gate ack) and 513-class back +8% (the chunked accumulation).

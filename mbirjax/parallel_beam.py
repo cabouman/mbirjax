@@ -235,7 +235,8 @@ class ParallelBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, n_p_centers,
+                                                projector_params):
         """
         Apply a parallel beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a parallel beam maps a cylinder slice to a detector row.
@@ -247,6 +248,9 @@ class ParallelBeamModel(TomographyModel):
             pixel_indices (jax array of int):  1D vector of shape (len(pixel_indices), ) holding the indices into
                 the flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
+            n_p_centers (jax array of int): (num_pixels,) integer channel centers for this view,
+                computed OUTSIDE this program (see compute_channel_coordinate) -- the
+                concrete-input contract; do not recompute in-kernel.
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -258,7 +262,7 @@ class ParallelBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
+        n_p, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # The output detector-row axis is sized from the actual input cylinder
@@ -279,14 +283,15 @@ class ParallelBeamModel(TomographyModel):
         # trace-time since projector_params is static).  Parallel beam's weight scale is the
         # in-plane voxel area over the footprint length, a per-view scalar.
         weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
-        sinogram_view_T = horizontal_fan_project(n_p, n_p_center, W_p_c, weight_scale,
+        sinogram_view_T = horizontal_fan_project(n_p, n_p_centers, W_p_c, weight_scale,
                                                  voxel_values, num_det_channels, gp.psf_radius,
                                                  use_sorted=projector_params.sort_by_channel)
         return sinogram_view_T.T
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, angle, projector_params, coeff_power=1):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, angle, n_p_centers,
+                                             projector_params, coeff_power=1):
         """
         Apply parallel back projection to a single sinogram view and return the resulting voxel cylinders.
 
@@ -295,6 +300,8 @@ class ParallelBeamModel(TomographyModel):
                 2D jax array of shape (num_det_rows)x(num_det_channels)
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
             angle (float): The projection angle in radians for this view.
+            n_p_centers (jax array of int): (num_pixels,) integer channel centers for this view --
+                the SAME concrete centers the forward kernel uses (see compute_channel_coordinate).
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
@@ -307,7 +314,7 @@ class ParallelBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
+        n_p, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
         # The output slice axis is sized from the actual input view (sino_T.shape[1] inside
@@ -326,14 +333,27 @@ class ParallelBeamModel(TomographyModel):
         # trace-time since projector_params is static).
         sinogram_view_T = sinogram_view.T            # (num_det_channels, num_input_rows)
         weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
-        return horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
+        return horizontal_fan_back(sinogram_view_T, n_p, n_p_centers, W_p_c, weight_scale,
                                    gp.psf_radius, coeff_power=coeff_power,
                                    use_stacked=projector_params.back_stacked_gather)
 
     @staticmethod
+    def compute_channel_coordinate(pixel_indices, single_view_params, projector_params):
+        """Continuous projected channel coordinate n_p for one view (the float chain whose
+        rounded value is the horizontal fans' integer center; see the base-class docstring
+        for the concrete-input contract).  Reuses compute_proj_data verbatim so the
+        centers are consistent with the in-kernel weights by construction."""
+        return ParallelBeamModel.compute_proj_data(pixel_indices, single_view_params,
+                                                   projector_params)[0]
+
+    @staticmethod
     def compute_proj_data(pixel_indices, angle, projector_params):
         """
-        Compute the quantities n_p, n_p_center, W_p_c, cos_alpha_p_xy needed for vertical projection.
+        Compute the quantities n_p, W_p_c, footprint_xy needed for horizontal projection.
+
+        The integer center round(n_p) is deliberately NOT computed here: the projector
+        wrappers round n_p OUTSIDE the projector programs (via compute_channel_coordinate)
+        and pass the concrete centers into the kernels -- the horizontal-fan rounding-bug fix.
 
         Args:
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
@@ -341,7 +361,7 @@ class ParallelBeamModel(TomographyModel):
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
-            n_p, n_p_center, W_p_c, footprint_xy
+            n_p, W_p_c, footprint_xy
         """
         # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
         # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
@@ -359,9 +379,9 @@ class ParallelBeamModel(TomographyModel):
 
         det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
 
-        # Calculate indices on the detector grid
+        # Calculate indices on the detector grid.  NOTE: no round here -- the integer center
+        # is computed outside the projector programs (see compute_channel_coordinate).
         n_p = (x_p + gp.det_channel_offset) / gp.delta_det_channel + det_center_channel
-        n_p_center = jnp.round(n_p).astype(int)
 
         # Compute footprint for row and columns
         footprint_xy = jnp.maximum(jnp.abs(jnp.cos(angle)) * gp.delta_voxel, jnp.abs(jnp.sin(angle)) * delta_voxel_row)
@@ -369,7 +389,7 @@ class ParallelBeamModel(TomographyModel):
         # Compute projected voxel width along columns and rows (in fraction of detector size)
         W_p_c = footprint_xy / gp.delta_det_channel
 
-        proj_data = (n_p, n_p_center, W_p_c, footprint_xy)
+        proj_data = (n_p, W_p_c, footprint_xy)
 
         return proj_data
 

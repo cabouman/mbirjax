@@ -1,4 +1,5 @@
 from collections import namedtuple
+import numpy as np
 import jax
 import jax.numpy as jnp
 import mbirjax
@@ -126,6 +127,59 @@ def _channel_reduce_sort_segsum(n, A, values, num_out):
     # materializing a second (psf_width * num_pixels, num_cols) transient.
     updates = A.reshape(-1)[order][:, None] * values[order % num_pixels]
     return jax.ops.segment_sum(updates, sorted_n, num_segments=num_out, indices_are_sorted=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Concrete integer scatter centers (the horizontal-fan rounding-bug fix)
+#
+# The horizontal fans' integer channel centers n_p_center = round(n_p) used to be computed
+# INSIDE the projector programs -- the precondition of the known XLA rounding bug (round of
+# an in-jit continuous projection coordinate feeding a scatter/gather inside a
+# vmap -> (lax.map) -> scatter chain; see experiments/bugs_and_artifacts/jax rounding bug/,
+# esp. phase_d_design.md).  They are now computed in THIS separate small jit, called
+# EAGERLY by the public projector wrappers, so they reach the projector programs as
+# concrete arrays: the round no longer exists inside those programs (parallel beam's
+# compiled forward/back contain no round at all), and forward/back share ONE authoritative
+# center value (adjointness at rounding ties by construction).  The vertical fans' per-slice
+# rounds ((views x pixels x slices)-shaped -- not materializable) are documented
+# accepted risk; see phase_d_design.md section 7.
+#
+# channel_coord_fn is the geometry's compute_channel_coordinate (static, hashable staticmethod
+# -- the same float coordinate chain the kernels use, so the centers are consistent with the
+# in-kernel weights by construction).  pixels_major picks the output layout: False -> (V, P)
+# (the back/band drivers batch views on the leading axis), True -> (P, V) written directly in
+# pixels-major layout via out_axes (the forward driver batches pixels on the leading axis).
+#
+# N_PC_SINGLE_CALL_MAX_BYTES: above this size the public wrappers CHUNK the view axis (by the
+# op's view batch) instead of materializing the full (V, P) int32 array as one driver input --
+# bounding the resident centers transient at ~(view_batch x P) int32 (~0.5 GB at the 1024^3
+# full grid).  The threshold only chooses where the view loop lives, never values.  Initial
+# value pending the planned sweep; at typical VCD pixel-subset sizes every call is far below it.
+N_PC_SINGLE_CALL_MAX_BYTES = 256 * 2**20
+
+
+@partial(jax.jit, static_argnames=['channel_coord_fn', 'projector_params', 'pixels_major'])
+def _jit_compute_scatter_centers(view_params_array, pixel_indices, channel_coord_fn,
+                                 projector_params, pixels_major=False, owned_view_indices=()):
+    """int32 channel centers round(n_p) for every (owned view, pixel); see the note above.
+
+    owned_view_indices restricts to a view subset IN-JIT (a traced gather), exactly as the
+    projector drivers do -- the wrappers must never gather view params EAGERLY: one eager
+    array op per projector call costs ~1 ms of host time, which dominates host-bound
+    small-call workloads (measured: the VCD +35% regression was exactly this).
+    """
+    if len(owned_view_indices) > 0:
+        view_params_array = view_params_array[jnp.asarray(owned_view_indices)]
+
+    def one_view(single_view_params):
+        n_p = channel_coord_fn(pixel_indices, single_view_params, projector_params)
+        return jnp.round(n_p).astype(jnp.int32)
+    return jax.vmap(one_view, out_axes=1 if pixels_major else 0)(view_params_array)
+
+
+# Donated eager accumulator for the chunked back paths: acc's buffer is reused, so the
+# accumulation holds two (num_pixels, num_slices) arrays, not three.
+_accumulate_donated = jax.jit(lambda acc, x: acc + x, donate_argnums=0)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -399,27 +453,103 @@ class Projectors:
         self._jit_sparse_forward_project = _jit_sparse_forward_project
         self._jit_sparse_back_project = _jit_sparse_back_project
 
+        # ── Concrete integer scatter centers ─────────────────────────────
+        # The wrappers below compute the horizontal fans' integer channel centers EAGERLY
+        # (in the separate _jit_compute_scatter_centers program) and pass them into the
+        # jitted drivers as concrete arrays -- see the scatter-centers note at the top of this
+        # file.  channel_coord_fn is the geometry's float coordinate chain, so the centers
+        # are consistent with the in-kernel weights by construction, and forward/back share
+        # ONE center value (adjoint even at rounding ties).
+        channel_coord_fn = tomography_model.compute_channel_coordinate
+
+        # PERFORMANCE CONTRACT for these wrappers: NO eager array operations per call.
+        # They run once per projector call -- hundreds of times per VCD iteration -- and one
+        # eager gather/slice costs ~1 ms of host time (measured: an eager per-call gather of
+        # the view params was the entire VCD +35% regression).  owned_view_indices passes
+        # THROUGH to the jitted programs, which gather in-trace, exactly as the drivers
+        # always did.
+        def scatter_centers(pixel_indices, pixels_major, owned_view_indices):
+            n_pc = _jit_compute_scatter_centers(
+                self.view_params_array, pixel_indices, channel_coord_fn=channel_coord_fn,
+                projector_params=projector_params, pixels_major=pixels_major,
+                owned_view_indices=owned_view_indices)
+            # The CONCRETENESS contract: if these wrappers are ever swallowed by an outer
+            # jit, the centers become tracers and the rounding-bug precondition silently
+            # returns.  Guard loudly instead.
+            assert not isinstance(n_pc, jax.core.Tracer), (
+                'The projector wrappers must run OUTSIDE any jit: the integer scatter '
+                'centers have to reach the projector programs as CONCRETE arrays '
+                '(see experiments/bugs_and_artifacts/jax rounding bug/phase_d_design.md).')
+            return n_pc
+
+        def num_owned(owned_view_indices):
+            n = len(owned_view_indices)
+            return n if n > 0 else int(self.view_params_array.shape[0])
+
         # Public entry points keep the original signatures; they read the CURRENT
         # view-parameter array off this object at call time (late binding), so
         # set_view_parameters takes effect on the next call with no recompile.
+        # Above N_PC_SINGLE_CALL_MAX_BYTES they CHUNK the view axis by the op's view batch
+        # (bounding the resident centers array) and reuse ONE compiled driver per full
+        # chunk; the threshold only chooses where the view loop lives, never values.  The
+        # chunked paths may do a few eager slices (bounded by the chunk count, amortized
+        # over large calls); the SINGLE-call path -- every small/frequent call -- does none.
         def sparse_forward_project_public(voxel_values, pixel_indices, owned_view_indices=()):
-            return _jit_sparse_forward_project(
-                self.view_params_array, voxel_values, pixel_indices,
-                fwd_kernel=forward_project_pixel_batch_to_one_view,
-                projector_params=projector_params,
-                pixel_batch_size=tm.tiles.fwd_pixel_batch,
-                view_batch_size=tm.tiles.fwd_view_batch,
-                owned_view_indices=owned_view_indices)
+            num_views_owned = num_owned(owned_view_indices)
+            view_batch = tm.tiles.fwd_view_batch
+
+            def one_call(owned_chunk):
+                n_pc = scatter_centers(pixel_indices, pixels_major=True,
+                                       owned_view_indices=owned_chunk)
+                return _jit_sparse_forward_project(
+                    self.view_params_array, voxel_values, pixel_indices, n_pc,
+                    fwd_kernel=forward_project_pixel_batch_to_one_view,
+                    projector_params=projector_params,
+                    pixel_batch_size=tm.tiles.fwd_pixel_batch,
+                    view_batch_size=view_batch,
+                    owned_view_indices=owned_chunk)
+
+            if 4 * num_views_owned * int(pixel_indices.shape[0]) <= N_PC_SINGLE_CALL_MAX_BYTES:
+                return one_call(owned_view_indices)
+            outputs = [one_call(owned_view_indices[start:start + view_batch]
+                                if len(owned_view_indices) > 0
+                                else np.arange(start, min(start + view_batch, num_views_owned)))
+                       for start in range(0, num_views_owned, view_batch)]
+            return jnp.concatenate(outputs, axis=0)
 
         def sparse_back_project_public(sinogram, pixel_indices, coeff_power=1, owned_view_indices=()):
-            return _jit_sparse_back_project(
-                self.view_params_array, sinogram, pixel_indices,
-                back_kernel=back_project_one_view_to_pixel_batch,
-                projector_params=projector_params,
-                pixel_batch_size=tm.tiles.back_pixel_batch,
-                view_batch_size=tm.tiles.back_view_batch,
-                coeff_power=coeff_power,
-                owned_view_indices=owned_view_indices)
+            num_views_owned = num_owned(owned_view_indices)
+            view_batch = tm.tiles.back_view_batch
+
+            def one_call(sino_chunk, owned_chunk):
+                n_pc = scatter_centers(pixel_indices, pixels_major=False,
+                                       owned_view_indices=owned_chunk)
+                return _jit_sparse_back_project(
+                    self.view_params_array, sino_chunk, pixel_indices, n_pc,
+                    back_kernel=back_project_one_view_to_pixel_batch,
+                    projector_params=projector_params,
+                    pixel_batch_size=tm.tiles.back_pixel_batch,
+                    view_batch_size=view_batch,
+                    coeff_power=coeff_power,
+                    owned_view_indices=owned_chunk)
+
+            single_call = (4 * num_views_owned * int(pixel_indices.shape[0])
+                           <= N_PC_SINGLE_CALL_MAX_BYTES)
+            # Chunking slices the sinogram's VIEW axis eagerly, which is only safe on a
+            # single-device array (slicing a sharded axis replicates; the sharded paths
+            # call this wrapper per device with local arrays, so they qualify).
+            if not single_call and isinstance(sinogram, jax.Array) and len(sinogram.devices()) > 1:
+                single_call = True
+            if single_call:
+                return one_call(sinogram, owned_view_indices)
+            result = None
+            for start in range(0, num_views_owned, view_batch):
+                stop = min(start + view_batch, num_views_owned)
+                owned_chunk = (owned_view_indices[start:stop] if len(owned_view_indices) > 0
+                               else np.arange(start, stop))
+                out = one_call(sinogram[start:stop], owned_chunk)
+                result = out if result is None else _accumulate_donated(result, out)
+            return result
 
         self.sparse_forward_project = sparse_forward_project_public
         self.sparse_back_project = sparse_back_project_public
@@ -433,14 +563,36 @@ class Projectors:
         if back_project_one_view_to_band is not None:
             def sparse_back_project_band_public(sinogram, pixel_indices, g0, num_band_slices,
                                                 owned_view_indices=(), coeff_power=1):
-                return _jit_sparse_back_project_band(
-                    self.view_params_array, sinogram, pixel_indices, g0, num_band_slices,
-                    back_band_kernel=back_project_one_view_to_band,
-                    projector_params=projector_params,
-                    pixel_batch_size=tm.tiles.back_pixel_batch,
-                    view_batch_size=tm.tiles.back_view_batch,
-                    coeff_power=coeff_power,
-                    owned_view_indices=owned_view_indices)
+                num_views_owned = num_owned(owned_view_indices)
+                view_batch = tm.tiles.back_view_batch
+
+                def one_call(sino_chunk, owned_chunk):
+                    n_pc = scatter_centers(pixel_indices, pixels_major=False,
+                                           owned_view_indices=owned_chunk)
+                    return _jit_sparse_back_project_band(
+                        self.view_params_array, sino_chunk, pixel_indices, n_pc,
+                        g0, num_band_slices,
+                        back_band_kernel=back_project_one_view_to_band,
+                        projector_params=projector_params,
+                        pixel_batch_size=tm.tiles.back_pixel_batch,
+                        view_batch_size=view_batch,
+                        coeff_power=coeff_power,
+                        owned_view_indices=owned_chunk)
+
+                single_call = (4 * num_views_owned * int(pixel_indices.shape[0])
+                               <= N_PC_SINGLE_CALL_MAX_BYTES)
+                if not single_call and isinstance(sinogram, jax.Array) and len(sinogram.devices()) > 1:
+                    single_call = True   # never slice a sharded view axis; see sparse_back_project
+                if single_call:
+                    return one_call(sinogram, owned_view_indices)
+                result = None
+                for start in range(0, num_views_owned, view_batch):
+                    stop = min(start + view_batch, num_views_owned)
+                    owned_chunk = (owned_view_indices[start:stop] if len(owned_view_indices) > 0
+                                   else np.arange(start, stop))
+                    out = one_call(sinogram[start:stop], owned_chunk)
+                    result = out if result is None else _accumulate_donated(result, out)
+                return result
 
             self.sparse_back_project_band = sparse_back_project_band_public
             self._jit_sparse_back_project_band = _jit_sparse_back_project_band
@@ -638,7 +790,7 @@ def ensure_tuple(var_args):
 # cost).  Only the two top-level signatures (Projectors.sparse_forward_project /
 # .sparse_back_project) are part of the public interface; these drivers are internal.
 # ──────────────────────────────────────────────────────────────────────────────
-def _sparse_forward_project(view_params_array, voxel_values, pixel_indices,
+def _sparse_forward_project(view_params_array, voxel_values, pixel_indices, n_p_centers,
                             fwd_kernel, projector_params, pixel_batch_size, view_batch_size,
                             owned_view_indices=()):
     """Forward project voxels to a sinogram, batching over pixels then views.
@@ -646,25 +798,37 @@ def _sparse_forward_project(view_params_array, voxel_values, pixel_indices,
     Batches over pixels (sum_function_in_batches); within each pixel batch, maps the
     geometry's per-view forward kernel over batches of views (concatenate_function_in_batches)
     and sums the pixel-batch contributions.  fwd_kernel, projector_params, pixel_batch_size and
-    view_batch_size are static; view_params_array / voxel_values / pixel_indices are traced.
+    view_batch_size are static; view_params_array / voxel_values / pixel_indices / n_p_centers
+    are traced.
+
+    n_p_centers is the CONCRETE (num_pixels, num_views) int32 channel-center array from
+    _jit_compute_scatter_centers (pixels-major so the pixel scan batches it alongside
+    voxel_values); each view's (pixel_batch,) row reaches the kernel as an input, so no round
+    of a projection coordinate exists in this program's horizontal fans.
     """
     cur_view_params_array = view_params_array
     if len(owned_view_indices) > 0:
-        cur_view_params_array = view_params_array[owned_view_indices]
+        # In-jit gather (traced; asarray also handles tuple-typed indices from tests).
+        cur_view_params_array = view_params_array[jnp.asarray(owned_view_indices)]
 
-    def forward_project_pixel_batch(local_values, local_pix_indices):
-        def forward_project_single_view(single_view_params):
-            return fwd_kernel(local_values, local_pix_indices, single_view_params, projector_params)
+    def forward_project_pixel_batch(local_values, local_pix_indices, local_n_pc):
+        # local_n_pc: (pixel_batch, num_views) -> view-major for the view batching below
+        # (a batch-sized int transpose, fused by XLA).
+        local_n_pc_T = local_n_pc.T
 
-        def forward_project_view_batch(view_params_batch):
+        def forward_project_view_batch(view_params_batch, n_pc_batch):
             # vmap (not lax.map) over views: the per-view kernel reuses the same voxel batch,
             # so parallelizing over views trades a little memory for speed.
-            return jax.vmap(forward_project_single_view)(view_params_batch)
+            return jax.vmap(fwd_kernel, in_axes=(None, None, 0, 0, None))(
+                local_values, local_pix_indices, view_params_batch, n_pc_batch,
+                projector_params)
 
-        return concatenate_function_in_batches(forward_project_view_batch, cur_view_params_array,
+        return concatenate_function_in_batches(forward_project_view_batch,
+                                               (cur_view_params_array, local_n_pc_T),
                                                view_batch_size)
 
-    return sum_function_in_batches(forward_project_pixel_batch, (voxel_values, pixel_indices),
+    return sum_function_in_batches(forward_project_pixel_batch,
+                                   (voxel_values, pixel_indices, n_p_centers),
                                    pixel_batch_size)
 
 
@@ -673,7 +837,7 @@ _jit_sparse_forward_project = jax.jit(
     static_argnames=['fwd_kernel', 'projector_params', 'pixel_batch_size', 'view_batch_size'])
 
 
-def _sparse_back_project(view_params_array, sinogram, pixel_indices,
+def _sparse_back_project(view_params_array, sinogram, pixel_indices, n_p_centers,
                          back_kernel, projector_params, pixel_batch_size, view_batch_size,
                          coeff_power=1, owned_view_indices=()):
     """Back project a sinogram to voxels, batching over views (summing) then pixels.
@@ -681,29 +845,43 @@ def _sparse_back_project(view_params_array, sinogram, pixel_indices,
     Batches over views (sum_function_in_batches); within each view batch, maps the geometry's
     per-view back kernel over the views (vmap) and sums them, then batches over pixels
     (concatenate_function_in_batches).  back_kernel, projector_params, pixel_batch_size,
-    view_batch_size and coeff_power are static; view_params_array / sinogram / pixel_indices
-    are traced.
+    view_batch_size and coeff_power are static; view_params_array / sinogram / pixel_indices /
+    n_p_centers are traced.
+
+    n_p_centers is the CONCRETE (num_views, num_pixels) int32 channel-center array from
+    _jit_compute_scatter_centers (views-major so the view sum batches it alongside the
+    sinogram); the SAME centers feed the forward projector, so the pair stays adjoint even at
+    rounding ties.
     """
     cur_view_params_array = view_params_array
     if len(owned_view_indices) > 0:
-        cur_view_params_array = view_params_array[owned_view_indices]
+        # In-jit gather (traced; asarray also handles tuple-typed indices from tests).
+        cur_view_params_array = view_params_array[jnp.asarray(owned_view_indices)]
 
-    def back_project_view_batch(local_view_batch, local_view_params_batch, local_pixel_indices):
-        def back_project_pixel_batch(pixel_indices_batch):
-            # Map the per-view back kernel over the views in this batch, then sum over views.
-            bp_vmap = jax.vmap(back_kernel, in_axes=(0, None, 0, None, None))
+    def back_project_view_batch(local_view_batch, local_view_params_batch, local_n_pc,
+                                local_pixel_indices):
+        # local_n_pc: (view_batch, num_pixels) -> pixels-major for the pixel batching below.
+        local_n_pc_T = local_n_pc.T
+
+        def back_project_pixel_batch(pixel_indices_batch, n_pc_batch):
+            # Map the per-view back kernel over the views in this batch (each view takes its
+            # (pixel_batch,) column of centers -> in_axes=1), then sum over views.
+            bp_vmap = jax.vmap(back_kernel, in_axes=(0, None, 0, 1, None, None))
             per_view_voxel_values_batch = bp_vmap(local_view_batch, pixel_indices_batch,
-                                                  local_view_params_batch, projector_params, coeff_power)
+                                                  local_view_params_batch, n_pc_batch,
+                                                  projector_params, coeff_power)
             # Driver-level reduce (shared across geometries, not the geometry kernel) -- give it its
             # own named_scope so profilers attribute it as a distinct region instead of leaving it
             # unscoped/unmapped.
             with jax.named_scope("projector/back/view_reduce"):
                 return jnp.sum(per_view_voxel_values_batch, axis=0)
 
-        return concatenate_function_in_batches(back_project_pixel_batch, local_pixel_indices,
+        return concatenate_function_in_batches(back_project_pixel_batch,
+                                               (local_pixel_indices, local_n_pc_T),
                                                pixel_batch_size)
 
-    return sum_function_in_batches(back_project_view_batch, (sinogram, cur_view_params_array),
+    return sum_function_in_batches(back_project_view_batch,
+                                   (sinogram, cur_view_params_array, n_p_centers),
                                    view_batch_size, pixel_indices)
 
 
@@ -713,7 +891,8 @@ _jit_sparse_back_project = jax.jit(
                      'coeff_power'])
 
 
-def _sparse_back_project_band(view_params_array, sinogram, pixel_indices, g0, num_band_slices,
+def _sparse_back_project_band(view_params_array, sinogram, pixel_indices, n_p_centers,
+                              g0, num_band_slices,
                               back_band_kernel, projector_params, pixel_batch_size, view_batch_size,
                               coeff_power=1, owned_view_indices=()):
     """Back project a sinogram onto the GLOBAL recon slice band [g0, g0 + num_band_slices).
@@ -725,25 +904,33 @@ def _sparse_back_project_band(view_params_array, sinogram, pixel_indices, g0, nu
     from the FULL view (no detector-row crop; for geometries whose back projection draws a slice
     from a RANGE of rows).  g0 is TRACED (a band's global start, so the bands of a slice axis do
     not retrace); num_band_slices is STATIC (it sets the output slice count); back_band_kernel /
-    projector_params / batch sizes / coeff_power are static.
+    projector_params / batch sizes / coeff_power are static.  n_p_centers is the CONCRETE
+    (num_views, num_pixels) int32 channel-center array (see _sparse_back_project).
     """
     cur_view_params_array = view_params_array
     if len(owned_view_indices) > 0:
-        cur_view_params_array = view_params_array[owned_view_indices]
+        # In-jit gather (traced; asarray also handles tuple-typed indices from tests).
+        cur_view_params_array = view_params_array[jnp.asarray(owned_view_indices)]
 
-    def back_project_view_batch(local_view_batch, local_view_params_batch, local_pixel_indices):
-        def back_project_pixel_batch(pixel_indices_batch):
+    def back_project_view_batch(local_view_batch, local_view_params_batch, local_n_pc,
+                                local_pixel_indices):
+        # local_n_pc: (view_batch, num_pixels) -> pixels-major for the pixel batching below.
+        local_n_pc_T = local_n_pc.T
+
+        def back_project_pixel_batch(pixel_indices_batch, n_pc_batch):
             # Map the per-view banded back kernel over the views in this batch, then sum over views.
-            bp_vmap = jax.vmap(back_band_kernel, in_axes=(0, None, 0, None, None, None, None))
+            bp_vmap = jax.vmap(back_band_kernel, in_axes=(0, None, 0, 1, None, None, None, None))
             per_view_band = bp_vmap(local_view_batch, pixel_indices_batch, local_view_params_batch,
-                                    projector_params, g0, num_band_slices, coeff_power)
+                                    n_pc_batch, projector_params, g0, num_band_slices, coeff_power)
             with jax.named_scope("projector/back/view_reduce"):   # driver reduce; see _sparse_back_project
                 return jnp.sum(per_view_band, axis=0)
 
-        return concatenate_function_in_batches(back_project_pixel_batch, local_pixel_indices,
+        return concatenate_function_in_batches(back_project_pixel_batch,
+                                               (local_pixel_indices, local_n_pc_T),
                                                pixel_batch_size)
 
-    return sum_function_in_batches(back_project_view_batch, (sinogram, cur_view_params_array),
+    return sum_function_in_batches(back_project_view_batch,
+                                   (sinogram, cur_view_params_array, n_p_centers),
                                    view_batch_size, pixel_indices)
 
 

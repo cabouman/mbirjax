@@ -20,6 +20,13 @@ def make_model(num_views=64, num_rows=40, num_channels=32):
     return mbirjax.ParallelBeamModel((num_views, num_rows, num_channels), angles)
 
 
+def centers_for(model_cls, idx, view_params, pp):
+    """One view's concrete integer channel centers, as the projector wrappers compute them
+    (the kernels take the centers as inputs; see compute_channel_coordinate)."""
+    import jax.numpy as jnp
+    return jnp.round(model_cls.compute_channel_coordinate(idx, view_params, pp)).astype(jnp.int32)
+
+
 class TestTilePolicy(unittest.TestCase):
 
     def test_base_policy_on_cpu(self):
@@ -103,8 +110,9 @@ class TestTilePolicy(unittest.TestCase):
         rng = np.random.default_rng(1)
         vox = rng.random((len(idx), recon_shape[2]), dtype=np.float32)
         kern = mbirjax.ParallelBeamModel.forward_project_pixel_batch_to_one_view
-        out_scatter = np.asarray(kern(vox, idx, np.float32(0.4), ProjectorParams(*pp_args, 0)))
-        out_sorted = np.asarray(kern(vox, idx, np.float32(0.4), ProjectorParams(*pp_args, 1)))
+        n_pc = centers_for(mbirjax.ParallelBeamModel, idx, np.float32(0.4), ProjectorParams(*pp_args, 0))
+        out_scatter = np.asarray(kern(vox, idx, np.float32(0.4), n_pc, ProjectorParams(*pp_args, 0)))
+        out_sorted = np.asarray(kern(vox, idx, np.float32(0.4), n_pc, ProjectorParams(*pp_args, 1)))
         np.testing.assert_allclose(out_sorted, out_scatter, rtol=1e-5,
                                    atol=1e-5 * np.abs(out_scatter).max())
 
@@ -125,10 +133,11 @@ class TestTilePolicy(unittest.TestCase):
         num_rows, num_channels = model.get_params('sinogram_shape')[1:]
         view = rng.random((num_rows, num_channels), dtype=np.float32)
         kern = mbirjax.ParallelBeamModel.back_project_one_view_to_pixel_batch
+        n_pc = centers_for(mbirjax.ParallelBeamModel, idx, np.float32(0.7), pp_loop)
         for coeff_power in (1, 2):
             for sl in (slice(None), slice(8, 24)):     # full view and a row-sliced band
-                ref = np.asarray(kern(view[sl], idx, np.float32(0.7), pp_loop, coeff_power))
-                out = np.asarray(kern(view[sl], idx, np.float32(0.7), pp_stacked, coeff_power))
+                ref = np.asarray(kern(view[sl], idx, np.float32(0.7), n_pc, pp_loop, coeff_power))
+                out = np.asarray(kern(view[sl], idx, np.float32(0.7), n_pc, pp_stacked, coeff_power))
                 np.testing.assert_allclose(out, ref, rtol=1e-5,
                                            atol=1e-5 * np.abs(ref).max(),
                                            err_msg=f'coeff_power={coeff_power} slice={sl}')
@@ -153,8 +162,9 @@ class TestTilePolicy(unittest.TestCase):
             vox = rng.random((len(idx), recon_shape[2]), dtype=np.float32)
             view_params = np.asarray(model.projector_functions.view_params_array)[3]
             kern = mbirjax.ConeBeamModel.forward_project_pixel_batch_to_one_view
-            out_scatter = np.asarray(kern(vox, idx, view_params, ProjectorParams(*pp_args, 0)))
-            out_sorted = np.asarray(kern(vox, idx, view_params, ProjectorParams(*pp_args, 1)))
+            n_pc = centers_for(mbirjax.ConeBeamModel, idx, view_params, ProjectorParams(*pp_args, 0))
+            out_scatter = np.asarray(kern(vox, idx, view_params, n_pc, ProjectorParams(*pp_args, 0)))
+            out_sorted = np.asarray(kern(vox, idx, view_params, n_pc, ProjectorParams(*pp_args, 1)))
             np.testing.assert_allclose(out_sorted, out_scatter, rtol=1e-5,
                                        atol=1e-5 * np.abs(out_scatter).max(),
                                        err_msg=f'curved={curved}')
@@ -194,8 +204,9 @@ class TestTilePolicy(unittest.TestCase):
         vox = rng.random((len(idx), recon_shape[2]), dtype=np.float32)
         view_params = np.asarray(model.projector_functions.view_params_array)[3]
         kern = mbirjax.MultiAxisParallelBeamModel.forward_project_pixel_batch_to_one_view
-        out_scatter = np.asarray(kern(vox, idx, view_params, ProjectorParams(*pp_args, 0)))
-        out_sorted = np.asarray(kern(vox, idx, view_params, ProjectorParams(*pp_args, 1)))
+        n_pc = centers_for(mbirjax.MultiAxisParallelBeamModel, idx, view_params, ProjectorParams(*pp_args, 0))
+        out_scatter = np.asarray(kern(vox, idx, view_params, n_pc, ProjectorParams(*pp_args, 0)))
+        out_sorted = np.asarray(kern(vox, idx, view_params, n_pc, ProjectorParams(*pp_args, 1)))
         np.testing.assert_allclose(out_sorted, out_scatter, rtol=1e-5,
                                    atol=1e-5 * np.abs(out_scatter).max())
 
@@ -255,8 +266,9 @@ class TestTilePolicy(unittest.TestCase):
             vox = rng.random((len(idx), recon_shape[2]), dtype=np.float32)
             view_params = np.asarray(model.projector_functions.view_params_array)[5]
             kern = TranslationModel.forward_project_pixel_batch_to_one_view
-            out_scatter = np.asarray(kern(vox, idx, view_params, ProjectorParams(*pp_args, 0)))
-            out_sorted = np.asarray(kern(vox, idx, view_params, ProjectorParams(*pp_args, 1)))
+            n_pc = centers_for(TranslationModel, idx, view_params, ProjectorParams(*pp_args, 0))
+            out_scatter = np.asarray(kern(vox, idx, view_params, n_pc, ProjectorParams(*pp_args, 0)))
+            out_sorted = np.asarray(kern(vox, idx, view_params, n_pc, ProjectorParams(*pp_args, 1)))
             np.testing.assert_allclose(out_sorted, out_scatter, rtol=1e-5,
                                        atol=1e-5 * np.abs(out_scatter).max(),
                                        err_msg=f'psf_radius={expected_radius}')
@@ -282,9 +294,10 @@ class TestTilePolicy(unittest.TestCase):
             view = rng.random((num_rows, num_channels), dtype=np.float32)
             vp = np.asarray(model.projector_functions.view_params_array)[view_idx]
             kern = type(model).back_project_one_view_to_pixel_batch
+            n_pc = centers_for(type(model), idx, vp, ProjectorParams(*pp_args, 0, 0))
             for coeff_power in (1, 2):
-                ref = np.asarray(kern(view, idx, vp, ProjectorParams(*pp_args, 0, 0), coeff_power))
-                out = np.asarray(kern(view, idx, vp, ProjectorParams(*pp_args, 0, 1), coeff_power))
+                ref = np.asarray(kern(view, idx, vp, n_pc, ProjectorParams(*pp_args, 0, 0), coeff_power))
+                out = np.asarray(kern(view, idx, vp, n_pc, ProjectorParams(*pp_args, 0, 1), coeff_power))
                 np.testing.assert_allclose(out, ref, rtol=1e-5,
                                            atol=1e-5 * np.abs(ref).max(),
                                            err_msg=f'{type(model).__name__} cp={coeff_power}')

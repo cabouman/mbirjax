@@ -85,6 +85,9 @@ def make_config(num_views, num_det_rows, num_det_channels, anisotropic):
     return {
         'name': 'anisotropic' if anisotropic else 'isotropic',
         'pp': make_projector_params(model), 'svp': svp, 'idx': idx, 'model': model,
+        # The kernels take this view's CONCRETE integer channel centers as input.
+        'n_pc': jnp.round(TranslationModel.compute_channel_coordinate(
+            idx, svp, make_projector_params(model))).astype(jnp.int32),
         'S': recon_shape[2], 'num_pixels': int(idx.shape[0]),
         'num_det_rows': num_det_rows, 'num_det_channels': num_det_channels,
     }
@@ -105,7 +108,7 @@ class TestTranslationBandedProjector(unittest.TestCase):
         # Independent reference: explicit np.concatenate of the per-band back projector
         # over a NON-uniform tiling (each call recomputes its own horizontal fan).
         bands = [np.asarray(TranslationModel.back_project_one_view_to_band(
-            view, c['idx'], c['svp'], c['pp'], g0, g1 - g0, coeff_power=coeff_power))
+            view, c['idx'], c['svp'], c['n_pc'], c['pp'], g0, g1 - g0, coeff_power=coeff_power))
             for (g0, g1) in band_bounds(c['S'])]
         return np.concatenate(bands, axis=1)   # (num_pixels, S)
 
@@ -132,7 +135,7 @@ class TestTranslationBandedProjector(unittest.TestCase):
                     ref = self._back_banded_concat(c, view, coeff_power=coeff_power)
                     for bs in band_sizes:
                         prod = np.asarray(TranslationModel.back_project_one_view_to_pixel_batch(
-                            view, c['idx'], c['svp'], c['pp'],
+                            view, c['idx'], c['svp'], c['n_pc'], c['pp'],
                             coeff_power=coeff_power, slice_band_size=bs))
                         np.testing.assert_allclose(
                             prod, ref, rtol=self.RTOL, atol=self.ATOL,

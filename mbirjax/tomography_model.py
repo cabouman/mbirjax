@@ -1111,7 +1111,36 @@ class TomographyModel(ParameterHandler):
         self.projector_functions = mj.Projectors(self)
 
     @staticmethod
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, projector_params):
+    def compute_channel_coordinate(pixel_indices, single_view_params, projector_params):
+        """
+        Compute the CONTINUOUS projected detector-channel coordinate n_p for one view.
+
+        This is the float coordinate whose rounded value is the horizontal fans' integer
+        channel center.  The projector wrappers round it OUTSIDE the projector programs
+        (projectors._jit_compute_scatter_centers) and pass the concrete integer centers
+        into the kernels -- the horizontal-fan rounding-bug fix (see
+        experiments/bugs_and_artifacts/jax rounding bug/phase_d_design.md).  Implementations
+        must reuse the SAME float chain the kernels use for their weights (e.g. return the
+        n_p element of compute_proj_data / compute_horizontal_data), so centers and weights
+        can never disagree.
+
+        Note:
+            This method must be overridden for a specific geometry.
+
+        Args:
+            pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            single_view_params (jax array): A 1D array of view-specific parameters (such as angle) for the current view.
+            projector_params (namedtuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
+
+        Returns:
+            jax array of shape (num_pixels,): the continuous channel coordinate per pixel.
+        """
+        warnings.warn('compute_channel_coordinate not implemented for TomographyModel.')
+        return None
+
+    @staticmethod
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, n_p_centers,
+                                                projector_params):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -1123,6 +1152,10 @@ class TomographyModel(ParameterHandler):
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             view_params (jax array):  A 1D array of view-specific parameters (such as angle) for the current view.
+            n_p_centers (jax array of int): 1D vector of shape (num_pixels,): this view's integer
+                channel centers, computed OUTSIDE the projector program from
+                compute_channel_coordinate (concrete input; do NOT recompute in-kernel --
+                see compute_channel_coordinate).
             projector_params (namedtuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -1132,8 +1165,8 @@ class TomographyModel(ParameterHandler):
         return None
 
     @staticmethod
-    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params,
-                                             coeff_power=1):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, n_p_centers,
+                                             projector_params, coeff_power=1):
         """
         Calculate the backprojection value at a specified recon voxel cylinder given a sinogram view and parameters.
 
@@ -1144,6 +1177,9 @@ class TomographyModel(ParameterHandler):
             sinogram_view (jax array): one view of the sinogram to be back projected
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             single_view_params (jax array): A 1D array of view-specific parameters (such as angle) for the current view.
+            n_p_centers (jax array of int): 1D vector of shape (num_pixels,): this view's integer
+                channel centers (concrete input; the SAME centers feed the forward projector --
+                see compute_channel_coordinate).
             projector_params (namedtuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 for compute_hessian_diagonal.

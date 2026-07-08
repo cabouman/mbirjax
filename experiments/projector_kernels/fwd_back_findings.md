@@ -359,6 +359,54 @@ Verification (old = the committed rollout 9cfe52e):
 - Full CPU + 4-device sharding suites green; per-geometry fwd+back GPU spot cells A/B'd on
   H100 (old vs new snapshots).
 
+## Phase D: concrete n_p_center inputs — the Class-H rounding-bug fix (2026-07-08)
+
+The horizontal fans' integer channel centers are now computed OUTSIDE the projector
+programs (`projectors._jit_compute_scatter_centers`, fed by each geometry's new
+`compute_channel_coordinate` — the [0] element of the existing float chain) and passed into
+the kernels/drivers as CONCRETE arrays.  This removes the round-inside-vmap/map/scatter
+precondition of the known XLA rounding bug for all 8 Class-H sites; the vertical fans'
+per-slice rounds (Class V) remain documented accepted risk.  Design and trade discussion:
+`experiments/bugs_and_artifacts/jax rounding bug/phase_d_design.md`.
+
+Mechanics: kernels gain an `n_p_centers` argument (per view, (num_pixels,) int32); the
+drivers thread a (P, V)/(V, P) centers array through the existing batching helpers (forward
+pixels-major, back views-major, one batch-sized transpose each); the public wrappers compute
+the centers eagerly, with a tracer-guard assert (the concreteness contract) and a HYBRID:
+one driver call when the centers array is <= `N_PC_SINGLE_CALL_MAX_BYTES` (256 MB, initial),
+else a view-chunk loop sized by the op's view batch (forward concatenates chunk outputs,
+back accumulates with a donated add; chunking never slices a multi-device view axis).
+Forward and back share ONE center value per (view, pixel) — adjoint at rounding ties by
+construction.
+
+Verification:
+- **The bug repro on this exact toolchain (jax 0.10.1): T14 still FIRES (0.4995
+  antisymmetric signature), every in-jit mitigation still fails (T15a–h), and T15j — the
+  exact Phase D pattern — is clean on all 24 batches.**
+- **Round-free proof:** the compiled model-level parallel forward AND back programs contain
+  ZERO round ops (parallel has no vertical fan, so the confirmed production site's
+  precondition is provably gone); cone/multiaxis/translation retain only their Class-V
+  vertical-fan rounds (6/12/6 fwd, 1/2/1 back).
+- **Value gate vs pre-Phase-D:** parallel, cone, translation kernels BITWISE EQUAL on every
+  path; multiaxis fwd bitwise, multiaxis back <= 9e-6 rel on <= 4% of elements —
+  discriminated by an hfan-only probe (bitwise equal) to be downstream fusion/FMA context
+  in the vertical fan, not center divergence.
+- New tests (`tests/test_scatter_centers.py`): centers == round(coordinate) in both
+  layouts; chunked == single-call (incl. ragged owned-view tails); the wrapper REFUSES to
+  run under an outer jit.  Full CPU + sharding suites green.
+- **H100 A/B (final, after the eager-gather fix below):** 1024³ parallel fwd/back −3% with
+  memory flat (cone fwd 1024³ −3.2 GB); VCD 200³ neutral-to-better (2092 → 1950 ms);
+  513-class fwd flat.  Accepted costs: mid-size fwd cells +~0.5 GB (materialized centers +
+  chunk-output concat — memory-gate ack, same class as the Phase B acks) and 513-class back
+  +8% (the chunked accumulation); translation ms-cells within their ±0.5 ms band.
+- **The eager-gather episode (a lesson now in .claude/lessons.md §3):** the first GPU round
+  showed VCD +35%.  The culprit — found by cProfile after a device trace showed the cell is
+  ~95% HOST-bound — was ONE eager `view_params[asarray(owned)]` gather per projector call in
+  the new wrappers (~1 ms host each, 547×/recon); every kernel-level probe was flat because
+  the micro-bench used the empty-default owned path.  Fix: owned_view_indices passes THROUGH
+  to the jitted programs (in-jit gathers, as the drivers always did); the wrappers now carry
+  an explicit no-eager-array-ops contract.
+
 ## Numerics note (ties to the known JAX rounding bug)
 
 Early full-grid runs showed two *value-equal* compiled programs (`fwd_asis` vs the stacked
