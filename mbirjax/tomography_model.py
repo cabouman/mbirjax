@@ -400,7 +400,7 @@ class TomographyModel(ParameterHandler):
         num_slices = recon_shape[recon_axis % len(recon_shape)]
         self.recon_placement = mjs.Placement(devices, axis=recon_axis, real_size=num_slices)
         self.sino_placement = mjs.Placement(devices, axis=sino_axis, real_size=num_views)
-        on_gpu = devices[0].platform == 'gpu'
+        on_gpu = get_device_platform(devices[0]) == 'GPU'
         self.tiles = self._select_tile_policy(on_gpu, num_views, num_slices, len(devices))
 
     # Base tiling constants (geometry-independent defaults; geometry classes change measured
@@ -1871,7 +1871,7 @@ class TomographyModel(ParameterHandler):
         # back-vertical cache cliff -- so CPU keeps the sharded path.  (The two kernels have
         # OPPOSITE platform rankings; see the platform-divergent back-kernel lesson in lessons.md.)
         if (len(self.recon_placement.devices) == 1
-                and self.recon_placement.devices[0].platform == 'gpu'):
+                and get_device_platform(self.recon_placement.devices[0]) == 'GPU'):
             owner = self.recon_placement.devices[0]
             out = self._sparse_back_project_single_device(
                 sinogram, pixel_indices, coeff_power=coeff_power, output_device=owner)
@@ -2773,7 +2773,7 @@ class TomographyModel(ParameterHandler):
             # configure_devices under use_gpu='automatic'), and a CPU OOM must get CPU guidance.
             recon_devices = self.shard_devices
             on_gpu = bool(recon_devices) and recon_devices[0] is not None \
-                and self._platform_label(recon_devices[0]) == 'GPU'
+                and get_device_platform(recon_devices[0]) == 'GPU'
             log_oom_guidance(self.logger, on_gpu=on_gpu)
         raise e
 

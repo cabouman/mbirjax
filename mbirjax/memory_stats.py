@@ -2,6 +2,8 @@ import jax
 import os
 import psutil
 
+from mbirjax._device_setup import get_device_platform
+
 
 def _nbytes(a):
     try:
@@ -56,7 +58,7 @@ def memory_report(label="", device=None, top_n=15):
 
 def get_memory_stats(print_results=True, file=None):
     # Get all GPU devices
-    gpus = [device for device in jax.devices() if 'cpu' not in device.device_kind.lower()]
+    gpus = [device for device in jax.devices() if get_device_platform(device) != 'CPU']
 
     memory_stats_per_processor = []
 

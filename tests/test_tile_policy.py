@@ -27,6 +27,18 @@ def centers_for(model_cls, idx, view_params, pp):
     return jnp.round(model_cls.compute_channel_coordinate(idx, view_params, pp)).astype(jnp.int32)
 
 
+def _require_multidevice(test):
+    """Skip a test that asserts >=2-device tile-policy values when the box has <2 devices.
+
+    A single-GPU allocation can't form the 2-device layout (configure_devices(2) falls back to
+    one device); CPU CI provides 4 virtual devices and a >=2-GPU node works too.  (Convert to a
+    shared skip_unless_multidevice marker in Phase 4 of the platform-helper refactor.)
+    """
+    from mbirjax._device_setup import default_devices
+    if len(default_devices()) < 2:
+        test.skipTest('needs >= 2 devices for the multi-device tile-policy assertions')
+
+
 class TestTilePolicy(unittest.TestCase):
 
     def test_base_policy_on_cpu(self):
@@ -52,6 +64,7 @@ class TestTilePolicy(unittest.TestCase):
         model.configure_devices(1)
         self.assertEqual(model.tiles.fwd_view_batch, 128)    # fwd cap
         self.assertEqual(model.tiles.back_view_batch, 128)   # single-device back cap
+        _require_multidevice(self)
         model.configure_devices(2)
         self.assertEqual(model.tiles.fwd_view_batch, 128)
         self.assertEqual(model.tiles.back_view_batch, 300)   # per-shard single vmap (< 512 cap)
@@ -84,6 +97,7 @@ class TestTilePolicy(unittest.TestCase):
         model = make_model()
         model.configure_devices(1)
         self.assertEqual(model.tiles.back_view_batch, 64)
+        _require_multidevice(self)
         model.configure_devices(2)
         self.assertEqual(model.tiles.back_view_batch, 32)    # per-shard
         # The experiment idiom: _replace persists until the next re-layout and is what the
