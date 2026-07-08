@@ -30,6 +30,8 @@ use 1e-4 to stay robust on GPU (projector scatter-add noise ~8e-6 rel).
 import unittest
 from collections import namedtuple
 
+from mbirjax.projectors import ProjectorParams
+
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -43,8 +45,10 @@ def make_projector_params(model):
     translation per-view kernels can be called directly."""
     gp = model.get_geometry_parameters()
     sinogram_shape, recon_shape = model.get_params(['sinogram_shape', 'recon_shape'])
-    PP = namedtuple('ProjectorParams', ['sinogram_shape', 'recon_shape', 'geometry_params'])
-    return PP(sinogram_shape, recon_shape, gp)
+    # Use the REAL ProjectorParams class (its defaults cover the kernel-algorithm flags,
+    # which the shared horizontal-fan helpers now read in every geometry) -- a locally
+    # rebuilt namedtuple silently drifts out of sync when fields are added.
+    return ProjectorParams(sinogram_shape, recon_shape, gp)
 
 
 def band_bounds(num_slices):

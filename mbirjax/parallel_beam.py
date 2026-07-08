@@ -8,7 +8,8 @@ import jax.numpy as jnp
 import mbirjax as mj
 import mbirjax._sharding as mjs
 from mbirjax import TomographyModel, tomography_utils
-from mbirjax.projectors import channel_scatter_reduce, SORTED_CHANNEL_REDUCE_MIN_COLS
+from mbirjax.projectors import (horizontal_fan_project, horizontal_fan_back,
+                                SORTED_CHANNEL_REDUCE_MIN_COLS)
 
 ParallelBeamParamNames = mj.ParamNames | Literal['angles']
 
@@ -258,61 +259,29 @@ class ParallelBeamModel(TomographyModel):
 
         # Get the data needed for horizontal projection
         n_p, n_p_center, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
-        L_max = jnp.minimum(1.0, W_p_c)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Size the detector-row axis from the actual input cylinder, not from
-        # projector_params.sinogram_shape, so that a caller may pass a slice-band
-        # of the cylinder (a contiguous subset of slices) and get back only the
+        # The output detector-row axis is sized from the actual input cylinder
+        # (values.shape[1] inside the fan helper), not from
+        # projector_params.sinogram_shape, so a caller may pass a slice-band of the
+        # cylinder (a contiguous subset of slices) and get back only the
         # corresponding detector rows.  Slice r maps only to detector row r in
-        # parallel beam (the horizontal projection below mixes channels, never
-        # rows), so restricting the input slices restricts the output rows with no
-        # other change.  When the full cylinder is passed this equals num_det_rows,
-        # so single-device behavior is unchanged.  This is the adjoint of the
+        # parallel beam (the horizontal projection mixes channels, never rows), so
+        # restricting the input slices restricts the output rows with no other
+        # change.  When the full cylinder is passed this equals num_det_rows, so
+        # single-device behavior is unchanged.  This is the adjoint of the
         # row-sliced back projection kernel, and is what lets sharded forward
         # projection stream the slice axis in bands.
-        num_input_slices = voxel_values.shape[1]
-
-        # The horizontal projection scatters each pixel's contribution into its
-        # detector channel n.  Build the view CHANNEL-MAJOR -- (channels, slices)
-        # rather than (slices, channels) -- so the scatter writes a CONTIGUOUS row
-        # (stride 1) instead of a column (stride num_det_channels).  A column stride
-        # equal to a power-of-2 num_det_channels (e.g. 256/1024/2048 detectors)
-        # aliases the CPU cache and runs several times slower at large slice counts;
-        # the contiguous row access avoids that entirely and is faster regardless of
-        # the channel count.  Transpose back to (slices, channels) on return (one
-        # cheap pass, fused by XLA) so the output layout and all callers are
-        # unchanged.
         #
-        # The channel reduction is chosen by ONE precomputed flag (see channel_scatter_reduce in
-        # projectors.py and _select_tile_policy for how it is decided -- GPU layouts whose slice
-        # bands are wide enough to amortize the sort): when set, the psf taps are stacked into
-        # (psf_width, num_pixels) arrays and reduced with a sorted segment-sum (~2-3x faster than the
-        # atomics-bound scatter on GPU); otherwise the ORIGINAL per-tap scatter-add loop runs
-        # verbatim (the CPU path is identical to what it always was).  projector_params is a
-        # static jit argument, so this is a trace-time branch, not a runtime one.
-        if projector_params.sort_by_channel:
-            # Stack the taps; per the reduce contract, n is CLIPPED into range with the weights
-            # zeroed where the unclipped tap was outside the detector.
-            n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
-            n = n_p_center[None, :] + n_offsets[:, None]              # (psf_width, num_pixels)
-            abs_delta_p_c_n = jnp.abs(n_p[None, :] - n)
-            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-            A_chan_n = A_chan_n * ((n >= 0) & (n < num_det_channels))
-            n = jnp.clip(n, 0, num_det_channels - 1)
-            sinogram_view_T = channel_scatter_reduce(n, A_chan_n, voxel_values, num_det_channels,
-                                                     use_sorted=True)
-        else:
-            sinogram_view_T = jnp.zeros((num_det_channels, num_input_slices))
-            for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-                n = n_p_center + n_offset
-                abs_delta_p_c_n = jnp.abs(n_p - n)
-                L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-                A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-                A_chan_n *= (n >= 0) * (n < num_det_channels)
-                sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
-
+        # The horizontal projection is the shared trapezoid-rule fan (see
+        # horizontal_fan_project in projectors.py, which also owns the channel-major
+        # layout rationale and the sort_by_channel branch -- decided by the tile policy,
+        # trace-time since projector_params is static).  Parallel beam's weight scale is the
+        # in-plane voxel area over the footprint length, a per-view scalar.
+        weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
+        sinogram_view_T = horizontal_fan_project(n_p, n_p_center, W_p_c, weight_scale,
+                                                 voxel_values, num_det_channels, gp.psf_radius,
+                                                 use_sorted=projector_params.sort_by_channel)
         return sinogram_view_T.T
 
     @staticmethod
@@ -337,67 +306,29 @@ class ParallelBeamModel(TomographyModel):
         gp = projector_params.geometry_params
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
-        num_pixels = pixel_indices.shape[0]
-
         # Get the data needed for horizontal projection
         n_p, n_p_center, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
-        L_max = jnp.minimum(1.0, W_p_c)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Size the slice axis from the actual input view, not from
-        # projector_params.sinogram_shape, so that a caller may pass a row-sliced
-        # view (a contiguous subset of detector rows) and get back only the
-        # corresponding recon slices.  Detector row r maps only to slice r in
-        # parallel beam (the horizontal projection below mixes channels, never
-        # rows), so restricting the input rows restricts the output slices with no
-        # other change.  When the full view is passed this equals num_det_rows, so
-        # single-device behavior is unchanged.  This is what lets sharded back
-        # projection stream the slice axis in bands.
-        num_input_rows = sinogram_view.shape[0]
-
-        # The horizontal projection gathers each pixel's detector channel n.  Read
-        # the view CHANNEL-MAJOR -- transpose to (channels, rows) up front so the
-        # per-pixel gather reads a CONTIGUOUS row (stride 1) instead of a column
-        # (stride num_det_channels).  A power-of-2 num_det_channels column stride
-        # aliases the CPU cache and runs several times slower at large row counts;
-        # the contiguous access avoids it (the adjoint of the forward kernel's
-        # channel-major scatter).
+        # The output slice axis is sized from the actual input view (sino_T.shape[1] inside
+        # the fan helper), not from projector_params.sinogram_shape, so a caller may pass a
+        # row-sliced view (a contiguous subset of detector rows) and get back only the
+        # corresponding recon slices.  Detector row r maps only to slice r in parallel beam
+        # (the horizontal projection mixes channels, never rows), so restricting the input
+        # rows restricts the output slices with no other change.  When the full view is
+        # passed this equals num_det_rows, so single-device behavior is unchanged.  This is
+        # what lets sharded back projection stream the slice axis in bands.
+        #
+        # The gather itself is the shared adjoint trapezoid-rule fan (see horizontal_fan_back
+        # in projectors.py, which owns the channel-major layout rationale and the
+        # back_stacked_gather branch -- ON for parallel beam on GPU, where the back kernel
+        # has no vertical fan to hide the gather behind; decided by the tile policy,
+        # trace-time since projector_params is static).
         sinogram_view_T = sinogram_view.T            # (num_det_channels, num_input_rows)
-
-        # The per-tap gathers are chosen by ONE precomputed flag (see the tile policy): when
-        # set, the psf taps are stacked into a SINGLE (psf_width * num_pixels, num_input_rows)
-        # gather followed by a reshape-sum over taps -- measured 1.6-1.8x faster on H100, where
-        # the kernel is ~95% gather-bound (fewer passes over the (num_pixels, num_input_rows)
-        # accumulator).  On CPU the
-        # same form is 3.6-4.4x WORSE (the kernel there is FMA-bound and the stacked transient
-        # thrashes cache), so the ORIGINAL per-tap gather+FMA loop runs verbatim.
-        # projector_params is a static jit argument, so this is a trace-time branch.
-        if projector_params.back_stacked_gather:
-            n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
-            n = n_p_center[None, :] + n_offsets[:, None]              # (psf_width, num_pixels)
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-            A_chan_n = A_chan_n * ((n >= 0) & (n < num_det_channels))
-            A_chan_n = A_chan_n ** coeff_power
-            n = jnp.clip(n, 0, num_det_channels - 1)                  # weights already 0 outside
-            # ONE (psf_width * num_pixels, num_input_rows) gather covering every tap:
-            gathered = sinogram_view_T[n.reshape(-1), :]
-            weighted = A_chan_n.reshape(-1)[:, None] * gathered
-            return weighted.reshape(n.shape[0], num_pixels, -1).sum(axis=0)
-
-        det_voxel_cylinder = jnp.zeros((num_pixels, num_input_rows))
-        # Do the horizontal projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-            n = n_p_center + n_offset
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            A_chan_n = A_chan_n ** coeff_power
-            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view_T[n, :])
-
-        return det_voxel_cylinder
+        weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
+        return horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
+                                   gp.psf_radius, coeff_power=coeff_power,
+                                   use_stacked=projector_params.back_stacked_gather)
 
     @staticmethod
     def compute_proj_data(pixel_indices, angle, projector_params):

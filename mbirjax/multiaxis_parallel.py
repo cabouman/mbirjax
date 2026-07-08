@@ -4,7 +4,8 @@ from functools import partial
 from collections import namedtuple
 import mbirjax as mj
 from mbirjax import TomographyModel
-from mbirjax.projectors import (channel_scatter_reduce, SORTED_CHANNEL_REDUCE_MIN_COLS,
+from mbirjax.projectors import (horizontal_fan_project, horizontal_fan_back,
+                                SORTED_CHANNEL_REDUCE_MIN_COLS,
                                 SORTED_CHANNEL_REDUCE_MAX_PSF_RADIUS,
                                 SORTED_CHANNEL_REDUCE_MIN_COLLISION_RATIO)
 from typing import Literal, Union, overload, Any
@@ -485,53 +486,16 @@ class MultiAxisParallelModel(TomographyModel):
         footprint_xy = jnp.maximum(jnp.abs(jnp.cos(azimuth)) * gp.delta_voxel,
                                    jnp.abs(jnp.sin(azimuth)) * delta_voxel_row)
         W_p_c = footprint_xy / gp.delta_det_channel
-        L_max = jnp.minimum(1.0, W_p_c)
 
-        # Density normalization: in-plane voxel cross-section area / footprint length.
-        scale = (gp.delta_voxel * delta_voxel_row) / footprint_xy
-
-        # Build the view CHANNEL-MAJOR -- (num_det_channels, num_det_rows) rather than
-        # (num_det_rows, num_det_channels) -- so the per-pixel channel scatter writes a
-        # CONTIGUOUS row (stride 1) instead of a column of stride num_det_channels.  A
-        # power-of-2 num_det_channels column stride aliases the CPU cache; the contiguous
-        # write avoids it.  Transpose back to (rows, channels) on return (one cheap pass,
-        # fused by XLA).  This mirrors ParallelBeamModel and ConeBeamModel -- including the
-        # channel-reduction choice: ONE precomputed flag (see channel_scatter_reduce in
-        # projectors.py and MultiAxisParallelModel._select_tile_policy) selects the sorted
-        # segment-sum (GPU layouts; the reduce columns here are the FULL detector rows, so the
-        # sort amortizes except at tiny detectors) vs the original per-tap scatter-add loop,
-        # kept verbatim.  projector_params is static, so this is a trace-time branch.
-        if projector_params.sort_by_channel:
-            # Stack the taps; per the reduce contract, n is CLIPPED into range with the
-            # weights zeroed where the unclipped tap was outside the detector.  W_p_c /
-            # L_max / scale are per-VIEW scalars here (the in-plane footprint depends only
-            # on the azimuth), so they broadcast against (psf_width, num_pixels) trivially.
-            n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
-            n = n_p_center[None, :] + n_offsets[:, None]              # (psf_width, num_pixels)
-            dist = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - dist, 0.0, L_max)
-            A_chan_n = L_p_c_n * scale
-            A_chan_n = A_chan_n * ((n >= 0) & (n < num_det_channels))
-            n = jnp.clip(n, 0, num_det_channels - 1)
-            sinogram_view_T = channel_scatter_reduce(n, A_chan_n, rows_data, num_det_channels,
-                                                     use_sorted=True)
-        else:
-            sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
-
-            # Loop over horizontal kernel
-            for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-                n = n_p_center + n_offset
-                dist = jnp.abs(n_p - n)
-                L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - dist, 0.0, L_max)  # channel interpolation weight
-
-                valid = (n >= 0) & (n < num_det_channels)
-
-                # A_chan_n: projection coefficient for this channel tap (matches ParallelBeamModel /
-                # ConeBeamModel: A_chan_n = scale * L_p_c_n * valid).  Scatter each pixel's detector
-                # column (rows_data[p, :]) into channel n[p].
-                A_chan_n = L_p_c_n * scale * valid
-                sinogram_view_T = sinogram_view_T.at[n, :].add(rows_data * A_chan_n[:, None])
-
+        # The shared trapezoid-rule fan (see horizontal_fan_project in projectors.py, which
+        # owns the channel-major layout rationale and the sort_by_channel branch -- decided
+        # by MultiAxisParallelModel._select_tile_policy; trace-time since projector_params is
+        # static).  The weight scale -- in-plane voxel cross-section area over the footprint
+        # length -- is a per-VIEW scalar here (the footprint depends only on the azimuth).
+        weight_scale = (gp.delta_voxel * delta_voxel_row) / footprint_xy
+        sinogram_view_T = horizontal_fan_project(n_p, n_p_center, W_p_c, weight_scale,
+                                                 rows_data, num_det_channels, gp.psf_radius,
+                                                 use_sorted=projector_params.sort_by_channel)
         return sinogram_view_T.T
 
     # =========================================================================
@@ -619,32 +583,16 @@ class MultiAxisParallelModel(TomographyModel):
         footprint_xy = jnp.maximum(jnp.abs(jnp.cos(azimuth)) * gp.delta_voxel,
                                    jnp.abs(jnp.sin(azimuth)) * delta_voxel_row)
         W_p_c = footprint_xy / gp.delta_det_channel
-        L_max = jnp.minimum(1.0, W_p_c)
-        scale = (gp.delta_voxel * delta_voxel_row) / footprint_xy
 
-        # Read the view CHANNEL-MAJOR -- transpose to (num_det_channels, num_det_rows) up front
-        # so the per-pixel gather reads a CONTIGUOUS row (stride 1) instead of a column of
-        # stride num_det_channels (the adjoint of the forward kernel's channel-major scatter).
+        # The shared adjoint trapezoid-rule fan (see horizontal_fan_back in projectors.py,
+        # which owns the channel-major layout rationale and the back_stacked_gather branch
+        # -- deliberately NOT enabled by multiaxis' policy: measured a 1.00x composition
+        # no-op behind the vertical fan).  Weight scale mirrors the forward fan.
         sinogram_view_T = sinogram_view.T            # (num_det_channels, num_det_rows)
-        det_rows_values = jnp.zeros((num_pixels, num_det_rows))
-
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-            n = n_p_center + n_offset
-            dist = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - dist, 0.0, L_max)  # channel interpolation weight
-
-            valid = (n >= 0) & (n < num_det_channels)
-
-            # A_chan_n: projection coefficient for this channel tap, raised to coeff_power for the
-            # Hessian diagonal (matches ParallelBeamModel / ConeBeamModel).
-            A_chan_n = (L_p_c_n * scale * valid) ** coeff_power
-
-            # Gather each pixel's channel row: (num_pixels, num_det_rows).
-            rows = sinogram_view_T[jnp.clip(n, 0, num_det_channels - 1), :]
-
-            det_rows_values += rows * A_chan_n[:, None]
-
-        return det_rows_values
+        weight_scale = (gp.delta_voxel * delta_voxel_row) / footprint_xy
+        return horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
+                                   gp.psf_radius, coeff_power=coeff_power,
+                                   use_stacked=projector_params.back_stacked_gather)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Banded vertical fan + per-view banded back kernel

@@ -261,6 +261,34 @@ class TestTilePolicy(unittest.TestCase):
                                        atol=1e-5 * np.abs(out_scatter).max(),
                                        err_msg=f'psf_radius={expected_radius}')
 
+    def test_mt_back_kernel_stacked_branch_matches_loop(self):
+        # The shared horizontal_fan_back helper gives every geometry the stacked-gather
+        # branch (parallel is the only policy that ENABLES it, but the branch must be
+        # value-correct everywhere -- it is reachable via the tiles override).  Multiaxis
+        # covers the scalar-weight case; translation covers per-pixel weights at WIDE psf.
+        # Both coeff_powers; tolerance, not exactness (tap-summation order differs).
+        from mbirjax.projectors import ProjectorParams
+        angles = np.stack([np.linspace(0, np.pi, 12, endpoint=False), np.full(12, 0.25)], axis=1)
+        ma = mbirjax.MultiAxisParallelBeamModel((12, 72, 48), angles)
+        tr = self._make_translation_model(pitch_factor=1.5)      # psf_radius 3
+        for model, view_idx in ((ma, 2), (tr, 5)):
+            model.configure_devices(1)
+            pp_args = (tuple(model.get_params('sinogram_shape')),
+                       tuple(model.get_params('recon_shape')), model.get_geometry_parameters())
+            recon_shape = model.get_params('recon_shape')
+            idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=False)
+            rng = np.random.default_rng(8)
+            num_rows, num_channels = model.get_params('sinogram_shape')[1:]
+            view = rng.random((num_rows, num_channels), dtype=np.float32)
+            vp = np.asarray(model.projector_functions.view_params_array)[view_idx]
+            kern = type(model).back_project_one_view_to_pixel_batch
+            for coeff_power in (1, 2):
+                ref = np.asarray(kern(view, idx, vp, ProjectorParams(*pp_args, 0, 0), coeff_power))
+                out = np.asarray(kern(view, idx, vp, ProjectorParams(*pp_args, 0, 1), coeff_power))
+                np.testing.assert_allclose(out, ref, rtol=1e-5,
+                                           atol=1e-5 * np.abs(ref).max(),
+                                           err_msg=f'{type(model).__name__} cp={coeff_power}')
+
     def test_translation_gpu_policy_keeps_scatter(self):
         # Translation's policy deliberately does NOT set sort_by_channel: at the REAL TCT
         # detector shapes (1936x3064-class) the sorted reduce measured 4.5-6.5x SLOWER (the

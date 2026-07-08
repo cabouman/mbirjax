@@ -326,6 +326,32 @@ experiments); the 0.4 ms cell win at 15x256 is forfeited in favor of the product
   constant (their measured cells all sit at ratio ≥ 6); add the guard there if very wide
   detectors with modest pixel batches become a real configuration.
 
+## The DRY horizontal-fan refactor (2026-07-08, branch `greg/kernel_investigation`)
+
+With all four geometries sharing the same trapezoid-rule fan structure, the duplicated tap
+loops and their kernel-algorithm branches (8 sites) were consolidated into two helpers in
+projectors.py: `horizontal_fan_project` (forward: scatter loop | sorted reduce, chosen by
+`sort_by_channel`) and `horizontal_fan_back` (adjoint: gather+FMA loop | stacked gather,
+chosen by `back_stacked_gather`).  The geometry enters only through `(n_p, n_p_center,
+W_p_c)` plus a per-geometry `weight_scale` (scalar or per-pixel) — for parallel / cone /
+multiaxis the scale was already a subexpression, so precomputing it reorders nothing;
+translation's `dvr * L / cos` became `(dvr / cos) * L`, a deliberate accepted ULP-class
+reassociation.  A side effect: every geometry's back kernel now HONORS `back_stacked_gather`
+(previously only parallel's had the branch); the policies still enable it only for parallel
+(measured composition no-op elsewhere), and a kernel-equality test pins the branch for
+multiaxis (scalar weights) and translation (per-pixel weights, psf_radius 3).
+
+Verification (old = the committed rollout 9cfe52e):
+- **Value gate (the primary gate, stronger than HLO parity): parallel, cone, and multiaxis
+  kernels are BITWISE EQUAL on every production path** (fwd both flag states; back both
+  coeff_powers), CPU.  Translation ≤ 1.1e-7 max relative (the reassociation).
+- Compiled-HLO diff (metadata + source tables + SSA numbering normalized): parallel
+  IDENTICAL; cone identical modulo instruction names; multiaxis same instructions reordered
+  within fusions (the commuted multiply — consistent with bitwise-equal outputs);
+  translation genuinely changed (the reassociation).
+- Full CPU + 4-device sharding suites green; per-geometry fwd+back GPU spot cells A/B'd on
+  H100 (old vs new snapshots).
+
 ## Numerics note (ties to the known JAX rounding bug)
 
 Early full-grid runs showed two *value-equal* compiled programs (`fwd_asis` vs the stacked

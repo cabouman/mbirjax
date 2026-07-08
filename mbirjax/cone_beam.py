@@ -9,7 +9,8 @@ import numpy as np
 
 import mbirjax as mj
 from mbirjax import TomographyModel, tomography_utils, ParameterHandler
-from mbirjax.projectors import channel_scatter_reduce, SORTED_CHANNEL_REDUCE_MIN_COLS
+from mbirjax.projectors import (horizontal_fan_project, horizontal_fan_back,
+                                SORTED_CHANNEL_REDUCE_MIN_COLS)
 
 ConeBeamParamNames = mj.ParamNames | Literal['view_params_array', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
 
@@ -387,47 +388,19 @@ class ConeBeamModel(TomographyModel):
 
         # Get the data needed for horizontal projection
         n_p, n_p_center, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
-        L_max = jnp.minimum(1, W_p_c)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Build the view CHANNEL-MAJOR -- (num_det_channels, num_det_rows) rather than
-        # (num_det_rows, num_det_channels) -- so the per-pixel channel scatter writes a
-        # CONTIGUOUS row (stride 1) instead of a column of stride num_det_channels.  A
-        # power-of-2 num_det_channels column stride aliases the CPU cache, and the
-        # channel scatter is (measured) the dominant cone-forward cost on both CPU and
-        # GPU; the contiguous write avoids it.  Transpose back to (rows, channels) on
-        # return (one cheap pass, fused by XLA) so the output layout is unchanged.  This
-        # mirrors ParallelBeamModel.forward_project_pixel_batch_to_one_view -- including the
-        # channel-reduction choice: ONE precomputed flag (see channel_scatter_reduce in
-        # projectors.py and ConeBeamModel._select_tile_policy) selects the sorted segment-sum
-        # (GPU layouts; the reduce columns here are the FULL detector rows, so the sort
-        # amortizes except at tiny detectors) vs the original per-tap scatter-add loop, kept
-        # verbatim.  projector_params is static, so this is a trace-time branch.
-        if projector_params.sort_by_channel:
-            # Stack the taps; per the reduce contract, n is CLIPPED into range with the
-            # weights zeroed where the unclipped tap was outside the detector.
-            n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
-            n = n_p_center[None, :] + n_offsets[:, None]              # (psf_width, num_pixels)
-            # W_p_c / L_max / footprint_xy are per-pixel (num_pixels,) arrays for cone
-            # (per-pixel magnification); plain broadcasting against (psf_width, num_pixels)
-            # handles them.
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-            A_chan_n = A_chan_n * ((n >= 0) & (n < num_det_channels))
-            n = jnp.clip(n, 0, num_det_channels - 1)
-            sinogram_view_T = channel_scatter_reduce(n, A_chan_n, voxel_values, num_det_channels,
-                                                     use_sorted=True)
-        else:
-            sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
-            for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-                n = n_p_center + n_offset
-                abs_delta_p_c_n = jnp.abs(n_p - n)
-                L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-                A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-                A_chan_n *= (n >= 0) * (n < num_det_channels)
-                sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
-
+        # The shared trapezoid-rule fan (see horizontal_fan_project in projectors.py, which
+        # owns the channel-major layout rationale and the sort_by_channel branch -- for cone
+        # the reduce columns are the FULL detector rows, so ConeBeamModel._select_tile_policy
+        # enables the sorted reduce on GPU except at tiny detectors; trace-time branch since
+        # projector_params is static).  Cone's weight scale -- in-plane voxel area over the
+        # footprint length -- is a PER-PIXEL (num_pixels,) array (per-pixel magnification);
+        # the helper broadcasts it.
+        weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
+        sinogram_view_T = horizontal_fan_project(n_p, n_p_center, W_p_c, weight_scale,
+                                                 voxel_values, num_det_channels, gp.psf_radius,
+                                                 use_sorted=projector_params.sort_by_channel)
         return sinogram_view_T.T
 
     @staticmethod
@@ -620,32 +593,18 @@ class ConeBeamModel(TomographyModel):
 
         # Get the data needed for horizontal projection
         n_p, n_p_center, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
-        L_max = jnp.minimum(1, W_p_c)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Read the view CHANNEL-MAJOR -- transpose to (num_det_channels, num_det_rows)
-        # up front so the per-pixel channel gather reads a CONTIGUOUS row (stride 1)
-        # instead of a column of stride num_det_channels.  A power-of-2 num_det_channels
-        # column stride aliases the CPU cache, and the channel gather is (measured) the
-        # dominant cone-back cost on GPU; the contiguous access avoids it.  This is the
-        # adjoint of the forward kernel's channel-major scatter (mirror of
-        # ParallelBeamModel.back_project_one_view_to_pixel_batch).
+        # The shared adjoint trapezoid-rule fan (see horizontal_fan_back in projectors.py,
+        # which owns the channel-major layout rationale and the back_stacked_gather branch
+        # -- deliberately NOT enabled by cone's policy: measured a 1.00x composition no-op,
+        # the gather hides behind the vertical-fan band work).  The per-pixel weight scale
+        # mirrors the forward fan.
         sinogram_view_T = sinogram_view.T            # (num_det_channels, num_det_rows)
-
-        # Allocate the voxel cylinder array
-        det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
-
-        # Do the horizontal projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-            n = n_p_center + n_offset
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            A_chan_n = A_chan_n ** coeff_power
-            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view_T[n, :])
-
-        return det_voxel_cylinder
+        weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
+        return horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
+                                   gp.psf_radius, coeff_power=coeff_power,
+                                   use_stacked=projector_params.back_stacked_gather)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Banded vertical fans + per-view banded kernels

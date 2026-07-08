@@ -7,7 +7,7 @@ from collections import namedtuple
 import numpy as np
 
 import mbirjax as mj
-from mbirjax.projectors import channel_scatter_reduce
+from mbirjax.projectors import horizontal_fan_project, horizontal_fan_back
 
 
 # Default slice-band size for the translation back projector's rolled vertical-fan loop.
@@ -309,49 +309,19 @@ class TranslationModel(mj.TomographyModel):
 
         # Get the data needed for horizontal projection
         n_p, n_p_center, W_p_c, cos_theta_p = TranslationModel.compute_horizontal_data(pixel_indices, translation_vector, projector_params)
-        L_max = jnp.minimum(1, W_p_c)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Build the view CHANNEL-MAJOR -- (num_det_channels, num_det_rows) rather than
-        # (num_det_rows, num_det_channels) -- so the per-pixel channel scatter writes a
-        # CONTIGUOUS row (stride 1) instead of a column of stride num_det_channels.  A
-        # power-of-2 num_det_channels column stride aliases the CPU cache; the contiguous write
-        # avoids it (measured ~1.3x faster on the forward at 512 channels, GPU confirmation
-        # pending).  Transpose back to (rows, channels) on return (one cheap pass, fused by XLA).
-        # Mirrors ParallelBeamModel / ConeBeamModel / MultiAxisParallelModel -- including the
-        # channel-reduction choice: ONE precomputed flag (see channel_scatter_reduce in
-        # projectors.py and TranslationModel._select_tile_policy) selects the sorted
-        # segment-sum (GPU layouts; the reduce columns here are the FULL detector rows) vs the
-        # original per-tap scatter-add loop, kept verbatim.  projector_params is static, so
-        # this is a trace-time branch.
-        if projector_params.sort_by_channel:
-            # Stack the taps; per the reduce contract, n is CLIPPED into range with the
-            # weights zeroed where the unclipped tap was outside the detector.  W_p_c /
-            # L_max / cos_theta_p are PER-PIXEL (num_pixels,) arrays for translation
-            # (pixel-dependent magnification); plain broadcasting against
-            # (psf_width, num_pixels) handles them, as in ConeBeamModel.  Translation is
-            # the wide-psf geometry (psf_radius often 2-3), so psf_width here can be 5-7.
-            n_offsets = jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1)
-            n = n_p_center[None, :] + n_offsets[:, None]              # (psf_width, num_pixels)
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = delta_voxel_row * L_p_c_n / cos_theta_p
-            A_chan_n = A_chan_n * ((n >= 0) & (n < num_det_channels))
-            n = jnp.clip(n, 0, num_det_channels - 1)
-            sinogram_view_T = channel_scatter_reduce(n, A_chan_n, voxel_values, num_det_channels,
-                                                     use_sorted=True)
-        else:
-            sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
-
-            # Do the horizontal projection
-            for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-                n = n_p_center + n_offset
-                abs_delta_p_c_n = jnp.abs(n_p - n)
-                L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-                A_chan_n = delta_voxel_row * L_p_c_n / cos_theta_p
-                A_chan_n *= (n >= 0) * (n < num_det_channels)
-                sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
-
+        # The shared trapezoid-rule fan (see horizontal_fan_project in projectors.py, which
+        # owns the channel-major layout rationale and the sort_by_channel branch --
+        # deliberately NOT enabled by translation's policy: the channel-collision cliff at
+        # real TCT shapes, see _select_tile_policy).  The weight scale is PER-PIXEL
+        # (pixel-dependent cone angle); precomputing delta_voxel_row / cos_theta_p once here
+        # (instead of the historical per-tap dvr * L / cos) is a deliberate ULP-class
+        # reassociation, accepted for the shared-helper form.
+        weight_scale = delta_voxel_row / cos_theta_p
+        sinogram_view_T = horizontal_fan_project(n_p, n_p_center, W_p_c, weight_scale,
+                                                 voxel_values, num_det_channels, gp.psf_radius,
+                                                 use_sorted=projector_params.sort_by_channel)
         return sinogram_view_T.T
 
     @staticmethod
@@ -543,26 +513,18 @@ class TranslationModel(mj.TomographyModel):
 
         # Get the data needed for horizontal projection
         n_p, n_p_center, W_p_c, cos_theta_p = TranslationModel.compute_horizontal_data(pixel_indices, translation_vector, projector_params)
-        L_max = jnp.minimum(1, W_p_c)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Read the view CHANNEL-MAJOR -- transpose to (num_det_channels, num_det_rows) up front
-        # so the per-pixel gather reads a CONTIGUOUS row (stride 1) instead of a column of stride
-        # num_det_channels (the adjoint of the forward kernel's channel-major scatter).
+        # The shared adjoint trapezoid-rule fan (see horizontal_fan_back in projectors.py,
+        # which owns the channel-major layout rationale and the back_stacked_gather branch
+        # -- deliberately NOT enabled by translation's policy: measured a 1.00-1.02x
+        # composition no-op behind the vertical fan).  Weight scale mirrors the forward fan
+        # (per-pixel; same accepted ULP-class reassociation).
         sinogram_view_T = sinogram_view.T            # (num_det_channels, num_det_rows)
-        det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
-
-        # Do the horizontal projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-            n = n_p_center + n_offset
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = delta_voxel_row * L_p_c_n / cos_theta_p
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            A_chan_n = A_chan_n ** coeff_power
-            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view_T[n, :])
-
-        return det_voxel_cylinder
+        weight_scale = delta_voxel_row / cos_theta_p
+        return horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
+                                   gp.psf_radius, coeff_power=coeff_power,
+                                   use_stacked=projector_params.back_stacked_gather)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Banded vertical fan + per-view banded back kernels

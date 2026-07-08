@@ -128,6 +128,129 @@ def _channel_reduce_sort_segsum(n, A, values, num_out):
     return jax.ops.segment_sum(updates, sorted_n, num_segments=num_out, indices_are_sorted=True)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Shared horizontal-fan kernels
+#
+# Every geometry's horizontal fan applies the same trapezoid rule; the geometry enters ONLY
+# through (n_p, n_p_center, W_p_c) -- the continuous projected channel coordinate, its
+# rounded center, and the projected voxel width in channel units -- plus a per-geometry
+# weight scale.  These two helpers hold the tap loop and its platform-conditional
+# alternatives ONCE instead of once per geometry:
+#   * horizontal_fan_project (forward): scatter weighted pixel rows into channels; the
+#     reduction is chosen by the tile policy's sort_by_channel flag (channel_scatter_reduce).
+#   * horizontal_fan_back (adjoint): gather each pixel's weighted channel rows; per-tap loop
+#     or one stacked gather (back_stacked_gather -- a GPU win only where no vertical fan
+#     hides the gather; measured a composition no-op for cone/multiaxis/translation).
+#
+# Weight rule (identical across geometries): tap n = n_p_center + offset receives
+#     A = weight_scale * clip((W_p_c + 1) / 2 - |n_p - n|, 0, min(1, W_p_c))
+# -- the trapezoid overlap of the projected voxel with detector cell n -- zeroed outside the
+# detector.  weight_scale is a scalar or per-pixel (num_pixels,) array (e.g. in-plane voxel
+# area / footprint length); precomputing it outside the tap loop is value-identical to the
+# historical in-loop expressions except translation, where dvr * L / cos became
+# (dvr / cos) * L -- a deliberate, accepted ULP-class reassociation.
+# ──────────────────────────────────────────────────────────────────────────────
+def horizontal_fan_project(n_p, n_p_center, W_p_c, weight_scale, values, num_channels,
+                           psf_radius, use_sorted=0):
+    """Forward horizontal fan: bin weighted per-pixel rows into their detector channels.
+
+    Args:
+        n_p (array, (num_pixels,)): continuous projected channel coordinate per pixel.
+        n_p_center (int array, (num_pixels,)): rounded center channel per pixel.
+        W_p_c (scalar or (num_pixels,)): projected voxel width in channel units.
+        weight_scale (scalar or (num_pixels,)): geometry weight applied to the trapezoid term.
+        values (array, (num_pixels, num_cols)): the rows to weight and bin (voxel cylinders,
+            or a vertical fan's output; num_cols = slices or detector rows).
+        num_channels (int, static): number of detector channels.
+        psf_radius (int, static): tap radius (psf_width = 2 * psf_radius + 1 taps).
+        use_sorted (int/bool): truthy = the sorted segment-sum reduction (GPU), else the
+            scatter-add loop.  Concrete at trace time (ProjectorParams.sort_by_channel).
+
+    Returns:
+        (num_channels, num_cols) CHANNEL-MAJOR partial view.  Channel-major so the scatter
+        writes CONTIGUOUS rows (stride 1) rather than columns of stride num_channels (a
+        power-of-2 column stride aliases the CPU cache); callers transpose on return (one
+        cheap pass, fused by XLA).
+    """
+    L_max = jnp.minimum(1.0, W_p_c)
+    if use_sorted:
+        # Stack the taps; per the reduce contract, n is CLIPPED into range with the weights
+        # zeroed where the unclipped tap was outside the detector.
+        n_offsets = jnp.arange(start=-psf_radius, stop=psf_radius + 1)
+        n = n_p_center[None, :] + n_offsets[:, None]              # (psf_width, num_pixels)
+        abs_delta_p_c_n = jnp.abs(n_p - n)
+        L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
+        A_chan_n = weight_scale * L_p_c_n
+        A_chan_n = A_chan_n * ((n >= 0) & (n < num_channels))
+        n = jnp.clip(n, 0, num_channels - 1)
+        return channel_scatter_reduce(n, A_chan_n, values, num_channels, use_sorted=True)
+
+    # The per-tap scatter-add loop (the historical formulation; best on CPU).  Out-of-range
+    # taps scatter with ZERO weight and a raw index -- jax drops out-of-bounds scatter
+    # indices, so no clip is needed here.
+    sinogram_view_T = jnp.zeros((num_channels, values.shape[1]))
+    for n_offset in jnp.arange(start=-psf_radius, stop=psf_radius + 1):
+        n = n_p_center + n_offset
+        abs_delta_p_c_n = jnp.abs(n_p - n)
+        L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
+        A_chan_n = weight_scale * L_p_c_n
+        A_chan_n *= (n >= 0) * (n < num_channels)
+        sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * values)
+    return sinogram_view_T
+
+
+def horizontal_fan_back(sinogram_view_T, n_p, n_p_center, W_p_c, weight_scale,
+                        psf_radius, coeff_power=1, use_stacked=0):
+    """Back (adjoint) horizontal fan: gather each pixel's weighted channel rows.
+
+    Args:
+        sinogram_view_T (array, (num_channels, num_rows)): the view CHANNEL-MAJOR -- callers
+            transpose up front so the per-pixel gather reads CONTIGUOUS rows (the adjoint of
+            the forward helper's channel-major scatter).
+        n_p / n_p_center / W_p_c / weight_scale / psf_radius: as in horizontal_fan_project.
+        coeff_power (int, static): weights raised to this power (2 = the Hessian diagonal).
+        use_stacked (int/bool): truthy = ONE stacked (psf_width * num_pixels, num_rows)
+            gather + reshape-sum over taps (measured 1.6-1.8x on H100 for parallel beam,
+            whose back has no vertical fan to hide the gather; a 1.00x composition no-op for
+            cone/multiaxis/translation, whose policies leave it off), else the per-tap
+            gather+FMA loop (CPU, and the vertical-fan geometries).  Concrete at trace time
+            (ProjectorParams.back_stacked_gather).
+
+    Returns:
+        (num_pixels, num_rows) array of per-pixel weighted detector rows.
+    """
+    num_channels = sinogram_view_T.shape[0]
+    num_pixels = n_p_center.shape[0]
+    L_max = jnp.minimum(1.0, W_p_c)
+    if use_stacked:
+        n_offsets = jnp.arange(start=-psf_radius, stop=psf_radius + 1)
+        n = n_p_center[None, :] + n_offsets[:, None]              # (psf_width, num_pixels)
+        abs_delta_p_c_n = jnp.abs(n_p - n)
+        L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
+        A_chan_n = weight_scale * L_p_c_n
+        A_chan_n = A_chan_n * ((n >= 0) & (n < num_channels))
+        A_chan_n = A_chan_n ** coeff_power
+        n = jnp.clip(n, 0, num_channels - 1)                      # weights already 0 outside
+        # ONE (psf_width * num_pixels, num_rows) gather covering every tap:
+        gathered = sinogram_view_T[n.reshape(-1), :]
+        weighted = A_chan_n.reshape(-1)[:, None] * gathered
+        return weighted.reshape(n.shape[0], num_pixels, -1).sum(axis=0)
+
+    # The per-tap gather+FMA loop (the historical formulation).  Out-of-range taps gather a
+    # CLAMPED row (jax clamps out-of-bounds gather indices) with zero weight, so no explicit
+    # clip is needed here.
+    det_rows = jnp.zeros((num_pixels, sinogram_view_T.shape[1]))
+    for n_offset in jnp.arange(start=-psf_radius, stop=psf_radius + 1):
+        n = n_p_center + n_offset
+        abs_delta_p_c_n = jnp.abs(n_p - n)
+        L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
+        A_chan_n = weight_scale * L_p_c_n
+        A_chan_n *= (n >= 0) * (n < num_channels)
+        A_chan_n = A_chan_n ** coeff_power
+        det_rows = jnp.add(det_rows, A_chan_n.reshape((-1, 1)) * sinogram_view_T[n, :])
+    return det_rows
+
+
 class Projectors:
 
     def __init__(self, tomography_model):
