@@ -10,7 +10,7 @@ legacy per-stage public functions), and a multi-device view-sharded mode (used b
 ``scan_to_sino``) where contiguous view shards run concurrently, one per device.  In both modes the
 host output is pre-allocated once and each batch's result is written directly into its view-slice, so
 the host footprint is the input + the single output (~2x) rather than input + per-shard gather +
-concatenate destination (~3x).  See ``experiments/sharding/plans/preprocessing_pipeline_refactor_plan.md``.
+concatenate destination (~3x).  See ``plans/sharding/preprocessing_pipeline_refactor_plan.md``.
 """
 import numpy as np
 import jax

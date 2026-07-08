@@ -91,7 +91,7 @@ short jax/perf tips in `claude_prompt.md`.
   yields one identical shard per device), partials combined on the host
   (`segmentation._sharded_histogram`).  `shard_map` also achieved 0 all-gathers in HLO but its SPMD
   partitioner has produced pathological lowerings here (3–5× slower fbp filter; see
-  `experiments/sharding/parallel_performance/fbp_parallel_options.md`) — prefer the per-device
+  `plans/experiments/sharding/parallel_performance/fbp_parallel_options.md`) — prefer the per-device
   dispatch pattern (dispatch all work before reading any result and the devices overlap without
   threads).
 - **The device form (padded arrays) is the INTERNAL contract; crop at user boundaries.**  Internal
@@ -199,7 +199,7 @@ as suspect — and note small phantoms can never reproduce these (size-dependent
   pays.  Tell: the isolated probe and the full-path A/B disagree in SIGN.  Corollary from the
   same episode: XLA lowers scan-over-reshaped-input and scan-of-dynamic-slice to the SAME GPU
   program (byte-identical temps/outputs) — don't hand-optimize between forms XLA canonicalizes;
-  full record in `experiments/projector_batching/batching_refactor_design.md`.
+  full record in `plans/experiments/projector_batching/batching_refactor_design.md`.
 - **When GPU behavior contradicts local tests, verify the BUILD first.**  Editable installs can serve
   stale compiled state (a "33 GB leak" was a stale binary); and a modern `pip install -e` registers a
   `sys.meta_path` finder that beats `PYTHONPATH` — to select code under test, install it into a

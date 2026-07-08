@@ -1,10 +1,11 @@
 # Forward-projection kernel investigation: attribution, alternatives, and results
 
-**Written 2026-07-07, updated 2026-07-08** (branch `greg/kernel_investigation`).  Companion to
-`fwd_back_kernel_ab.py` and `fwd_band_pixel_sweep.py` (this directory), which produced every
-number below.
+**Written 2026-07-07, final update 2026-07-08** (branch `greg/kernel_investigation`).
+Companion to the benches in experiments/projector_kernels/ (`fwd_back_kernel_ab.py`,
+`fwd_band_pixel_sweep.py`, `mt_back_kernel_ab.py`, `translation_fwd_psf_ab.py`,
+`pixel_count_crossover_ab.py`, `phased_overhead_ab.py`), which produced every number below.
 
-## Developer overview — what changed relative to prerelease
+## Developer overview — what changed relative to prerelease (the campaign's full delta)
 
 - **Projector tiling is consolidated into a `TilePolicy`** (`model.tiles`): every batching /
   banding knob and kernel-algorithm flag, selected in ONE method
@@ -16,29 +17,42 @@ number below.
 - **Per-op view batches** (from the view-batch work that preceded this investigation): forward
   keeps an OOM-safe width (cap 128); back single-vmaps its per-device view shard (cap 512
   sharded / 128 single-device) to avoid the accumulating-scan carry.
-- **GPU forward kernels use a sorted segment-sum channel reduction** (parallel beam AND the
-  cone horizontal fan) behind a single static flag, `ProjectorParams.sort_by_channel`, decided
-  by the tile policy.  The reduction lives in `projectors.channel_scatter_reduce`; the sorted
-  form uses `lax.sort_key_val` with the sorted keys AS the segment ids (immune to the known
-  round-in-jit divergence hazard).  CPU keeps the original scatter loop verbatim — the CPU
-  compiled programs are bit-identical to before (HLO-proven).
-- **The GPU back-projection kernel gathers all psf taps at once** (one
-  (psf_width · num_pixels, num_rows) gather + reshape-sum instead of a per-tap gather+FMA
-  loop) behind a second flag, `ProjectorParams.back_stacked_gather` — the GPU back kernel is
-  ~95% gather-bound.  CPU keeps the per-tap loop verbatim (stacked is worse there).
-- **Parallel-beam GPU forward tiling** (measured): slice band 256, pixel batch 8192.  Back
-  tiling was swept and PARKED — its bands protect reduce-scatter memory, so only
-  memory-expensive trades exist.
+- **GPU forward horizontal fans use the SORTED channel reduction** (all four geometries carry
+  the branch; parallel, cone, and multiaxis ENABLE it by policy — translation deliberately
+  does not, see the collision-cliff section below) behind a single static flag,
+  `ProjectorParams.sort_by_channel`.  The reduction lives in
+  `projectors.channel_scatter_reduce`; the sorted form uses `lax.sort_key_val` with the
+  sorted keys AS the segment ids.  Three measured guard constants (min columns, max psf
+  radius, min collision ratio) gate the policies.  CPU keeps the original scatter loop.
+- **The GPU parallel-beam back kernel gathers all psf taps at once** (one
+  (psf_width · num_pixels, num_rows) gather + reshape-sum) behind a second flag,
+  `ProjectorParams.back_stacked_gather`.  Every geometry's back kernel honors the flag, but
+  only parallel's policy enables it: for the vertical-fan geometries the gather hides behind
+  the band work (a measured composition no-op — three confirmations below).
+- **The horizontal-fan and banded-vertical-fan kernels are DRY**: the trapezoid tap machinery
+  lives once in `projectors.py` (`horizontal_fan_project` / `horizontal_fan_back` /
+  `vertical_fan_band_gather`); geometry files keep only their coordinate stages and weight
+  scales.  Consolidation was value-gated bitwise (one accepted last-bit reassociation in
+  translation).
+- **The horizontal fans' integer channel centers are concrete inputs** (the rounding-bug
+  fix): computed in a separate small jit (`projectors._jit_compute_scatter_centers` from each
+  geometry's `compute_channel_coordinate`) and passed into the projector programs, whose
+  compiled forms are round-free for parallel beam.  The wrappers use a 256 MB single-call /
+  view-chunked hybrid and carry a no-eager-array-ops performance contract.  See the Phase D
+  sections below and `plans/experiments/bugs_and_artifacts/jax rounding bug/phase_d_design.md`.
+- **Parallel-beam GPU forward tiling** (measured): slice band 256, pixel batch 8192; cone
+  gets pixel batch 4096 above 768 slices.  Back tiling was swept and PARKED — its bands
+  protect reduce-scatter memory, so only memory-expensive trades exist.
 - **Float32 matmuls default to full float32** (TF32 opt-out via
   `JAX_DEFAULT_MATMUL_PRECISION=float32` in `_device_setup`, environment-overridable).
-- **Measured results (H100, model level), investigation start → now at 1024³:** parallel
-  forward 35.0 → 8.2 s at n=1 (4.3×) and 9.3 → 2.0 s at n=4 (4.7×); parallel back
-  18.2 → 10.9 s at n=1 (1.67×), 2.25×/1.80× at n=2/4 and 2.5–3.6× at 513³; cone forward
-  1.4–1.6× everywhere; parallel VCD +10%.  All CPU paths unchanged (HLO bit-identical).
-- **Memory:** back memory is flat to −46%; cone flat.  Known cost: parallel FORWARD
-  small-cell GPU memory +27–58% relative (≤0.65 GB absolute) from the wide-band /
-  large-pixel-batch policy — trips the nightly's hard 8% memory gate; needs the
-  acknowledged-trade path.
+- **Final scoreboard (H100, model level), investigation start → campaign end at 1024³ n=1:**
+  parallel forward 35.0 → 7.9 s (4.4×), parallel back 18.2 → 10.5 s (1.7×), cone forward
+  41.5 → 18.8 s (2.2×); multiaxis forward 1.2–1.4× at its cells; parallel VCD neutral;
+  memory flat at capacity (cone 1024³ −3.2 GB).
+- **Accepted trades (memory-gate acks pending):** parallel forward small cells +27–58%
+  relative (≤0.65 GB absolute); cone forward 1024³ +9.6/29/46% at n=1/2/4; mid-size forward
+  cells +~0.5 GB from the materialized centers + chunk concat; 513-class back +8% (chunked
+  accumulation).
 
 The original question: why is `parallel_beam.forward_project_pixel_batch_to_one_view` slower
 than `back_project_one_view_to_pixel_batch` (nightly model-level: fwd/back ≈ 1.4–1.9× GPU,
@@ -367,7 +381,7 @@ programs (`projectors._jit_compute_scatter_centers`, fed by each geometry's new
 the kernels/drivers as CONCRETE arrays.  This removes the round-inside-vmap/map/scatter
 precondition of the known XLA rounding bug for all 8 Class-H sites; the vertical fans'
 per-slice rounds (Class V) remain documented accepted risk.  Design and trade discussion:
-`experiments/bugs_and_artifacts/jax rounding bug/phase_d_design.md`.
+`plans/experiments/bugs_and_artifacts/jax rounding bug/phase_d_design.md`.
 
 Mechanics: kernels gain an `n_p_centers` argument (per view, (num_pixels,) int32); the
 drivers thread a (P, V)/(V, P) centers array through the existing batching helpers (forward
@@ -413,7 +427,7 @@ Early full-grid runs showed two *value-equal* compiled programs (`fwd_asis` vs t
 variants) differing by ~4e-3 relative on isolated elements: 2 of 32 views, channels `c−1`/`c+1`
 around a rounding tie, `c` itself clean, ~0.3–0.5 magnitude per affected cluster.  That is the
 **antisymmetric ±1-channel signature of the known rounding bug**
-(`experiments/bugs_and_artifacts/jax rounding bug/jax_rounding_bug.md`): the projection is
+(`plans/experiments/bugs_and_artifacts/jax rounding bug/jax_rounding_bug.md`): the projection is
 mathematically continuous at exact .5 ties (PSF clipping), so a compilation-dependent value
 change means the scatter destination `n` and the weight's `|n_p − n|` disagreed about
 `n_p_center` — the same family as the vmap→map→scatter mis-optimization documented there, here

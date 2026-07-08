@@ -6,7 +6,7 @@ Phase D, the `n_p_center` precompute that fixes the known JAX rounding bug.
 Read for orientation (verify any code claim against the actual code; docs may lag):
 1. `.claude/claude_prompt.md` — collaboration style + workflow (stage only, no commits;
    GPU work runs on gautschi via sbatch; discuss before library edits; sweep, don't guess).
-2. `experiments/projector_kernels/fwd_back_findings.md` — THE campaign document: developer
+2. `plans/experiments/projector_kernels/fwd_back_findings.md` — THE campaign document: developer
    overview of everything changed relative to prerelease, per-phase results, methodology,
    and the numerics notes.  Start here.
 3. `.claude/lessons.md` — the engineering playbook.
@@ -62,7 +62,7 @@ compute_horizontal_data) and VERTICAL fans like cone.  Apply the playbook:
 
 ## Focus 2: Phase D — the n_p_center precompute (rounding-bug fix)
 
-Read `experiments/bugs_and_artifacts/jax rounding bug/jax_rounding_bug.md` (and its
+Read `plans/experiments/bugs_and_artifacts/jax rounding bug/jax_rounding_bug.md` (and its
 `lax_map_scatter_bug/` companions).  Summary: `jnp.round` of an in-jit continuous projection
 coordinate inside a vmap→map→scatter chain can mis-optimize (antisymmetric ±1-channel
 errors, ~0.5/pixel; we re-observed the signature during this campaign as compilation-order

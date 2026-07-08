@@ -13,9 +13,9 @@
 multi-device sharding, built fresh on `prerelease`.*
 
 **Companion docs**
-- `experiments/sharding/plans/sharding_status.md` — short living status (what
+- `plans/sharding/sharding_status.md` — short living status (what
   phase we're in, what's blocked).
-- `experiments/sharding/parallel_performance/fbp_parallel_options.md` —
+- `plans/experiments/sharding/parallel_performance/fbp_parallel_options.md` —
   shard_map-vs-threading parallelism comparison (migrated from research
   `.claude/parallel_options.md`); background for Phase F1.
 - Research-branch prior art: `…/Research/mbirjax/.claude/status.md` (slice-axis
@@ -666,7 +666,7 @@ The geometry-agnostic projector core in `projectors.py` layers several batching/
 mapping helpers that are hard to follow: `sum_function_in_batches` (lax.scan over
 view batches), `concatenate_function_in_batches` (lax.map over pixel batches),
 and a `vmap` over the per-view geometry kernel — see `back_project_one_view_to_
-pixel_batch` and the forward analogue (`.claude/back_projection_overview.md`
+pixel_batch` and the forward analogue (`plans/back_projection_overview.md`
 walks the chain).  Goals of a rewrite:
 - **Clarity** — collapse the nested scan/map/vmap layers into something
   readable (the F1 `apply_row_filter` single-`lax.scan`-with-`vmap` is the

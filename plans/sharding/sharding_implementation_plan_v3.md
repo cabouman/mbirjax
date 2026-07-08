@@ -29,8 +29,8 @@ nightly harness + the metrics-visualization surface are a **separate track** —
 | `p6_projector_rework_proposal.md` | projector-rework design; **§8a-design is canonical** (rest partly superseded) |
 | `performance_tracking_plan.md` | nightly perf-regression harness + metrics — **separate track**, out of scope here |
 | `.claude/lessons.md` | jax/GPU/placement/measurement playbook |
-| `.claude/back_projection_overview.md` | projector internals (read before touching cone kernels) |
-| `.claude/sinogram_sharding.md` | parked row-sharding-the-sinogram exploration |
+| `plans/back_projection_overview.md` | projector internals (read before touching cone kernels) |
+| `plans/sinogram_sharding.md` | parked row-sharding-the-sinogram exploration |
 
 *File:line references below are a 2026-06-17 snapshot and may drift; trust the symbol
 name over the number.*
@@ -244,7 +244,7 @@ no-single-device-regression.
   so the sino's sharded axis aligns with the recon's slice sharding — turning back projection
   into a mostly-local op (a geometry-driven footprint halo) rather than a view-reduce, which
   would sidestep the band-kernel reduce-scatter cost entirely.  Parked exploration; full
-  analysis in `.claude/sinogram_sharding.md`.
+  analysis in `plans/sinogram_sharding.md`.
 - **FDK filter → sharded contract — ✅ DONE** (landed interspersed with B4/B5).
   `ConeBeamModel.fdk_filter` now uses the shared `_apply_direct_recon_filter` (the `fbp_filter`
   pattern: per-view-shard `run_per_device`, the FDK cosine pre-weight folded into `row_weight`),

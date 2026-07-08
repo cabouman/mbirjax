@@ -25,7 +25,7 @@ class TestFBPReconstruction(unittest.TestCase):
         #     correctness baseline (.npy fingerprint) in the mbirjax_metrics harness;
         #   - the projectors -- by the adjoint identity in test_projectors and the
         #     convergence/sanity recon in test_vcd.
-        # See experiments/sharding/plans/increment_d_translation_design.md (T1 / Tests).
+        # See plans/sharding/increment_d_translation_design.md (T1 / Tests).
         self.geometry_types = mj._utils._geometry_types_for_tests.copy()
         self.geometry_types.remove("translation")
         self.geometry_types.remove("anisotropic_translation")

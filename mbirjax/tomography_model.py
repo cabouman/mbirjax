@@ -1122,7 +1122,7 @@ class TomographyModel(ParameterHandler):
         channel center.  The projector wrappers round it OUTSIDE the projector programs
         (projectors._jit_compute_scatter_centers) and pass the concrete integer centers
         into the kernels -- the horizontal-fan rounding-bug fix (see
-        experiments/bugs_and_artifacts/jax rounding bug/phase_d_design.md).  Implementations
+        plans/experiments/bugs_and_artifacts/jax rounding bug/phase_d_design.md).  Implementations
         must reuse the SAME float chain the kernels use for their weights (e.g. return the
         n_p element of compute_proj_data / compute_horizontal_data), so centers and weights
         can never disagree.

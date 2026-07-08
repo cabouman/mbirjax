@@ -5,7 +5,7 @@ Top-level index of the sharding experiment area.  Each subdirectory has its own
 
 ## Subdirectories
 
-- `plans/` — the implementation plan and living status for the beta sharding work.
+- (the program plans and the parallel-performance findings docs moved to `plans/sharding/` and `plans/experiments/sharding/parallel_performance/`; see `plans/README.md`)
 - `parallel_performance/` — benchmarks, parallelism-strategy comparisons, and the
   multi-GPU `device_put` correctness probe.
 - `scaling_tests/` — scripts to measure scaling of time and memory as a function

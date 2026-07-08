@@ -38,7 +38,7 @@ ProjectorParams = namedtuple('ProjectorParams', ['sinogram_shape', 'recon_shape'
 # pixels hit the same channel, and on GPU those colliding scatter-adds serialize (each is an
 # ATOMIC memory update), making the duplicate-index scatter the dominant kernel cost.  The
 # best formulation is platform-OPPOSITE (measured; the full study is
-# experiments/projector_kernels/fwd_back_findings.md):
+# plans/experiments/projector_kernels/fwd_back_findings.md):
 #   * CPU: the plain per-tap scatter-add loop.  Sort-based alternatives are several times
 #     WORSE there, so the CPU path is the original formulation, unchanged.
 #   * GPU: the "SORTED channel reduction" (the term used throughout the geometry policies):
@@ -111,7 +111,7 @@ def _channel_reduce_sort_segsum(n, A, values, num_out):
     ``lax.sort_key_val`` returns the sorted keys and the permutation TOGETHER, and the sorted
     keys themselves are used as the segment ids -- so the ids are consistent with the sort by
     construction.  (Deliberate: an argsort-then-regather formulation would let the known
-    round-inside-jit XLA hazard -- see experiments/bugs_and_artifacts/jax rounding bug/ --
+    round-inside-jit XLA hazard -- see plans/experiments/bugs_and_artifacts/jax rounding bug/ --
     produce ids inconsistent with the order, which indices_are_sorted=True would silently
     mis-reduce.)
     """
@@ -133,7 +133,7 @@ def _channel_reduce_sort_segsum(n, A, values, num_out):
 # projector programs as concrete arrays.  Reason: computing the round INSIDE those programs
 # is the precondition of a known XLA miscompilation (round of an in-jit continuous
 # projection coordinate feeding a scatter/gather inside a vmap -> (lax.map) -> scatter
-# chain; see experiments/bugs_and_artifacts/jax rounding bug/, esp. phase_d_design.md).
+# chain; see plans/experiments/bugs_and_artifacts/jax rounding bug/, esp. phase_d_design.md).
 # Two consequences worth knowing: parallel beam's compiled forward/back programs contain no
 # round at all, and forward/back consume ONE shared center value per (view, pixel), so the
 # pair stays adjoint even at rounding ties.  The vertical fans' per-slice rounds remain
@@ -487,7 +487,7 @@ class Projectors:
             assert not isinstance(n_pc, jax.core.Tracer), (
                 'The projector wrappers must run OUTSIDE any jit: the integer scatter '
                 'centers have to reach the projector programs as CONCRETE arrays '
-                '(see experiments/bugs_and_artifacts/jax rounding bug/phase_d_design.md).')
+                '(see plans/experiments/bugs_and_artifacts/jax rounding bug/phase_d_design.md).')
             return n_pc
 
         def num_owned(owned_view_indices):

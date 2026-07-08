@@ -9,7 +9,7 @@
 > batch-size hygiene doesn't matter.  State after the pivot: `projectors.py` restarted from
 > `greg/shard_profiling` with ONE change — `sum_function_in_batches` reads its full batches
 > as `dynamic_slice` windows (same sizes, order, partials; no input reshape).  The old form
-> is frozen in `reference_batching.py` (this directory) for A/B measurement; v2's history
+> is frozen in `reference_batching.py` (experiments/projector_batching/) for A/B measurement; v2's history
 > lives in git (`df91964`, `a550538`) and the sections below.
 >
 > **CORRECTION (2026-07-04, old-vs-new H100 driver A/B): the attribution behind the patch

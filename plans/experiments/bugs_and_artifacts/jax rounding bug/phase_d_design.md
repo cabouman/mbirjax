@@ -145,7 +145,8 @@ recompute).  The later sort-permutation cache (GPU refinement) can revisit this.
 
 ## 6. Verification plan
 
-- The original bug demos (`vmap_lax_map_demo.py`, `minimal_lax_map_repro.py` T15j) as
+- The original bug demos (`vmap_lax_map_demo.py`, `minimal_lax_map_repro.py` T15j, in
+  `experiments/bugs_and_artifacts/jax rounding bug/lax_map_scatter_bug/`) as
   regression anchors — the production-shaped demo must show the antisymmetric ±1-channel
   signature GONE.
 - Kernel-equality tests old-vs-new per geometry: values equal EXCEPT at exact .5 ties
@@ -202,7 +203,7 @@ layout); kernels take `n_p_centers` per view; wrappers compute centers eagerly w
 tracer-guard assert and never chunk a multi-device view axis (back chunking slices the
 sinogram eagerly, single-device only).
 
-Verification highlights (full record in `experiments/projector_kernels/fwd_back_findings.md`):
+Verification highlights (full record in `plans/experiments/projector_kernels/fwd_back_findings.md`):
 the minimized repro on jax 0.10.1 still fires and T15j (this pattern) is clean on all 24
 batches; the compiled parallel fwd AND back programs contain ZERO round ops; value gates
 bitwise except a benign multiaxis-back fusion-context ULP (hfan-only probe bitwise);

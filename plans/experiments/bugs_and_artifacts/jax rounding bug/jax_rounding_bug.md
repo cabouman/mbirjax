@@ -1,6 +1,6 @@
 # JAX/XLA rounding bug — overview, resolution, and implementation plan
 
-*Companion to `jax_rounding_bug_v2.py` (this directory) and
+*Companion to `jax_rounding_bug_v2.py` (experiments/bugs_and_artifacts/jax rounding bug/) and
 `minimal_lax_map_repro.{py,md}` (in `./lax_map_scatter_bug/`).
 Investigation 2026-05-25/26; JAX 0.10.1.*
 
@@ -76,13 +76,13 @@ The bug is sensitive to many conditions, including exactly which views and/or
 pixels are projected: the bug can go away if more views or pixels are projected. 
 
 The full investigation, with all 15 test variants and the HLO
-post-mortem, is in `../lax_map_scatter_bug/minimal_lax_map_repro.md`.
+post-mortem, is in `experiments/bugs_and_artifacts/jax rounding bug/lax_map_scatter_bug/minimal_lax_map_repro.md`.
 
 ---
 
 ## 2. What we tried (summary)
 
-Run by `../lax_map_scatter_bug/minimal_lax_map_repro.py`, which sweeps
+Run by `experiments/bugs_and_artifacts/jax rounding bug/lax_map_scatter_bug/minimal_lax_map_repro.py`, which sweeps
 all 24 ROR-masked pixel batches of a 256×256 recon under `vmap` of
 size 1 over view 12, with `lax.map` over `_NB = 8` slice batches.
 
@@ -384,14 +384,14 @@ geometries — so they get the same treatment in the rewire.
 
 ## 6. Files
 
-- `jax_rounding_bug_v2.py` (this directory) — direct CSE-failure probe.
+- `jax_rounding_bug_v2.py` (experiments/bugs_and_artifacts/jax rounding bug/) — direct CSE-failure probe.
   Inconclusive but informative.
-- `../lax_map_scatter_bug/minimal_lax_map_repro.py` — T1–T15j
+- `experiments/bugs_and_artifacts/jax rounding bug/lax_map_scatter_bug/minimal_lax_map_repro.py` — T1–T15j
   systematic minimization, includes the working fixes.
-- `../lax_map_scatter_bug/minimal_lax_map_repro.md` — investigation
+- `experiments/bugs_and_artifacts/jax rounding bug/lax_map_scatter_bug/minimal_lax_map_repro.md` — investigation
   notes; should be updated to reference this plan once the implementation
   lands.
-- `../lax_map_scatter_bug/vmap_lax_map_demo.py` — annotated demo of
+- `experiments/bugs_and_artifacts/jax rounding bug/lax_map_scatter_bug/vmap_lax_map_demo.py` — annotated demo of
   the original bug.
 - `mbirjax/parallel_beam.py` and `mbirjax/cone_beam.py` — the
   production sites to be patched (see §4.4).

@@ -17,7 +17,7 @@ Completed-work record + principles: `sharding_implementation_plan.md` (v1).*
    §Cross-cutting principles; skim the rest for history.
 5. `.claude/lessons.md` — **skim** (jax/GPU playbook; consult when a problem rhymes
    with a past one).
-6. `.claude/back_projection_overview.md` — read only if touching projector internals.
+6. `plans/back_projection_overview.md` — read only if touching projector internals.
 
 ---
 
@@ -771,7 +771,7 @@ the canonical design; the 2026-06-12 body is partly superseded, flagged inline).
   with a too-tight fixed margin (a B-only artifact; B is dropped).  Decision reinforced.
 - **Row-sharding the sinogram — PARKED exploration** (Greg's long-standing idea, now better
   motivated by cone): footprint-halo scheme, parallel-beam zero-halo locality, the
-  variable-halo + thin-recon trade-offs.  Full discussion in **`.claude/sinogram_sharding.md`**;
+  variable-halo + thin-recon trade-offs.  Full discussion in **`plans/sinogram_sharding.md`**;
   pointer added to v2 §Adjacent tasks.  Decision: finish cone on view-sharding; revisit later
   (start with parallel beam + a cheap footprint-width computation).
 

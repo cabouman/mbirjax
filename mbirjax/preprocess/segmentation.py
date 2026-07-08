@@ -125,7 +125,7 @@ def _sharded_histogram(image, valid_mask, num_bins=1024):
     on the sharded array -- GSPMD does not partition scatter and lowers both with all-gathers of the
     IMAGE-SIZED index/update arrays onto every device (observed as a 47 GiB allocation on an ~18 GiB
     sharded recon); (2) ``shard_map`` -- it invokes XLA's SPMD partitioner, whose lowering has bitten
-    this codebase before (see ``experiments/sharding/parallel_performance/fbp_parallel_options.md``);
+    this codebase before (see ``plans/experiments/sharding/parallel_performance/fbp_parallel_options.md``);
     the per-device local pattern used here matches the fbp filter and the preprocessing driver.
 
     Semantics vs ``np.histogram``: range = masked min/max; invalid/out-of-range entries dropped; ``hi``
