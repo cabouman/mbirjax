@@ -14,6 +14,8 @@ import numpy as np
 import mbirjax
 from mbirjax.projectors import SORTED_CHANNEL_REDUCE_MIN_COLS
 
+from _platform import skip_unless_cpu, skip_unless_multidevice
+
 
 def make_model(num_views=64, num_rows=40, num_channels=32):
     angles = np.linspace(0, np.pi, num_views, endpoint=False)
@@ -27,28 +29,15 @@ def centers_for(model_cls, idx, view_params, pp):
     return jnp.round(model_cls.compute_channel_coordinate(idx, view_params, pp)).astype(jnp.int32)
 
 
-def _require_multidevice(test):
-    """Skip a test that asserts >=2-device tile-policy values when the box has <2 devices.
-
-    A single-GPU allocation can't form the 2-device layout (configure_devices(2) falls back to
-    one device); CPU CI provides 4 virtual devices and a >=2-GPU node works too.  (Convert to a
-    shared skip_unless_multidevice marker in Phase 4 of the platform-helper refactor.)
-    """
-    from mbirjax._device_setup import default_devices
-    if len(default_devices()) < 2:
-        test.skipTest('needs >= 2 devices for the multi-device tile-policy assertions')
-
-
 class TestTilePolicy(unittest.TestCase):
 
+    @skip_unless_cpu
     def test_base_policy_on_cpu(self):
-        # On CPU, parallel beam inherits the base policy untouched.  Skip on a GPU, where
-        # model.tiles carries the parallel-beam GPU overrides instead of the base defaults;
-        # that override path is covered hardware-independently by test_parallel_gpu_override.
+        # On CPU, parallel beam inherits the base policy untouched.  (A GPU applies the
+        # parallel-beam overrides instead; that path is covered hardware-independently by
+        # test_parallel_gpu_override.)
         model = make_model()
         model.configure_devices(1)
-        if model._platform_label(model.shard_devices[0]) != 'CPU':
-            self.skipTest('base-policy defaults describe CPU selection; GPU path tested separately')
         t = model.tiles
         self.assertEqual(t.fwd_view_batch, 64)          # min(views, cap 128)
         self.assertEqual(t.back_view_batch, 64)
@@ -59,12 +48,12 @@ class TestTilePolicy(unittest.TestCase):
         self.assertFalse(t.sort_by_channel)
         self.assertFalse(t.back_stacked_gather)
 
+    @skip_unless_multidevice
     def test_view_batch_caps(self):
         model = make_model(num_views=600)
         model.configure_devices(1)
         self.assertEqual(model.tiles.fwd_view_batch, 128)    # fwd cap
         self.assertEqual(model.tiles.back_view_batch, 128)   # single-device back cap
-        _require_multidevice(self)
         model.configure_devices(2)
         self.assertEqual(model.tiles.fwd_view_batch, 128)
         self.assertEqual(model.tiles.back_view_batch, 300)   # per-shard single vmap (< 512 cap)
@@ -93,11 +82,11 @@ class TestTilePolicy(unittest.TestCase):
         wide = model._select_tile_policy(True, 64, 8 * SORTED_CHANNEL_REDUCE_MIN_COLS, 2)
         self.assertTrue(wide.sort_by_channel)
 
+    @skip_unless_multidevice
     def test_reselected_on_configure_devices_and_replace_override(self):
         model = make_model()
         model.configure_devices(1)
         self.assertEqual(model.tiles.back_view_batch, 64)
-        _require_multidevice(self)
         model.configure_devices(2)
         self.assertEqual(model.tiles.back_view_batch, 32)    # per-shard
         # The experiment idiom: _replace persists until the next re-layout and is what the
