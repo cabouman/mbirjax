@@ -105,7 +105,7 @@ v2 mechanic — **one uniform pattern for every batched axis**:
 This collapses the `concatenate_function_in_batches`(+`lax.map`) / `sum_function_in_batches`
 pair into two thin wrappers over ONE windowed-scan core, removes the odd-batch inlined
 kernel, removes `lax.map` entirely, and makes any `B_max` shape-safe — which is what the
-size-adaptive knob (post_shard_plans item 1) needs.
+size-adaptive knob (current_plans.md (then post_shard_plans) item 1) needs.
 
 ## 2. New code, parallel to old
 

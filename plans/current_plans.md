@@ -1,12 +1,45 @@
-# Post-sharding forward plan
+# Current forward plan
 
-**Created 2026-07-03.**  Open items carried forward now that the core sharding (ParallelBeam + all
-geometries), the MAR/preprocessing sharding, and the large-problem memory work have shipped on
-`greg/shard_profiling`.  This is the running "what's left" list; detail lives in the source docs cited
-per item (`mar_refactor_plan.md`, `sharding_implementation_plan_v3.md` §4/§5/§6, `sinogram_sharding.md`).
+(Originally the post-sharding forward plan; renamed 2026-07-08 -- this is the EVOLVING
+running list of open work, at plans/current_plans.md.)
+
+**Created 2026-07-03; updated 2026-07-08** (after the projector-kernel campaign on
+`greg/kernel_investigation`).  Open items carried forward now that the core sharding
+(ParallelBeam + all geometries), the MAR/preprocessing sharding, and the large-problem memory
+work have shipped on `greg/shard_profiling`.  This is the running "what's left" list; detail
+lives in the source docs cited per item (`mar_refactor_plan.md`,
+`sharding_implementation_plan_v3.md` §4/§5/§6, `sinogram_sharding.md`).
 Roughly ordered by likely value; none is blocking.
 
 ---
+
+## 0.5 Done on `greg/kernel_investigation` (2026-07-07/08) — the projector-kernel campaign
+
+Item 3's "forward-kernel internals (future project)" became a full campaign; record:
+`plans/projector_kernels/fwd_back_findings.md`.  In brief:
+
+- **TilePolicy** (`model.tiles`): every projector batching/banding knob + the kernel-algorithm
+  flags consolidated into one per-layout selection method, read late-bound.
+- **Sorted channel reduction** for the GPU forward horizontal fans (the scatter's colliding
+  atomic adds were ~the whole forward kernel cost).  Parallel/cone/multiaxis enable it;
+  TRANSLATION measured a 4.5–6.5× collision-cliff LOSS at its real detector shapes and keeps
+  the scatter — three guard constants in `projectors.py` encode the measured crossovers.
+- **Stacked back gather** (parallel only; measured a composition no-op behind the vertical
+  fans of the other three geometries — three separate confirmations).
+- **DRY fan kernels**: the trapezoid tap machinery lives once in `projectors.py`
+  (`horizontal_fan_project` / `horizontal_fan_back` / `vertical_fan_band_gather`).
+- **Concrete scatter centers** — the horizontal-fan rounding-bug fix (parallel's compiled
+  programs are round-free; the vertical fans' per-slice rounds are documented accepted risk:
+  `plans/bugs_and_artifacts/jax rounding bug/phase_d_design.md`).  En route: the
+  eager-gather lesson (one eager array op per wrapper call cost VCD +35%; `lessons.md` §3).
+- **Scoreboard (H100, 1024³ n=1, campaign start → end):** parallel forward 35.0 → 7.9 s,
+  parallel back 18.2 → 10.5 s, cone forward 41.5 → 18.8 s; multiaxis forward 1.2–1.4×;
+  VCD neutral; memory flat at capacity (cone 1024³ −3.2 GB).
+- **Docs consolidated** into top-level `plans/` (this file's new home; `plans/README.md`).
+
+**New opens from the campaign** (carried in §3 below): nightly memory-gate acks; the VCD
+host-dispatch-bound observation; optional refinements (sort-permutation caching, extending
+the collision guard to parallel/cone).
 
 ## 0. Done during PR prep (2026-07-03)
 
@@ -26,10 +59,12 @@ constants that were tuned for small volumes.  Both should become **size-adaptive
 (a function of the *problem*, identical on any device count — else results would drift with hardware and
 break the cross-device correctness gating).
 
-- **Adaptive `view_batch_size_for_vmap`.**  Currently hardwired to **128** (was 512; the forward-projection
-  transient scales with it and OOM'd cone 1024³).  Make it scale down with recon size (large recons want it
-  smaller; small recons are unaffected), and pick a **divisor of the per-view-shard view count** so there is
-  no ragged tail batch.  _(TODO note is in `tomography_model.py`; supersedes the hardwired 128.)_
+- **Adaptive `view_batch_size_for_vmap`.**  **LARGELY DONE via the TilePolicy (2026-07-07):**
+  the knob is now per-op (forward keeps a flat OOM-safe cap 128; back single-vmaps its
+  per-device shard, cap 512 sharded / 128 single-device), selected per device layout and read
+  late-bound (the stale-binding bug that motivated this item is fixed).  RESIDUAL (optional):
+  true size-adaptive scaling and divisor-of-shard sizing to avoid ragged tail batches —
+  revisit only if a measured case wants it.
 - **Size-only adaptive `partition_sequence` / starting granularity** (`sharding_implementation_plan_v3.md`
   §5 P1-design).  The granularity-1 first VCD iteration updates the whole recon in one subset → the biggest
   subset-domain arrays.  Deriving the coarsest starting granularity from voxel count (skip granularity 1 for
@@ -57,8 +92,12 @@ the 'flash' associated with objects partially outside the FoV.
 
 ## 3. Projector / batching profiling and cleanup
 
-- **Profile the existing projector performance**: Use jax/perfetto/tensorboard/nvidia tools to identify
-  memory and computational bottlenecks and make a plan to improve performance.
+- ~~Profile the existing projector performance~~ / ~~Forward-kernel internals (future
+  project)~~ — **DONE 2026-07-07/08 as the projector-kernel campaign** (§0.5 above; full
+  record `plans/projector_kernels/fwd_back_findings.md`).  Forward is no longer the dominant
+  projector cost (parallel fwd is now ~1.3× FASTER than back at 1024³ n=1); the residual
+  kernel headroom (forward sorted-reduce and back gather both sit ~10× above compute-only
+  bounds) is custom-kernel territory, deferred.
 - ~~Simplify the sparse-projector batching machinery~~ — **CLOSED 2026-07-04 with the code
   UNCHANGED**: the full investigation (census, balanced-batching v2, windowed-read patch, band
   pixel-width tuning — each measured and retired; record in
@@ -68,9 +107,23 @@ the 'flash' associated with objects partially outside the FoV.
   full recon path on either platform — micro benchmarks of shape-dependent kernel effects don't
   compose; the full path is the arbiter.  Durable constants for the adaptive-knob work: flat GPU
   vmap-width knee; isolated-driver k ≈ 1.0 forward / 1.9 back.
-- **Forward-kernel internals (future project, noted 2026-07-04):** forward projection is ~2× back's
-  time on GPU and 3–4× on CPU — the dominant projector cost.  Improving the forward kernel itself
-  would also re-open the batch-width trade-offs above.
+- **Opens from the campaign (2026-07-08):**
+  - **Nightly memory-gate acks** for the deliberate time-for-memory trades: parallel fwd
+    small cells (+27–58% rel, ≤0.65 GB), cone fwd 1024³ (+9.6/29/46% at n=1/2/4), mid-size
+    fwd cells (+~0.5 GB, materialized scatter centers + chunk concat), 513-class back +8%.
+    Also confirm `greg/kernel_investigation` is nightly-tracked (one legal fingerprint-flip
+    cycle at rounding ties when the centers change lands).
+  - **VCD is host-dispatch-bound at interactive sizes** (measured: 200³ VCD is ~95% host
+    time; device kernels are ~0.1 s of a ~2 s recon).  A future speed item with large
+    headroom: reduce per-subset dispatches / host syncs (e.g. jit a whole subset update or
+    iteration; the concrete-centers plumbing supports precomputed-per-partition centers if
+    that jit ever lands).  cProfile is the instrument (`lessons.md` §3/§5).
+  - **Optional refinements:** cached per-(view, pixel-batch) sort permutations for the
+    sorted reduce (possible now that centers are concrete); extend the collision-ratio
+    guard to parallel/cone if very wide detectors with modest pixel batches become real.
+  - **Residual rounding-bug risk:** the six vertical-fan per-slice round sites keep the
+    in-jit precondition (not materializable) — accepted + monitored
+    (`plans/bugs_and_artifacts/jax rounding bug/phase_d_design.md` §7).
 - **Minor opens:** `configure_devices`/`use_gpu` unification; forward pixel-batch default.
 
 ## 4. MAR Phase 3 — subsample / speed up the BH model fit

@@ -23,9 +23,10 @@ current state; these carry the why and the numbers.
 
 ## Program plans and status
 
+- **`current_plans.md` — the EVOLVING forward plan (start here):** the running list of open
+  work, updated as programs complete (originally the post-sharding plan).
 - `sharding/` — the multi-device sharding program (COMPLETE, shipped 2026-07).
-  Start with `sharding/post_shard_plans.md` (what came next after the program closed) and
-  `sharding/sharding_status.md` (the end-state summary).  `sharding_implementation_plan_v3.md`
+  `sharding/sharding_status.md` is the end-state summary; `sharding_implementation_plan_v3.md`
   is the final plan of record (v1/v2 are its history); the remaining files are per-workstream
   designs (MAR refactor, preprocessing pipeline, correctness gating, performance tracking,
   increment designs).  `sharding/_file_index.md` has one line per file.

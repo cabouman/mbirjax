@@ -1,6 +1,6 @@
 # Partition-sequence investigation — plan
 
-**Drafted 2026-07-04** (post_shard_plans §1, second bullet).  Companion experiment code:
+**Drafted 2026-07-04** (current_plans.md §1, second bullet).  Companion experiment code:
 `mbirjax_metrics/experiments/partition_sequence/` (the sibling repo).  Goal: pick a better default
 `partition_sequence` and gate the size-only adaptive starting-granularity policy (skip
 granularity 1 on large recons — it sets the per-device memory peak) on convergence-quality
@@ -88,7 +88,7 @@ z62 readable only at NRMSE ≥ ~0.02.
    ~348 s to iteration 140); 256-tails ~40–80% slower.
 3. **Skipping granularity 1 cuts peak memory 21–35% at no quality cost** (z62 5.03 → 3.49
    GiB; lilly 3.88 → 3.15) — this GATES THE SIZE-ADAPTIVE STARTING-GRANULARITY POLICY
-   POSITIVELY (post_shard_plans §1).
+   POSITIVELY (current_plans.md §1).
 
 **Best sequences: `[4, 6]` (granularity 16 → 64) and `[6]` (flat 64)** — vs the default
 `[0,2,4,6,7]`: ~20–30% faster to every readable quality target AND ~20–30% lower peak, on
@@ -130,7 +130,7 @@ sampling and the tail story is the OPPOSITE and SIZE-DEPENDENT:
    `[2,4,6,7]` (skip gran-1, keep a fine tail).  A coarse START buys a few % early convergence
    for a few GiB (it lifts peak above the floor) — a real but small tradeoff.
 
-Durable form: the size-adaptive starting-granularity policy (post_shard_plans §1), now
+Durable form: the size-adaptive starting-granularity policy (current_plans.md §1), now
 positively gated; the tail could be size-adaptive too but the payoff is small.  Cross-validated
 on 3 datasets at 512³ + z62 at 1024³, one GPU, cone.
 
@@ -145,7 +145,7 @@ granularities add ~0 convergence (flat `[7]` already matches / beats the fully-r
 every target — lilly 4 vs 6 iters, sic tie, z62 1024³ 99 vs 100), and each distinct granularity
 costs one more subset-updater compile.
   - **`[7]`** (flat 128): simplest, ONE compile, and it SUBSUMES the granularity-1 memory win —
-    never coarse, so peak sits at the fixed-array floor at every size (post_shard_plans §1's
+    never coarse, so peak sits at the fixed-array floor at every size (current_plans.md §1's
     memory concern met by the sequence itself; no adaptive start needed for the default).
   - **`[4, 7]`** (gran 16 → 128): one coarse warm-up iteration as a hedge for possibly-harder
     cases (poor init, object classes we haven't tested), at a modest cost — the gran-16 step
@@ -167,7 +167,7 @@ pick where on that range to sit.  Tighten the threshold to 0.1% only for quantit
 ## Metric caveat — the study NRMSE is FLASH-inflated, object-dependently
 
 Radial-crop analysis on the flat-`[7]` snapshots (`experiments/.../figures/`, script
-`mbirjax_metrics/.../radial_crop_nrmse.py`): the FoV-edge "flash" (post_shard_plans §2 — objects
+`mbirjax_metrics/.../radial_crop_nrmse.py`): the FoV-edge "flash" (current_plans.md §2 — objects
 extending past the field of view) inflates the NRMSE, but HOW MUCH depends on the object:
 
 - **Simple/solid (z62 cylinder): strongly flash-dominated.**  A 5 % radial crop drops the

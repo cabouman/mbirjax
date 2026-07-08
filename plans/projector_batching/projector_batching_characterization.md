@@ -1,7 +1,7 @@
 # Sparse-projector batching machinery — characterization
 
 **Written 2026-07-03** (branch `greg/performance_improvements`), as the pre-refactor
-characterization for post_shard_plans item 3 (simplify the batching machinery) and item 1
+characterization for current_plans.md (then post_shard_plans) item 3 (simplify the batching machinery) and item 1
 (size-adaptive `view_batch_size_for_vmap`).  Everything below was verified against the code on
 this date; line numbers will drift.  Companion artifacts in plans/experiments/projector_batching/:
 `batching_census.py` (ragged-tail cost census, pure numpy) and `transient_memory_probe.py`

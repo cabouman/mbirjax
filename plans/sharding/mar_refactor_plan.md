@@ -5,7 +5,7 @@
 traces that drove the Phase-2d fixes).  Net result: the correction path is view-sharded end-to-end (no
 single-device gather), the recon stays on-device through the BH loop (sharded histogram + Otsu), and the
 memory footguns found in the full-scale trace are fixed.  **Phase 3 (subsample / speed up the BH model fit)
-is DEFERRED and now tracked in `post_shard_plans.md`**, along with the residual open questions below.
+is DEFERRED and now tracked in `current_plans.md`**, along with the residual open questions below.
 Scope = `mbirjax/preprocess/mar.py` (+ `segmentation.py`, `utilities.py`); the scan→sino preprocessing half
 of status task #18 was already done.
 
@@ -180,7 +180,7 @@ read) and `_find_most_violated_constraints` now returns **(view, row, col) tuple
 Gates: `_argmin_3d` == flat argmin over 200 trials incl. crafted ties; phantom corrected sino AND
 forced-constraint theta byte-identical; repo audit — these were the only `jnp.argmin/argmax` sites.
 
-### Phase 3 — (DEFERRED → moved to `post_shard_plans.md`) Subsample / speed up the BH model fit
+### Phase 3 — (DEFERRED → moved to `current_plans.md`) Subsample / speed up the BH model fit
 - The OSQP fit is statistical, so it *could* be estimated from a subsample — the analog of
   `est_crop_width` / `detect_zinger_pixels`.  **But a uniform view/stride subsample is wrong here:** the
   BH model is identifiable only from sinogram pixels spanning MULTIPLE levels of metal exposure (varying
