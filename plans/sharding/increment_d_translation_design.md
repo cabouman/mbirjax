@@ -55,7 +55,7 @@ no-single-device-regression.
   v3 §6 and is separate from this port.
 - **Kernel consolidation between cone and translation** — deliberately deferred (§2); the home for it
   is the v3 §6 "simplify the sparse-projector batching machinery" refactor, *after* both are ported.
-- **Row-sharding the sinogram** — a future exploration (`plans/sinogram_sharding.md`); kept open by
+- **Row-sharding the sinogram** — a future exploration (`plans/sharding/sinogram_sharding.md`); kept open by
   NOT consolidating the kernels (§2).
 - The deeper "is `π/num_views` the right weight for a *non-rotational* geometry?" question — the port
   preserves current behavior; the question is parked alongside the multiaxis one (§7).

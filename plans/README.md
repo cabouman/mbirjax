@@ -14,12 +14,12 @@ Docs here are records: they capture the reasoning and measurements behind decisi
 time they were made, and are not rewritten as the code evolves — code comments carry the
 current state; these carry the why and the numbers.
 
-## Architecture and decision records
+## Architecture and decision records (in `sharding/`)
 
-- `back_projection_overview.md` — data layouts and the structure of forward/back projection
-  across geometries.
-- `sinogram_sharding.md` — why sinograms shard by VIEW and recons by SLICE, with the parked
-  detector-row-sharding alternative and its halo analysis.
+- `sharding/back_projection_overview.md` — data layouts and the structure of forward/back
+  projection across geometries.
+- `sharding/sinogram_sharding.md` — why sinograms shard by VIEW and recons by SLICE, with
+  the parked detector-row-sharding alternative and its halo analysis.
 
 ## Program plans and status
 
@@ -31,8 +31,9 @@ current state; these carry the why and the numbers.
   increment designs).  `sharding/_file_index.md` has one line per file.
   `sharding/parallel_performance/` holds the parallelization option studies (fbp filter
   strategies, forward-vs-back discussion).
-- `partition_sequence_plan.md` — the VCD partition-sequence convergence study (ACTIVE as of
-  2026-07; its experiment code will live in `plans/experiments/partition_sequence/`).
+- `partition_sequence/partition_sequence_plan.md` — the VCD partition-sequence convergence
+  study (ACTIVE as of 2026-07; experiment code in the sibling repo,
+  `mbirjax_metrics/experiments/partition_sequence/`).
 
 ## Findings from experiments
 

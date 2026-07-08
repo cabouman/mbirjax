@@ -556,7 +556,7 @@ design comes first because every port implements it; the RETIREMENTS come last b
 legacy paths must stay live until the last geometry is off them.
 
 1. **Scoping session → projector-rework design proposal (review before code).**  Fresh-context
-   read of `plans/back_projection_overview.md`, the (g0,L) design note (P3, above), and the
+   read of `plans/sharding/back_projection_overview.md`, the (g0,L) design note (P3, above), and the
    cone kernels.  ONE design covering: the (g0,L) banded interface per geometry; the anchor
    rule; per-geometry forward-band assembly (parallel = concat, z-based = ACCUMULATE); the
    in-place `dynamic_update_slice` accumulator + donation; deletion of
@@ -856,7 +856,7 @@ central-slice recons** (the view axis is always large, so it scales to any GPU c
 slice/row-sharding is capped by the slice count).  Conclusion for now: finish the P6 cone port
 on the existing view-sharding (C forward ≈ no regression, banded reduce-scatter back); revisit
 row-sharding later, starting with parallel beam (its best case) + a cheap footprint-width
-geometry computation.  **Full discussion + the geometry/halo analysis: `plans/sinogram_sharding.md`.**
+geometry computation.  **Full discussion + the geometry/halo analysis: `plans/sharding/sinogram_sharding.md`.**
 
 ### Settable view parameters — retire `view_indices` (standalone, adjacent to P6)
 

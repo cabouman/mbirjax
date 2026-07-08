@@ -34,7 +34,7 @@ break the cross-device correctness gating).
   §5 P1-design).  The granularity-1 first VCD iteration updates the whole recon in one subset → the biggest
   subset-domain arrays.  Deriving the coarsest starting granularity from voxel count (skip granularity 1 for
   large problems) shrinks those.  **STUDIED 2026-07-05, findings pending team review** (full record:
-  `plans/partition_sequence_plan.md`, PROPOSED-defaults + metric-caveat
+  `plans/partition_sequence/partition_sequence_plan.md`, PROPOSED-defaults + metric-caveat
   sections): a fine flat tail (finer converges faster per iteration = VCD is coordinate descent; the
   old `[0,2,4,6,7]` coarse ramp added ~0 convergence but a gran-1 memory spike + extra compiles)
   SUBSUMES this memory item — it never uses a coarse granularity, so peak sits at the fixed-array
@@ -114,7 +114,7 @@ mostly-plastic object.
   Deferred (sharding is the capacity tool, not a back-time lever).  **Alternative axis:** shard the sinogram
   by **detector row** instead of by view, aligning the sino's sharded axis with the recon's slice sharding →
   back projection becomes mostly-local (a footprint halo) instead of a view-reduce.  Parked; full analysis in
-  `plans/sinogram_sharding.md`.
+  `plans/sharding/sinogram_sharding.md`.
 - **Prox-map (PnP) prior under sharding** — revisit only if a plug-and-play-at-scale need appears (§5).
 
 ## 8. Robustness / cleanup

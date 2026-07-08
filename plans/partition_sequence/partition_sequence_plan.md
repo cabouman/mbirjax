@@ -1,6 +1,7 @@
 # Partition-sequence investigation — plan
 
-**Drafted 2026-07-04** (post_shard_plans §1, second bullet).  Goal: pick a better default
+**Drafted 2026-07-04** (post_shard_plans §1, second bullet).  Companion experiment code:
+`mbirjax_metrics/experiments/partition_sequence/` (the sibling repo).  Goal: pick a better default
 `partition_sequence` and gate the size-only adaptive starting-granularity policy (skip
 granularity 1 on large recons — it sets the per-device memory peak) on convergence-quality
 data from REAL scans.  Theory to test (Greg): monotone NON-DECREASING granularity sequences

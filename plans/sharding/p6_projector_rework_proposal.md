@@ -2,7 +2,7 @@
 
 *The design that the cone port implements first, then translation/multiaxis adopt.
 Inputs: the (g0,L) design note + anchor rule + forward-accumulation note (v2 §P3),
-`plans/back_projection_overview.md`, and a fresh read of the parallel/cone/
+`plans/sharding/back_projection_overview.md`, and a fresh read of the parallel/cone/
 translation/multiaxis kernels.*
 
 **STATUS (2026-06-13) — measurement superseded several 2026-06-12 decisions; read this first.**
@@ -31,7 +31,7 @@ live in **`p6_increment_b_design.md`**.  Net state:
   (§4 — forward doesn't band at all); "kernel returns a band contribution + overlap-add"
   (moot — no forward banding).
 - **PARKED — row-sharding the sinogram** as an alternative axis (v2 §Adjacent tasks +
-  `plans/sinogram_sharding.md`): finish cone on view-sharding; revisit later.
+  `plans/sharding/sinogram_sharding.md`): finish cone on view-sharding; revisit later.
 - **TODO**: increments B2–B5 + C/D/E — see `p6_increment_b_design.md`.
 
 **Review status (2026-06-12) — PARTIALLY SUPERSEDED (see STATUS above).**  Reviewed with Greg; decisions folded in below.
