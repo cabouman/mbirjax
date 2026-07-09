@@ -110,35 +110,8 @@ def main():
 
     # Compute least squares estimate of material coefficients for current projections
     theta_frob = np.linalg.lstsq(H.T, material_basis.T)[0].T
-    theta_newt1 = np.linalg.lstsq(H_newt.T, material_basis.T)[0].T
-    theta_mu1 = np.linalg.lstsq(H_mu.T, material_basis.T)[0].T
-
-    def compute_rmse(W, H):
-        def f(theta):
-            theta = theta.reshape(num_materials, num_materials)
-            W_trans = W @ np.linalg.pinv(theta)
-            H_trans = theta @ H
-            rmse = np.linalg.norm(material_basis - H_trans)**2 / material_basis.size + \
-                   np.linalg.norm(material_projection - W_trans)**2 / material_projection.size
-            return rmse
-        return f
-
-    simp = [
-        [0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [1, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 1, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 1, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 1, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 1, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 1, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 1, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 1, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 1],
-    ]
-    opts = {'method': 'Nelder-Mead', 'options': {'maxiter': 1000, 'initial_simplex': simp}, 'x0': np.zeros(num_materials**2)}
-
-    theta_newt2 = optimize.minimize(compute_rmse(W_newt, H_newt), **opts).x.reshape(num_materials, num_materials)
-    theta_mu2 = optimize.minimize(compute_rmse(W_mu, H_mu), **opts).x.reshape(num_materials, num_materials)
+    theta_newt = np.linalg.lstsq(H_newt.T, material_basis.T)[0].T
+    theta_mu = np.linalg.lstsq(H_mu.T, material_basis.T)[0].T
 
     # Plot reconstructed spectra
     plt.rcParams['figure.constrained_layout.use'] = True
@@ -147,10 +120,8 @@ def main():
     for i, (spectra, title) in enumerate([
             (material_basis, 'Ground Truth'),
             (theta_frob @ H, r'$L^2$ Loss'),
-            (theta_newt1 @ H_newt, 'Quasi-Newton (Method 1)'),
-            (theta_mu1 @ H_mu, 'Mann-Multiplicative (Method 1)'),
-            #(theta_newt2 @ H_newt, 'Quasi-Newton (Method 2)'),
-            #(theta_mu2 @ H_mu, 'Mann-Multiplicative (Method 2)'),
+            (theta_newt @ H_newt, 'Quasi-Newton'),
+            (theta_mu @ H_mu, 'Mann-Multiplicative'),
         ]):
         ax = plt.subplot(4, 1, i + 1)
         ax.plot(spectra[0], label='Ni')
@@ -175,12 +146,10 @@ def main():
     for i, (image, title) in enumerate([
             (material_projection.reshape(image_dims) / row_max, 'Ground Truth'),
             ((W @ np.linalg.pinv(theta_frob)).reshape(image_dims) / row_max, '$L^2$ Loss'),
-            ((W_newt @ np.linalg.pinv(theta_newt1)).reshape(image_dims) / row_max, 'Quasi-Newton (Method 1)'),
-            ((W_mu @ np.linalg.pinv(theta_mu1)).reshape(image_dims) / row_max, 'Mann-Multiplicative (Method 1)'),
-            ((W_newt @ np.linalg.pinv(theta_newt2)).reshape(image_dims) / row_max, 'Quasi-Newton (Method 2)'),
-            ((W_mu @ np.linalg.pinv(theta_mu2)).reshape(image_dims) / row_max, 'Mann-Multiplicative (Method 2)'),
+            ((W_newt @ np.linalg.pinv(theta_newt)).reshape(image_dims) / row_max, 'Quasi-Newton'),
+            ((W_mu @ np.linalg.pinv(theta_mu)).reshape(image_dims) / row_max, 'Mann-Multiplicative'),
         ]):
-        ax = plt.subplot(3, 2, i + 1)
+        ax = plt.subplot(2, 2, i + 1)
         ax.set_title(title)
         ax.imshow(image)
     plt.savefig('example_1_nonnegative_attenuation_loss_material_maps.png')
