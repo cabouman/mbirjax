@@ -2818,7 +2818,8 @@ class TomographyModel(ParameterHandler):
             own_sinogram = set(sinogram.devices()).isdisjoint(self.sino_placement.devices)
         else:
             own_sinogram = True   # numpy/host input -> to_sino copies to device buffers we own
-        sinogram = to_sino(sinogram)
+        if init_error_sinogram is None:  # We need the sinogram only to compute the error_sinogram
+            sinogram = to_sino(sinogram)
 
         scale_recon_to_sinogram = True if init_recon is None else False
         if init_error_sinogram is not None and init_recon is None:
