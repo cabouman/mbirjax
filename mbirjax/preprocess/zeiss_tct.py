@@ -515,6 +515,10 @@ def read_xrm_dir(dir_path):
     metadata['x_positions'] = [x0]
     metadata['y_positions'] = [y0]
     metadata['z_positions'] = [z0]
+    # Per-view alignment shifts: accumulated like the positions (metadata starts as a copy of
+    # the FIRST file's dict, whose shift entries cover only that file).
+    metadata['x_shifts'] = [md0['x_shifts'][0]]
+    metadata['y_shifts'] = [md0['y_shifts'][0]]
 
     # Load the remaining files and stack them together
     for i, p in enumerate(files[1:], start=1):
@@ -523,6 +527,8 @@ def read_xrm_dir(dir_path):
         metadata['x_positions'].append(md['x_positions'][0])
         metadata['y_positions'].append(md['y_positions'][0])
         metadata['z_positions'].append(md['z_positions'][0])
+        metadata['x_shifts'].append(md['x_shifts'][0])
+        metadata['y_shifts'].append(md['y_shifts'][0])
 
     _log_imported_data(str(dir_path), arr)
 
@@ -830,65 +836,11 @@ def calc_translation_vec_params(obj_x_positions, obj_y_positions, obj_z_position
 ######## END subroutines for Zeiss-MBIR parameter conversion
 
 
-def correct_sino_shifts(sino, zeiss_params):
-    """
-    Align each sinogram view based on the per-view projection offset.
-
-    The xrm file stores the horizontal (x-shift) and vertical (y-shift) offsets for each projection.
-    This function compensates the object's vibration by shifting each view of the sinogram accordingly.
-
-    Coordinate convention (view from source):
-      • x-shift: shift should be applied in the horizontal direction. Positive x-shift means the view should be shifted to the right
-      • y-shift: shift should be applied in the vertical direction. Positive y-shift means the view should be shifted down
-
-    For each view, the function:
-      1. Reads the corresponding offset (x-shift, y-shift)
-      2. Translate the view based on the (x-shift, y-shift)
-
-    Padding is added before shifting to handle image boundary,
-    and the padding is removed afterward.
-
-    Args:
-        sino (numpy array or jax array): 3D sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        zeiss_params (dict): parameters stored in Zeiss xrm file.
-
-    Returns:
-        corrected_sino (numpy array or jax array): 3D sinogram data after alignment
-    """
-    # Get sinogram view offset
-    # TODO: Currrently I assume that the view offset has units of pixels
-    #   I test it and think that this assumption is correct
-    sino_x_offset = np.asarray(zeiss_params["x_shifts"], dtype=np.float64)
-    sino_y_offset = np.asarray(zeiss_params["y_shifts"], dtype=np.float64)
-
-    ### Pad the sinogram to handle boundaries
-    # The translation below applies each view's ABSOLUTE offset, so the padding must cover the
-    # largest absolute shift (padding by the across-view RANGE under-pads whenever the shifts
-    # share a common offset, corrupting the boundary region).
-    pad_size = int(np.ceil(np.maximum(np.max(np.abs(sino_x_offset)),
-                                      np.max(np.abs(sino_y_offset)))))
-
-    if pad_size > 0:
-        sino_pad = np.pad(sino, ((0, 0), (pad_size, pad_size), (pad_size, pad_size)), mode='edge')
-    else:
-        sino_pad = sino
-
-    # Apply per-view translation
-    corrected_sino = np.zeros_like(sino_pad)
-    for view in range(sino.shape[0]):
-        corrected_sino[view] = jax.image.scale_and_translate(sino_pad[view],
-                                      shape=sino_pad[view].shape,
-                                      spatial_dims=(0, 1),
-                                      scale=jnp.array([1.0, 1.0]),
-                                      translation=jnp.array([sino_y_offset[view], sino_x_offset[view]]),
-                                      method='linear',
-                                      antialias=False)
-
-    # Remove padding
-    if pad_size > 0:
-        corrected_sino = corrected_sino[:, pad_size:-pad_size, pad_size:-pad_size]
-
-    return corrected_sino
+# NOTE: view-alignment shift correction (correct_sino_shifts) was REMOVED from this module:
+# it had no callers, and whether the .xrm shift fields carry the same meaning for a
+# translation-CT acquisition (where the per-view x/y POSITIONS are the geometry itself) is
+# unvalidated.  If TCT view alignment is needed, adapt zeiss.correct_sino_shifts -- the
+# per-view x_shifts/y_shifts are already collected by read_xrm_dir above.
 
 
 def compute_weight(blank_scan, obj_scan, dark_region_ratio=0.6, safety_buffer=20):

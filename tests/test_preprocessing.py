@@ -217,10 +217,11 @@ class TestSavePreprocessing(unittest.TestCase):
 
 
 class TestZeissSinoShifts(unittest.TestCase):
-    """correct_sino_shifts (zeiss + zeiss_tct copies): padding must cover the largest ABSOLUTE
+    """correct_sino_shifts (zeiss module; the unused zeiss_tct copy was removed): padding must
+    cover the largest ABSOLUTE
     per-view shift (the translation applies absolute offsets, so range-based padding under-pads
-    whenever the shifts share a common offset), and the zeiss copy's downsample scaling must not
-    mutate the caller's zeiss_params in place."""
+    whenever the shifts share a common offset), and the downsample scaling must not mutate the
+    caller's zeiss_params in place."""
 
     @staticmethod
     def _params(x_shifts, y_shifts):
@@ -231,11 +232,12 @@ class TestZeissSinoShifts(unittest.TestCase):
         # A constant sinogram shifted by a COMMON offset must come back (nearly) constant:
         # with edge-mode padding sized to the absolute shift, no zeros can enter the frame.
         # Under range-based padding the pad is 0 here and a zero band scrolls in at the edge.
-        from mbirjax.preprocess.zeiss_tct import correct_sino_shifts
+        from mbirjax.preprocess.zeiss import correct_sino_shifts
         num_views, n = 3, 16
         sino = np.ones((num_views, n, n), dtype=np.float32)
         params = self._params([5.0, 5.0, 5.0], [3.0, 3.0, 3.0])
-        out = np.asarray(correct_sino_shifts(sino, params))
+        out = np.asarray(correct_sino_shifts(sino, params, downsample_factor=(1, 1),
+                                             subsample_view_factor=1))
         self.assertEqual(out.shape, sino.shape)
         np.testing.assert_allclose(out, 1.0, atol=1e-5,
                                    err_msg='boundary corrupted: padding did not cover the '
@@ -244,13 +246,14 @@ class TestZeissSinoShifts(unittest.TestCase):
     def test_impulse_moves_by_per_view_shift(self):
         # Integer per-view shifts move an impulse exactly (linear interpolation is exact at
         # integers): positive x -> right (channels), positive y -> down (rows).
-        from mbirjax.preprocess.zeiss_tct import correct_sino_shifts
+        from mbirjax.preprocess.zeiss import correct_sino_shifts
         num_views, n, c = 3, 17, 19
         r0, c0 = 8, 9
         sino = np.zeros((num_views, n, c), dtype=np.float32)
         sino[:, r0, c0] = 1.0
         x_shifts, y_shifts = [2.0, -3.0, 0.0], [-1.0, 4.0, 0.0]
-        out = np.asarray(correct_sino_shifts(sino, self._params(x_shifts, y_shifts)))
+        out = np.asarray(correct_sino_shifts(sino, self._params(x_shifts, y_shifts),
+                                             downsample_factor=(1, 1), subsample_view_factor=1))
         for v, (dx, dy) in enumerate(zip(x_shifts, y_shifts)):
             peak = np.unravel_index(np.argmax(out[v]), out[v].shape)
             self.assertEqual(peak, (r0 + int(dy), c0 + int(dx)), msg=f'view {v}')

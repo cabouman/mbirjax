@@ -566,6 +566,10 @@ def read_xrm_dir(dir_path):
     metadata['y_positions'] = [y0]
     metadata['z_positions'] = [z0]
     metadata['thetas'] = [angle0]
+    # Per-view alignment shifts: accumulated like the positions (metadata starts as a copy of
+    # the FIRST file's dict, whose shift entries cover only that file).
+    metadata['x_shifts'] = [md0['x_shifts'][0]]
+    metadata['y_shifts'] = [md0['y_shifts'][0]]
 
     # Load the remaining files and stack them together
     for i, p in enumerate(files[1:], start=1):
@@ -575,6 +579,8 @@ def read_xrm_dir(dir_path):
         metadata['y_positions'].append(md['y_positions'][0])
         metadata['z_positions'].append(md['z_positions'][0])
         metadata['thetas'].append(md['thetas'][0])
+        metadata['x_shifts'].append(md['x_shifts'][0])
+        metadata['y_shifts'].append(md['y_shifts'][0])
 
     _log_imported_data(str(dir_path), arr)
 
