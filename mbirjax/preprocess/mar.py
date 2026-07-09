@@ -717,7 +717,7 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
         num_BH_iterations (int, optional): Number of correction-reconstruction iterations. Defaults to 3.
         num_constraint_update_iter (int, optional): Number of iterations for updating constraints.
             At each iteration, the most violated constraints are activated and the quadratic program is re-solved via OSQP.
-        stop_threshold_change_pct (float, optional): Relative change threshold (%) for early stopping in MBIR. Defaults to 0.5.
+        stop_threshold_change_pct (float, optional): Relative change threshold (%) for early stopping in MBIR. Defaults to 0.2.
         num_metal (int, optional): Number of metal materials to segment and correct for. Defaults to 1.
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
         alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
