@@ -656,7 +656,6 @@ def import_recon_hdf5(file_path):
     """
     recon, recon_dict = load_data_hdf5(file_path=file_path)
 
-    recon = recon[::-1, :, :]
     recon = np.transpose(recon, axes=(2, 1, 0))
 
     return recon, recon_dict
