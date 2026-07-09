@@ -700,7 +700,7 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
     return ct_model._gather_sinogram(corrected_sino)
 
 
-def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constraint_update_iter=10, stop_threshold_change_pct=0.5,
+def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constraint_update_iter=10, stop_threshold_change_pct=0.2,
                         num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, verbose=0, output_sharded=False,
                         max_iterations=15, logfile_path='~/.mbirjax/logs/recon.log'):
     """
