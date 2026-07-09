@@ -89,6 +89,40 @@ class TestReconRestart(unittest.TestCase):
             model.vcd_recon(sino, partitions, seq[0:1], 0,
                             init_error_sinogram=ckpt['error_sinogram'])
 
+    def test_consumed_checkpoint_raises_informative_error(self):
+        """A checkpoint is SINGLE-USE: the resumed loop DONATES the checkpoint's error-sinogram
+        buffer for its in-place updates, deleting the caller-visible array.  A second resume
+        from the same checkpoint must fail AT ENTRY with guidance -- not with the opaque
+        'Array has been deleted' the donated update would raise mid-loop."""
+        num_views, n = 24, 32
+        angles = jnp.asarray(np.linspace(0, np.pi, num_views, endpoint=False))
+        model = mbirjax.ParallelBeamModel((num_views, n, n), angles)
+        model.set_params(verbose=0, partition_sequence=[0, 2])
+        rng = np.random.default_rng(0)
+        recon_shape = tuple(int(x) for x in model.get_params('recon_shape'))
+        phantom = jnp.asarray(rng.standard_normal(recon_shape, dtype=np.float32))
+        sino = np.asarray(model.forward_project(phantom))
+        np.random.seed(0)
+        partitions = mbirjax.gen_set_of_pixel_partitions(
+            recon_shape, model.get_params('granularity'),
+            output_device=model.recon_placement.devices[0],
+            use_ror_mask=model.get_params('use_ror_mask'))
+        seq = np.asarray(mbirjax.gen_partition_sequence([0, 2], max_iterations=2))
+        model._log_run_header(0, '~/.mbirjax/logs/recon.log', print_logs=False)
+        model.auto_set_regularization_params(sino)
+
+        recon0, _, ckpt = model.vcd_recon(sino, partitions, seq[0:1], 0, return_checkpoint=True)
+        # The first resume works -- and consumes the checkpoint's error sinogram.
+        model.vcd_recon(sino, partitions, seq[1:2], 0, init_recon=recon0, first_iteration=1,
+                        init_error_sinogram=ckpt['error_sinogram'],
+                        fm_hessian=ckpt['fm_hessian'])
+        self.assertTrue(ckpt['error_sinogram'].is_deleted())   # the documented consume semantics
+        # A second resume from the SAME checkpoint fails at entry with guidance.
+        with self.assertRaisesRegex(ValueError, 'SINGLE-USE'):
+            model.vcd_recon(sino, partitions, seq[1:2], 0, init_recon=recon0, first_iteration=1,
+                            init_error_sinogram=ckpt['error_sinogram'],
+                            fm_hessian=ckpt['fm_hessian'])
+
 
 if __name__ == '__main__':
     unittest.main()

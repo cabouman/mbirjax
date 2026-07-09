@@ -2756,16 +2756,24 @@ class TomographyModel(ParameterHandler):
                 init_recon, and the pair is TRUSTED as consistent (init_error_sinogram ==
                 sinogram - A @ init_recon for the SAME sinogram and geometry) -- verifying would
                 cost the forward projection this argument exists to avoid.  The device-form array
-                returned via return_checkpoint satisfies this by construction.  Defaults to None.
+                returned via return_checkpoint satisfies this by construction.  CONSUMED by the
+                run: the VCD loop donates this buffer for its in-place error-sinogram updates,
+                deleting the caller-visible array (see return_checkpoint below).  Defaults to None.
             fm_hessian (jax array, optional): Precomputed forward-model Hessian diagonal (as
                 returned via return_checkpoint, or compute_hessian_diagonal(weights=weights,
                 output_sharded=True) flattened to (num_pixels, num_slices)).  Must correspond to
-                the SAME weights and geometry.  When None (default), it is computed internally.
+                the SAME weights and geometry.  Read-only in the loop (not consumed, unlike the
+                error sinogram).  When None (default), it is computed internally.
             return_checkpoint (bool, optional): If True, additionally return the resume state --
                 a dict {'error_sinogram': <device form>, 'fm_hessian': <device form>} suitable for
                 the two arguments above -- so a chunked/checkpointed run can continue with no
                 re-initialization cost.  Zero-copy: the dict references the loop's own device
-                arrays.  Defaults to False.
+                arrays.  Consequently a checkpoint is SINGLE-USE: resuming donates its
+                error-sinogram buffer into the loop, deleting it -- resume again from the
+                checkpoint the RESUMED call returns, or persist before resuming (e.g.
+                ``np.asarray(checkpoint['error_sinogram'])``) if you need to keep one.  A
+                consumed checkpoint is detected at resume entry and raises with this guidance.
+                Defaults to False.
         Returns:
             (recon, recon_stats): tuple of 3D reconstruction and a tuple containing arrays of per-iteration stats.
             With return_checkpoint=True: (recon, recon_stats, checkpoint).
@@ -2845,6 +2853,21 @@ class TomographyModel(ParameterHandler):
             # RESUME path: the caller supplies error_sinogram = sinogram - A @ init_recon
             # (a trusted, consistent pair -- typically the return_checkpoint output of a
             # previous call), skipping the initializing forward projection.
+            #
+            # A checkpoint is SINGLE-USE: the VCD loop updates the error sinogram through a
+            # DONATING jit (update_error_sinogram -- donation is what keeps multi-device memory
+            # flat), and donation deletes the caller-visible buffer.  Since return_checkpoint's
+            # dict holds a zero-copy reference to that buffer, the first resumed subset consumes
+            # the checkpoint.  Detect a second use here and fail with guidance instead of the
+            # opaque "Array has been deleted" the donated update would raise mid-loop.
+            if getattr(init_error_sinogram, 'is_deleted', lambda: False)():
+                raise ValueError(
+                    'init_error_sinogram has already been consumed: resuming donates the error '
+                    'sinogram buffer into the VCD loop, so a checkpoint is SINGLE-USE.  To '
+                    'resume again, use the checkpoint returned by the resumed call '
+                    '(return_checkpoint=True); to keep a checkpoint across a resume, persist it '
+                    'first (e.g. np.asarray(checkpoint["error_sinogram"])) and pass the '
+                    'persisted copy.')
             self.logger.info('Resuming from a supplied error sinogram')
             error_sinogram = init_error_sinogram
         else:
@@ -3029,7 +3052,9 @@ class TomographyModel(ParameterHandler):
         if return_checkpoint:
             # Zero-copy resume state: references to the loop's own device-form arrays.  Feed
             # these back as init_error_sinogram / fm_hessian (with init_recon = the returned
-            # recon) to continue with no re-initialization cost.
+            # recon) to continue with no re-initialization cost.  SINGLE-USE: resuming donates
+            # the error-sinogram buffer into the next loop (deleting it); the resume entry
+            # detects a consumed checkpoint and raises with guidance.
             return recon_3d, losses, {'error_sinogram': error_sinogram, 'fm_hessian': fm_hessian}
         return recon_3d, losses
 
