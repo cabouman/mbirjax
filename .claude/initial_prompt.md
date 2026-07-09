@@ -1,55 +1,66 @@
-We're starting the next work item in `mbirjax`.  The projector-kernel campaign is COMPLETE
-and committed on `greg/kernel_investigation` (TilePolicy, sorted channel reduction with
-measured guards, DRY fan kernels, the concrete-scatter-centers rounding-bug fix, and the
-plans/ docs consolidation).
+We're continuing the flash-remediation program in `mbirjax` (branch
+`greg/kernel_investigation`), picking up mid-investigation.
 
-**IMPORTANT — workflow reminder:** do NOT start code OR changes to documents without a
-discussion first.  Analyze, propose a concrete plan with tradeoffs, and wait for approval
-(see `.claude/claude_prompt.md`).  This applies to experiment scripts too unless explicitly
-told to proceed.
+**IMPORTANT — workflow reminder:** discussion first for code AND doc changes; propose and
+wait for approval (read `.claude/claude_prompt.md` closely for more).  Stage only, never commit.  Terminology:
+"variants" (not arms/cells/grid for variant sets); "ground truth phantom" (not truth grid).
 
-Read for orientation (verify any code claim against the actual code; docs may lag):
-1. `.claude/claude_prompt.md` — collaboration style + workflow (stage only, no commits;
-   GPU work runs on gautschi via sbatch; sweep, don't guess).
-2. **`plans/current_plans.md`** — THE evolving forward plan.  §0.5 summarizes the finished
+Read for orientation (verify claims against code; the first two carry the full state):
+1. The flash-remediation memory (auto-loaded) — the running summary of Phases 1–2.
+2. `plans/flash_remediation/flash_remediation_plan.md` — plan of record, all findings,
+   INCLUDING the "P2c CORRECTION — real data overrules the synthetic" section that is the
+   live thread.
+3. `plans/flash_remediation/README.md` — pages + how to regenerate figures and refresh the
+   self-contained HTML reports (`embed_report_figures.py`).
+4. `.claude/lessons.md` — engineering playbook.
+
+Also skim for context:
+5. `plans/current_plans.md`** — THE evolving forward plan.  §0.5 summarizes the finished
    kernel campaign; the numbered sections are the open items.
-3. `plans/README.md` — the index of all internal plans/findings docs (docs at
+6. `plans/README.md` — the index of all internal plans/findings docs (docs at
    `plans/<area>/`, supporting scripts at `plans/experiments/<area>/`).
-4. `.claude/lessons.md` — the engineering playbook.
 
-## This session's focus: current_plans.md §2 — sinogram weight edge tapering
+## Where the last session stopped (the live thread)
 
-The item: `ConeBeamModel` → `split_sino_recon()` already uses a per-detector-row sine
-filter on sinogram weights to reduce ringing from the rect window in detector rows when
-splitting a recon in two.  Separately, objects extending outside the field of view are
-observed to converge more slowly and produce a 'flash' artifact.
+Greg challenged the P2c synthetic verdict with real data; the Lilly D01788 investigation
+(reproduction, ablations, revised plan-only proposal) is fully recorded in the plan doc's
+P2c CORRECTION section.  What remains in flight:
 
-Investigate whether a geometry-adaptive (and possibly data-adaptive) tapering of sinogram
-WEIGHTS at the edges — detector rows AND channels — can (a) speed convergence and/or
-(b) reduce the flash from objects partially outside the FoV.
-
-Suggested shape of the work (to be refined in discussion BEFORE anything is written):
-- Start by understanding the existing precedent: the `split_sino_recon` sine filter (why it
-  works, what it windows) and where sinogram weights enter the VCD updates.
-- Characterize the failure mode first: a small reproducible case with an object extending
-  outside the FoV (convergence curve + the flash), so any taper has a measurable target.
-- Then propose taper candidates (shape, width, rows vs channels, geometry- vs data-adaptive)
-  and an evaluation design (convergence metrics on synthetic + real scans; note that
-  tapering intentionally changes the OBJECTIVE, so "correctness" needs a definition before
-  any gating).
-
-Open questions worth raising early: how to gate quality (fingerprint comparisons don't
-apply when the weights intentionally change); whether the taper belongs in preprocessing
-(user-visible weights) or inside recon (internal); interaction with the existing
-`split_sino_recon` filter and with MAR's weight handling.
+1. **A synthetic reproduction of the Lilly seam stripes is still NOT achieved** (two
+   attempts, results already retrieved to `plans/experiments/flash_remediation/results/`):
+   `structured_widefan` (Lilly's R/SID 0.2, unit weights, 40 iters) was CLEAN (no_taper
+   seam-vs-ref 1e-4), and `widefan_noise15` (photon noise + transmission weights + 15
+   iters) raised all variants to ~2e-3 but WITHOUT Lilly's signature ordering (its taper
+   0.0026 ≥ no_taper 0.0020 ≥ deep 0.0016 — on Lilly, taper beat no_taper 11×; the ~2e-3
+   is likely noise-realization sensitivity, not the structural stripes).  Remaining
+   suspects: detector-rotation correction residue, dynamic range / regularization balance,
+   real object structure at the seam, det_row_offset asymmetry.  Either iterate further
+   (cheap sbatch runs via `split_seam_repro.py` RUNS entries) or report the reproduction
+   gap honestly — do not paper over it.
+2. **`phase_2c_split_results.html` still needs the real-data correction section** (Greg
+   approved): Lilly reproduction + figures + corrected verdict + the synthetic-repro
+   outcome from (1).  Lilly figures are already at
+   `plans/experiments/flash_remediation/figures/p2c_lilly_{seam_xz,seam_profiles,ablation_rms}.png`
+   (gitignored) — register in `embed_report_figures.py` FIG_MAP, write captions, re-embed.
+   Also revise the page's TL;DR/§3 verdict and the `index.html` Phase-2c card (both still
+   state the withdrawn "drop the taper" conclusion).
+3. The revised proposal (geometry-derived h_recon) is PLAN ONLY — Greg said no code yet.
 
 ## Standing context
 
-- Nightly watch items from the kernel campaign (memory-gate acks) are listed in
-  `plans/current_plans.md` §3; they need the acknowledged-regression path, not code.
-- Companion repos parallel to mbirjax: `mbirjax_metrics` (perf tracking; the
-  measure_one_cell harness), `mbirjax_applications`.
-- Cluster: gautschi via ssh (BatchMode key auth), partition `ai`, account `bouman`;
-  standing bench infra in `~/viewbatch_fix_verify/`; snapshot dirs `~/kernel_ab_{old,new}`;
-  `PYBIN=$HOME/.conda/envs/mbirjax/bin/python`.
-- Any new script must set env vars / `import mbirjax` before anything touches jax.
+- Cluster: gautschi (ssh BatchMode); sbatch on partition `ai`, account `bouman`,
+  **--cpus-per-task=14 required per GPU**; P2 job/staging dir `~/flash_p2b` (results in
+  `results/`); Lilly data + recon volumes + analysis scripts at
+  `/scratch/gautschi/buzzard/flash_lilly` (NSI scan D01788; the redundant
+  `Geometry.nsipro` was moved aside to avoid an interactive config prompt).  Greg's
+  interactive node h003 has the editable mbirjax install pinned at commit 568f6b7
+  (the 6/26 no-taper split) — nested ssh via the login node; coordinate before heavy use.
+- Verification habits from this session: pgrep -f self-matches its own ssh command (check
+  log files, not process greps); VCD prints "Error sino RMSE" every iteration (don't grep
+  bare "Error" for failure detection); the jax persistent compile cache makes warm cluster
+  runs much faster than first runs.
+- After the P2c correction lands: Phase 3 (real scans: SiC axial, z62 radial, BGA severe
+  truncation) and Phase 4 (policy/API: overshoot detector, z-pad geometry formula, split
+  h_recon change) per the plan doc.
+- Preview: `.claude/launch.json` entry `flash-remediation-page` serves
+  `plans/flash_remediation/` on port 8932 (`index.html` is the overview).

@@ -2,7 +2,7 @@
 
 **Created 2026-07-08.  Status: Phase 1 DONE (findings below + `phase_1_results.html`);
 Phase 2 IN PROGRESS — P2a DONE (axial: pad by the geometry-derived scale, no taper; row
-taper retired for the axial case) AND P2b DONE (radial: pad to COVER, round up under uncertainty, no taper) AND P2c DONE (split seam: sino overlap load-bearing, sine taper unnecessary — proposed: drop the taper).  Phase 2 COMPLETE; next = Phase 3 real scans.**
+taper retired for the axial case) AND P2b DONE (radial: pad to COVER, round up under uncertainty, no taper) AND P2c DONE + CORRECTED on real data (split seam: sino overlap load-bearing; the taper fixes a REAL geometry-dependent stripe artifact the narrow-fan synthetic missed — revised plan: geometry-derived h_recon, taper then unnecessary; NO code yet).  Phase 2 COMPLETE; next = Phase 3 real scans.**
 Source item: `plans/current_plans.md` §2.  Scripts: `plans/experiments/flash_remediation/`.
 
 ## Problem
@@ -480,8 +480,42 @@ unsplit 40-iter reference; seam region = interior disk × split ±4 slices.
   physical edge.
 - **Default extension depth suffices**: no_taper_deep == no_taper at 1e-5 (h=5 already
   covers the PSF+rounding coupling width).
-- **Proposed library change: remove the sine taper from split_sino_recon; keep both
-  overlaps unchanged** (a strict simplification; split then agrees with unsplit to
-  numerical noise).  Caveat: rests on the circular orbit — re-test if the
-  zero-helical-shift restriction is ever relaxed.
+- ~~Proposed library change: remove the sine taper~~ — **WITHDRAWN 2026-07-09 after
+  Greg's real-data challenge; see the correction below.**
+
+### P2c CORRECTION — real data overrules the synthetic (2026-07-09, Lilly D01788)
+
+Greg: the synthetic verdict "doesn't match previous experience on real data" — the Lilly
+D01788 NSI scan at commit 568f6b7 (2026-06-26, which has NO taper — the taper was added
+later, evidently as the fix) shows stripes near the seam.  Reproduced and root-caused
+(scripts `lilly_split_repro.py`, `lilly_split_ablations.py`; 4× downsample, view ss 2,
+transmission_root weights; mag 4.69, **R/SID 0.21**, det_row_offset −3.9 rows, split at
+slice 231):
+
+- **Stripes confirmed**: ±40% every-other-slice zigzag over seam ±7–10 slices; RMS vs the
+  matching unsplit recon spikes **74×** over background.  All recons ran the full 15 iters
+  (change% 1.1–1.5% ≫ 0.2 stop) → per-half independent stopping ruled out.
+- **Structural, not transient**: at 60 iterations the background converges 5× further but
+  the seam spike PERSISTS (8.0e-3) — a converged artifact.  (Transient hypothesis
+  refuted.)
+- **Mechanism = P2a's axial truncation in miniature**: each half is truncated at its
+  extension end with unexplained depth h_sino·(1+R/SID)·pitch − h_recon.  Lilly: 5·1.21 −
+  5 ≈ **1.1 slices** → 74× stripes.  The original synthetic had R/SID 0.125 → **0.6
+  slices** → invisible (2e-5): the synthetic verdict was an artifact of a fortunately
+  narrow fan angle, and the sensitivity to fractional-slice mismatch is much steeper than
+  assumed.  Synthetic reproduction at R/SID 0.2 (`structured_widefan` run in
+  `split_seam_repro.py`) added to close the loop.
+- **Both fixes work on Lilly** (seam max vs matching unsplit): shipped taper 6.5e-4 (11×
+  better); **geometry-derived deep extension (h_recon 12, NO taper) 5.7e-4 at 15 iters,
+  decaying to 3.2e-4 at 60** — the deep extension restores normal convergence at the seam
+  (the no-taper default-extension artifact does not decay).
+- **REVISED proposal (PLAN ONLY — no code yet, per Greg 2026-07-09): set the recon
+  overlap from geometry, h_recon = ceil(h_sino·(1+R/SID)·pitch_ratio) + psf margin** —
+  after which the taper is unnecessary; whether to also retain the taper as
+  belt-and-suspenders is Greg's call at implementation time.  Cost: a few extra slices
+  per half.  (The campaign theme again: give the model support to explain the data rather
+  than down-weighting data.)
+- Methodological lesson (for lessons.md eventually): a synthetic validation inherits its
+  geometry's blind spots — the fan angle silently gated this failure mode; stress
+  synthetic conclusions at the real datasets' governing ratios before generalizing.
 

@@ -36,7 +36,7 @@ import truncation_common as tc
 # ---------------------------------------------------------------------------
 # Run control
 # ---------------------------------------------------------------------------
-run_phantoms = ['structured', 'smooth']
+run_phantoms = ['structured', 'smooth', 'structured_widefan', 'widefan_noise15']
 make_figures = True
 skip_existing = True
 
@@ -46,11 +46,24 @@ skip_existing = True
 NUM_VIEWS = 128
 NUM_DET_ROWS = 64
 NUM_DET_CHANNELS = 96
-SDD_FACTOR, SID_FACTOR = 4.0, 2.0
 RADIUS_FRAC = 0.75
 Z_LO_FRAC, Z_HI_FRAC = -0.85, 0.85
 TARGET_LINE_INTEGRAL = 2.0
-LAMINATE = {'structured': 3, 'smooth': 0}
+# Runs: phantom structure x fan angle x real-data conditions.  Motivated by Greg's
+# real-data challenge (2026-07-09; Lilly D01788 shows seam stripes the original synthetic
+# missed).  structured_widefan matches Lilly's R/SID (0.2 -> unexplained coupling ~1 slice
+# at h=5/5, like Lilly's 1.06) but came back CLEAN with unit weights at 40 iterations --
+# fan angle alone does not reproduce the stripes; widefan_noise15 adds the remaining
+# real-data conditions (photon noise, transmission weights, 15 iterations).
+RUNS = {
+    'structured': dict(laminate=3, sdd_factor=4.0, sid_factor=2.0),
+    'smooth': dict(laminate=0, sdd_factor=4.0, sid_factor=2.0),
+    'structured_widefan': dict(laminate=3, sdd_factor=2.5, sid_factor=1.25),
+    # Match the REAL-data conditions that the plain widefan run lacked: photon noise +
+    # transmission weights + the 6/26 default of 15 iterations.
+    'widefan_noise15': dict(laminate=3, sdd_factor=2.5, sid_factor=1.25, noise=True,
+                            iters=15),
+}
 
 H_DEFAULT = 5                    # the shipped half_overlap default
 PSF_MARGIN = 2
@@ -71,7 +84,7 @@ FIG_DIR = os.path.join(OUT_DIR, 'figures')
 RES_DIR = os.path.join(OUT_DIR, 'results')
 
 
-def split_recon(full_model, sino, h_sino, h_recon, taper, num_iterations):
+def split_recon(full_model, sino, h_sino, h_recon, taper, num_iterations, base_weights=None):
     """Parameterized reimplementation of split_sino_recon's split (circular orbit only).
 
     Mirrors the library's geometry math (iso row/slice, per-half detector and recon
@@ -114,7 +127,8 @@ def split_recon(full_model, sino, h_sino, h_recon, taper, num_iterations):
         model = mj.copy_ct_model(full_model, new_num_det_rows=num_rows)
         model.set_params(det_row_offset=det_off, auto_regularize_flag=False,
                          recon_shape=shape, recon_slice_offset=slice_offset, verbose=0)
-        weights = np.ones((num_views, num_rows, num_cols), dtype=np.float32)
+        weights = (np.ones((num_views, num_rows, num_cols), dtype=np.float32)
+                   if base_weights is None else np.array(base_weights[:, lo:hi, :]))
         if taper and h_sino > 0:
             if taper_top:
                 weights[:, -h_sino:, :] *= ramp[None, ::-1, None]
@@ -151,22 +165,29 @@ def run_phantom(tag):
     sinogram_shape = (NUM_VIEWS, NUM_DET_ROWS, NUM_DET_CHANNELS)
     angles = np.linspace(0, 2 * np.pi, NUM_VIEWS, endpoint=False)
     model = mj.ConeBeamModel(sinogram_shape, angles,
-                             source_detector_dist=SDD_FACTOR * NUM_DET_CHANNELS,
-                             source_iso_dist=SID_FACTOR * NUM_DET_CHANNELS)
+                             source_detector_dist=RUNS[tag]['sdd_factor'] * NUM_DET_CHANNELS,
+                             source_iso_dist=RUNS[tag]['sid_factor'] * NUM_DET_CHANNELS)
     model.set_params(verbose=0)
     shape = model.get_params('recon_shape')
     delta_voxel = model.get_params('delta_voxel')
 
     phantom = tc.build_phantom(shape, shape, delta_voxel, RADIUS_FRAC, Z_LO_FRAC, Z_HI_FRAC,
-                               TARGET_LINE_INTEGRAL, laminate_period=LAMINATE[tag])
+                               TARGET_LINE_INTEGRAL, laminate_period=RUNS[tag]['laminate'])
     sino = np.asarray(model.forward_project(phantom))
+    # Optional real-data conditions: photon noise + transmission weights (weights are
+    # sliced per half inside split_recon, exactly as split_sino_recon slices user weights).
+    if RUNS[tag].get('noise', False):
+        sino, base_weights = tc.add_transmission_noise(sino, i0=1e4, seed=1)
+    else:
+        base_weights = None
+    num_iterations = RUNS[tag].get('iters', NUM_ITERATIONS)
     # Regularization from the FULL sinogram, as the library does; halves copy it.
     model.auto_set_regularization_params(sino)
 
     # The deep recon overlap: the extended rows reach h_sino*delta_row past iso at the
     # detector, i.e. (h_sino*delta_row/mag)*(1 + R/SID) at the far FoV edge -> slices.
     geo = tc.cone_axial_geometry(model, psf_margin=0)
-    r_over_sid = geo['fov_radius'] / (SID_FACTOR * NUM_DET_CHANNELS)
+    r_over_sid = geo['fov_radius'] / (RUNS[tag]['sid_factor'] * NUM_DET_CHANNELS)
     mag = model.get_magnification()
     delta_slice = model.get_params('voxel_slice_aspect') * delta_voxel
     h_deep = int(np.ceil(H_DEFAULT * (model.get_params('delta_det_row') / mag)
@@ -178,7 +199,8 @@ def run_phantom(tag):
     ref_path = os.path.join(RES_DIR, f'p2c_{tag}_reference.npy')
     if not (skip_existing and os.path.exists(ref_path)):
         np.random.seed(0)
-        reference, _ = model.recon(sino, max_iterations=NUM_ITERATIONS,
+        reference, _ = model.recon(sino, weights=base_weights,
+                                   max_iterations=num_iterations,
                                    stop_threshold_change_pct=1e-9, print_logs=False)
         np.save(ref_path, np.asarray(reference))
         print('reference (unsplit) done', flush=True)
@@ -191,12 +213,13 @@ def run_phantom(tag):
         h_r = h_deep if h_recon == 'deep' else h_recon
         print(f'--- {tag}/{label}: h_sino {h_sino}, h_recon {h_r}, taper {taper}',
               flush=True)
-        stitched = split_recon(model, sino, h_sino, h_r, taper, NUM_ITERATIONS)
+        stitched = split_recon(model, sino, h_sino, h_r, taper, num_iterations,
+                               base_weights=base_weights)
         np.save(out_path, stitched)
 
 
 def make_all_figures():
-    for tag in ['structured', 'smooth']:
+    for tag in RUNS:
         truth_path = os.path.join(RES_DIR, f'p2c_{tag}_truth.npy')
         if not os.path.exists(truth_path):
             print(f'  (no results for {tag}; skipped)')
