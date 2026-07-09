@@ -55,6 +55,36 @@ class TestMultiAxisElevationPhysics(unittest.TestCase):
                                     f"mass not conserved: got {total:.5f}, expected {expected:.5f} "
                                     f"(rel {rel:.2e}) at az={azd}, el={eld}")
 
+    def test_mass_conservation_mixed_elevation(self):
+        """A single psf_radius serves all views, so a MIXED-elevation set must not truncate any
+        view's footprint.  The z-edge is largest at the SMALLEST |elevation|, so a low-el view
+        combined with a high-el (>45 deg) view and thick slices exposes an under-sized radius as
+        per-view mass loss.  A single-elevation-per-model test cannot catch this (min|el|==max|el|).
+
+        det_row_offset=0.5 forces the projected row to a HALF-integer -- the worst case, where an
+        under-sized kernel drops the outer tap (a centered voxel lands on an integer row, where a
+        thick footprint survives even a too-small radius, so it would hide the bug)."""
+        N = 25
+        vra, vsa, ddr, ddc, dv = 1.0, 3.0, 1.0, 1.0, 1.0   # thick slices: Delta_slice=3 >= 2*Delta_det_row
+        expected = dv * (vra * dv) * (vsa * dv) / (ddr * ddc)
+        az = np.array([0.3, 1.1], np.float32)
+        el = np.deg2rad([0.0, 70.0]).astype(np.float32)    # low-el + high-el in ONE view set
+        angles = jnp.asarray(np.stack([az, el], axis=1))
+        m = mj.MultiAxisParallelModel((2, 121, 121), angles)
+        m.set_params(verbose=0, recon_shape=(N, N, N), delta_voxel=dv, delta_det_row=ddr,
+                     delta_det_channel=ddc, voxel_row_aspect=vra, voxel_slice_aspect=vsa,
+                     det_row_offset=0.5)
+        vol = np.zeros((N, N, N), np.float32)
+        vol[N // 2, N // 2, N // 2] = 1.0
+        sino = np.asarray(m.forward_project(jnp.asarray(vol)))
+        for v, eld in enumerate((0.0, 70.0)):
+            with self.subTest(view_elevation=eld):
+                total = float(sino[v].sum())
+                rel = abs(total - expected) / expected
+                self.assertLess(rel, 2e-3,
+                                f"view el={eld}: per-view mass not conserved: {total:.5f} vs "
+                                f"{expected:.5f} (rel {rel:.2e})")
+
     def test_det_channel_offset_matches_parallel(self):
         """At el=0, a nonzero det_channel_offset must match ParallelBeamModel (same +sign)."""
         nv, ndr, ndc, N = 12, 24, 41, 24

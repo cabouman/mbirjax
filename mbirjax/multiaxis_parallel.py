@@ -110,15 +110,23 @@ class MultiAxisParallelModel(TomographyModel):
         max_in_plane_pitch = max(delta_voxel, delta_voxel_row)
         psf_radius_u = int(jnp.ceil(jnp.ceil(max_in_plane_pitch / delta_det_channel) / 2))
 
-        # Vertical radius (elevation tilt): the max-of-edges vertical footprint grows with the
-        # in-plane sin(el) term, so size the radius from the LARGEST |elevation| in the view set
-        # (worst-case azimuth gives an in-plane edge of max(delta_voxel, delta_voxel_row)).  This
-        # matches _vertical_footprint_phys so the kernel never truncates the footprint; low-elevation
-        # problems keep the minimal radius and pay nothing extra.
+        # Vertical radius (elevation tilt): a SINGLE psf_radius serves every view, so size it from
+        # the LARGEST vertical footprint over the whole view set.  Per view the max-of-edges
+        # footprint (see _vertical_footprint_phys) is
+        # max(|cos el|*delta_voxel_slice, |sin el|*(in-plane pitch)), and the two edges peak at
+        # OPPOSITE elevations -- the z-edge (|cos el|) is largest at the SMALLEST tilt, the in-plane
+        # edge (|sin el|) at the largest -- so we take the max of EACH edge over the ACTUAL
+        # elevations.  Using max_v|cos el| / max_v|sin el| (not cos/sin at a single elevation
+        # extremum) keeps it tight AND robust to any angle, with no monotonicity assumption.
+        # Worst-case azimuth gives an in-plane pitch of max(delta_voxel, delta_voxel_row).
         angles = self.get_params('angles')
-        max_abs_el = float(jnp.max(jnp.abs(angles[:, 1]))) if angles is not None else 0.0
-        z_edge = abs(float(jnp.cos(max_abs_el))) * delta_voxel_slice
-        in_plane_edge = abs(float(jnp.sin(max_abs_el))) * max(delta_voxel, delta_voxel_row)
+        if angles is not None:
+            max_abs_cos_el = float(jnp.max(jnp.abs(jnp.cos(angles[:, 1]))))
+            max_abs_sin_el = float(jnp.max(jnp.abs(jnp.sin(angles[:, 1]))))
+        else:
+            max_abs_cos_el, max_abs_sin_el = 1.0, 0.0
+        z_edge = max_abs_cos_el * delta_voxel_slice
+        in_plane_edge = max_abs_sin_el * max(delta_voxel, delta_voxel_row)
         vertical_footprint = max(z_edge, in_plane_edge)
         psf_radius_v = int(jnp.ceil(jnp.ceil(vertical_footprint / delta_det_row) / 2))
 
