@@ -3340,9 +3340,20 @@ class TomographyModel(ParameterHandler):
         if weights is None:
             weights = 1
             avg_weight = 1
+        elif jnp.ndim(weights) == 0:
+            # CONSTANT (scalar) weights -- what vcd_recon passes for the default all-ones case.
+            # The average weight over the real elements is the scalar itself, independent of the
+            # element count.  Without this branch a scalar fell through to the padded-array
+            # branch below, where jnp.sum(scalar) is the scalar (not count * scalar), making
+            # avg_weight ~ 1/num_real_elements and inflating the REPORTED loss by
+            # ~sqrt(num_real_elements) on padded runs (recon values were unaffected).
+            avg_weight = weights
         elif num_real_elements is None:
             avg_weight = jnp.average(weights)
         else:
+            # Weights ARRAY in the padded device form: the padded entries are identically zero,
+            # so summing and dividing by the REAL count gives exactly the average over the real
+            # elements.
             avg_weight = jnp.sum(weights) / float(num_real_elements)
         if normalize:
             weighted_sq_sum = jnp.sum(error_sinogram * error_sinogram * weights)
