@@ -156,6 +156,71 @@ def build_phantom(big_shape, small_shape, delta_voxel, radius_frac, z_lo_frac, z
 
 
 # ---------------------------------------------------------------------------
+# Weight tapers and axial geometry (Phase 2)
+# ---------------------------------------------------------------------------
+
+def make_row_taper_weights(sinogram_shape, k_first=0, k_last=0):
+    """Unit weights with a quarter-sine ramp over the first/last k detector rows.
+
+    Matches the split_sino_recon precedent: sin((pi/2) * linspace(0, 1, k, endpoint=False)),
+    so the weight is exactly 0 at the extreme row and rises toward the interior.  k_first
+    tapers rows [0:k_first]; k_last tapers rows [-k_last:] (ramp reversed).  Row index 0 vs
+    -1 orientation is the caller's responsibility (taper the side that is truncated).
+    """
+    num_views, num_rows, num_channels = sinogram_shape
+    weights = np.ones(sinogram_shape, dtype=np.float32)
+    if k_first > 0:
+        ramp = np.sin((np.pi / 2) * np.linspace(0, 1, k_first, endpoint=False)).astype(np.float32)
+        weights[:, :k_first, :] *= ramp[None, :, None]
+    if k_last > 0:
+        ramp = np.sin((np.pi / 2) * np.linspace(0, 1, k_last, endpoint=False)).astype(np.float32)
+        weights[:, num_rows - k_last:, :] *= ramp[None, ::-1, None]
+    return weights
+
+
+def cone_axial_geometry(model, psf_margin=2):
+    """Axial (z) truncation geometry for a circular-orbit cone-beam model.
+
+    With the source in the iso plane (zero helical shift), a ray to a detector row at
+    physical height h reaches z = h * t / SDD at distance t from the source, and t inside
+    the FoV cylinder is at most SID + R.  Two consequences, both returned here:
+
+    - max_visible_z = h_max * (SID + R) / SDD: NO measured ray reaches |z| beyond this, so
+      material further out never projects -- full z-padding never needs to exceed it, i.e.
+      the padding cost in z is geometry-bounded (scale <= (SID + R) / SID, plus a psf margin).
+    - taper_rows: the number of edge rows whose rays exit the recon slab inside the FoV
+      (h > half_slab * SDD / (SID + R)) -- the principled row-taper width, plus psf_margin.
+
+    Assumes centered geometry (recon_slice_offset == 0, det_row_offset == 0), as in these
+    synthetic repros.  All lengths in the model's physical (ALU) units.
+    """
+    if float(model.get_params('recon_slice_offset')) != 0.0 or \
+            float(model.get_params('det_row_offset')) != 0.0:
+        raise ValueError('cone_axial_geometry assumes centered geometry (zero offsets).')
+    sdd = float(model.get_params('source_detector_dist'))
+    sid = float(model.get_params('source_iso_dist'))
+    delta_det_row = float(model.get_params('delta_det_row'))
+    num_det_rows = model.get_params('sinogram_shape')[1]
+    recon_shape = model.get_params('recon_shape')
+    delta_voxel = float(model.get_params('delta_voxel'))
+    delta_slice = float(model.get_params('voxel_slice_aspect')) * delta_voxel
+
+    half_slab = recon_shape[2] * delta_slice / 2.0
+    fov_radius = min(recon_shape[0], recon_shape[1]) * delta_voxel / 2.0
+    h_max = num_det_rows * delta_det_row / 2.0
+
+    max_visible_z = h_max * (sid + fov_radius) / sdd
+    full_pad_scale = (max_visible_z + psf_margin * delta_slice) / half_slab
+
+    h_star = half_slab * sdd / (sid + fov_radius)  # rows above this exit the slab in-FoV
+    exit_rows = max(0.0, (h_max - h_star) / delta_det_row)
+    taper_rows = int(np.ceil(exit_rows)) + psf_margin if exit_rows > 0 else 0
+
+    return {'half_slab': half_slab, 'fov_radius': fov_radius, 'max_visible_z': max_visible_z,
+            'full_pad_scale': full_pad_scale, 'taper_rows': taper_rows}
+
+
+# ---------------------------------------------------------------------------
 # Regions and metrics
 # ---------------------------------------------------------------------------
 
@@ -204,7 +269,7 @@ def region_metrics(recon, truth, masks, normalizer):
 
 
 def run_tracked_recon(model, sinogram, truth_small, masks, num_iterations,
-                      snapshot_iters=(), label=''):
+                      snapshot_iters=(), label='', weights=None):
     """Run recon one iteration at a time, computing per-region metrics after each.
 
     Uses the restart pattern (first_iteration=j, init_recon=previous) with np.random
@@ -212,6 +277,8 @@ def run_tracked_recon(model, sinogram, truth_small, masks, num_iterations,
     (lessons.md section 2: VCD partitions come from global np.random).  If the model's
     recon grid is larger than truth_small (the padded variant), each snapshot is center-cropped
     to the truth grid before metrics, so all variants are compared on identical voxels.
+    Optional weights (e.g. a row taper) are passed to every recon call; the auto
+    regularization then derives sigma_y from the weighted sinogram, as it would for a user.
 
     Returns (metrics, snapshots): metrics is a dict of per-iteration lists (regions from
     region_metrics, plus 'change_pct', the mean |delta| / mean |recon| in percent -- a
@@ -225,7 +292,7 @@ def run_tracked_recon(model, sinogram, truth_small, masks, num_iterations,
     prev = None
     for it in range(num_iterations):
         np.random.seed(0)
-        recon, _ = model.recon(sinogram, init_recon=init,
+        recon, _ = model.recon(sinogram, weights=weights, init_recon=init,
                                first_iteration=it, max_iterations=it + 1,
                                stop_threshold_change_pct=1e-9, print_logs=False)
         recon = np.asarray(recon)
@@ -271,11 +338,18 @@ def plot_convergence(metrics_by_variant, keys, title, path):
     plt.close(fig)
 
 
-def save_slice_montage(truth, recons_by_variant, axis, index, title, path, window=None):
+def save_slice_montage(truth, recons_by_variant, axis, index, title, path, window=None,
+                       region_mask=None, region_label=''):
     """Truth | per-variant recon | per-variant difference, along one slice axis.
 
     window: (vmin, vmax) for truth/recon panels; the difference panels use a symmetric
     window at 25% of the truth panel's span so subtle artifacts show.
+
+    Variant dict keys are display labels and may be MULTI-LINE (e.g. a second line carrying
+    a metric value); the difference row reuses only the first line.  region_mask (3D bool,
+    truth-shaped) outlines its bounding box on the truth panel with a dashed red rectangle
+    -- use it to show WHERE a reported metric is measured; region_label is appended to the
+    truth panel's title.
     """
     def take(volume):
         section = np.take(volume, index, axis=axis)
@@ -293,7 +367,20 @@ def save_slice_montage(truth, recons_by_variant, axis, index, title, path, windo
                              squeeze=False)
     axes[0, 0].imshow(truth_slice, vmin=window[0], vmax=window[1], cmap='gray',
                       origin=origin)
-    axes[0, 0].set_title('truth')
+    truth_title = 'truth'
+    if region_mask is not None:
+        # Outline the metric region's bounding box on the truth panel (same section/take
+        # transform as the volumes, so the box lands in imshow coordinates directly).
+        mask_section = take(region_mask.astype(np.float32)) > 0.5
+        ys, xs = np.nonzero(mask_section)
+        if ys.size:
+            box = plt.Rectangle((xs.min() - 0.5, ys.min() - 0.5),
+                                xs.max() - xs.min() + 1, ys.max() - ys.min() + 1,
+                                fill=False, edgecolor='red', linestyle='--', linewidth=1.5)
+            axes[0, 0].add_patch(box)
+        if region_label:
+            truth_title = f'truth\n({region_label})'
+    axes[0, 0].set_title(truth_title)
     axes[1, 0].axis('off')
     diff_span = 0.25 * (window[1] - window[0])
     for col, (variant, recon) in enumerate(variants, start=1):
@@ -301,9 +388,10 @@ def save_slice_montage(truth, recons_by_variant, axis, index, title, path, windo
         axes[0, col].imshow(recon_slice, vmin=window[0], vmax=window[1], cmap='gray',
                             origin=origin)
         axes[0, col].set_title(variant)
+        short = variant.split('\n')[0].replace('recon: ', '')
         im = axes[1, col].imshow(recon_slice - truth_slice, vmin=-diff_span,
                                  vmax=diff_span, cmap='coolwarm', origin=origin)
-        axes[1, col].set_title(f'{variant} - truth')
+        axes[1, col].set_title(f'{short} - truth')
         fig.colorbar(im, ax=axes[1, col], fraction=0.046)
     for ax in axes.ravel():
         ax.set_xticks([])
@@ -314,14 +402,20 @@ def save_slice_montage(truth, recons_by_variant, axis, index, title, path, windo
     plt.close(fig)
 
 
-def plot_z_profile(truth, recons_by_variant, masks, title, path):
-    """Mean over the radial-interior disk, per slice: the instrument for axial flash/ringing."""
+def plot_z_profile(truth, recons_by_variant, masks, title, path, xlim=None):
+    """Mean over the radial-interior disk, per slice: the instrument for axial flash/ringing.
+
+    xlim: optional (lo, hi) slice range to zoom the plot (e.g. the last slices, where the
+    variants actually differ).
+    """
     interior2d = masks['interior'].any(axis=2)
     fig, ax = plt.subplots(figsize=(8, 4.5))
     z_axis = np.arange(truth.shape[2])
     ax.plot(z_axis, truth[interior2d].mean(axis=0), 'k--', label='truth')
     for variant, recon in recons_by_variant.items():
         ax.plot(z_axis, recon[interior2d].mean(axis=0), label=variant)
+    if xlim is not None:
+        ax.set_xlim(*xlim)
     ax.set_xlabel('slice index (z)')
     ax.set_ylabel('mean over interior disk')
     ax.grid(True, alpha=0.3)

@@ -1,6 +1,8 @@
 # Flash remediation — sinogram weight edge tapering and recon-support padding
 
-**Created 2026-07-08.  Status: Phase 1 (synthetic characterization) in progress.**
+**Created 2026-07-08.  Status: Phase 1 DONE (findings below + `phase_1_results.html`);
+Phase 2 IN PROGRESS — P2a DONE (axial: pad by the geometry-derived scale, no taper; row
+taper retired for the axial case), P2b/P2c next.**
 Source item: `plans/current_plans.md` §2.  Scripts: `plans/experiments/flash_remediation/`.
 
 ## Problem
@@ -69,22 +71,127 @@ That mechanism points at a competing fix for the channel case: **enlarge the rec
 represent the outside material, absorb the flash in margin voxels, and crop on output.
 Greg is not wedded to a channel taper; the padding variant is in scope as a first-class candidate.
 
+**The split_sino_recon seam, and the prior-context role of extensions (2026-07-08 discussion).**
+Two facts frame the split design:
+
+1. *The forward model is (almost) separable at the iso-row split.*  split_sino_recon requires
+   zero helical shifts, so the source sits in the iso plane at every view; a ray to a detector
+   row above iso has z increasing monotonically from 0 along its whole path and never crosses
+   the split — and symmetrically, a voxel above the iso plane only ever projects onto rows
+   above iso.  The only cross-split coupling in the data term is *local* blur: the trapezoid
+   voxel footprint (~psf_radius rows), the fractional iso-row rounding, and voxel-vs-row pitch
+   mismatch — a few rows/slices, independent of cone angle.
+2. *The qGGMRF prior is NOT separable* (Greg): neighboring slices couple, and over iterations
+   the influence propagates several slices deep — the original motivation for the overlap.
+   The extended (past-split) slices act as **prior boundary conditions** for the kept slices:
+   what matters is their ACCURACY, since the kept boundary slices are smoothed toward them and
+   the influence decays with a screening length set by the prior-to-data curvature ratio —
+   short in well-measured slices, LONG in a weakly-measured extension.
+
+Consequences for the design space:
+
+- The sino overlap's real job is not to inform the kept slices (separability says it barely
+  does) but to make the extended slices *data-accurate* so they are correct prior context.
+- The sine taper reads as a **graded data-to-prior transition** across the extension — not
+  just an anti-ringing window; a hard end-of-data boundary is exactly the kind of constraint
+  edge Phase 1 showed rings.
+- A truncate-the-sino-at-the-split variant (keep only the recon extension) is predicted to tie
+  on objects smooth across the split but LOSE when structure (interface, laminate layer)
+  crosses it: the extension becomes a prior extrapolation of the boundary, and the error
+  propagates into kept slices.
+- The same logic transfers to the physical detector edge (the SiC row case): **taper-alone
+  starves the end slices of data** the way truncation starves the split extension — softer
+  flash but potentially blurred real end structure.  Hypothesis: the taper's proper role is
+  the graded transition at the edge of a (possibly partial) padded support, not a standalone
+  fix.  Phase 2 tests this directly.
+- Caveat: the separability argument rests on the circular orbit (source in the iso plane); if
+  the zero-helical-shift restriction is ever relaxed, this analysis must be redone.
+
 Two separable "speeds convergence" effects to keep apart in measurements: (1) genuinely
 faster interior convergence; (2) the flash no longer inflating the change-% stop metric, so
 the run stops earlier.  Both are wins; the characterization measures interior-only
 convergence to distinguish them.
 
-## Candidate space (Phase 2)
+## Phase 2 plan (drafted 2026-07-08; execution on Greg's go-ahead)
 
-- **Row taper** (cone/multiaxis): quarter-sine ramp per the precedent, width derived from
-  geometry (rows whose rays leave the recon slab), applied to weights at both detector-row
-  edges (or one edge, if only one side is truncated).
-- **Channel taper:** shape ∈ {sine ramp, Tukey/cosine, erf} × width swept (let data pick the
-  knee); data-adaptive gate — apply only when truncation is detected (edge-channel sinogram
-  level above the air/noise floor), so non-truncated scans keep full data.
-- **Recon-support padding** via `scale_recon_shape` (channel case: col/row scale; z case:
-  slice scale) — the model-completion alternative; memory cost ~(scale)² laterally.
-- Combinations (pad + taper).
+Goal: on the Phase 1 synthetic cases, pick the remediation (and its parameter policy) per
+axis, and settle the split_sino_recon seam design — so Phase 3 only has to validate the
+winners on real scans.  All experiments stay in `plans/experiments/flash_remediation/`
+(library code untouched in Phase 2; variants that need modified split internals are local
+reimplementations in the experiment, using the same `copy_ct_model` pattern
+split_sino_recon itself uses).  Everything runs on local CPU in minutes per cell; the full
+sweeps are at most hours.  Visual quality decides (montages + profiles); the Phase 1
+region metrics are the supporting record.
+
+**Shared machinery to add to `truncation_common.py`:**
+- Weight-taper builders: row taper (quarter-sine over k rows, per-edge selectable for
+  one-sided cases) and channel taper (shape ∈ {sine, Tukey, erf} × width), returned as
+  weights arrays for `recon(weights=...)`.
+- Geometry-derived row-taper width: from source-in-iso-plane geometry, the rows whose rays
+  exit the recon slab within the FoV (h/m·(1+R/SID) vs slab half-height) plus the PSF
+  radius — the principled default k, swept around to confirm.
+- A variant-sweep driver (list of (label, model, weights) triples through the Phase 1
+  tracked-recon loop) so every cell produces the same metrics/figures.
+
+### P2a — axial case: taper vs padding vs combination — **DONE 2026-07-08, see Findings**
+
+On the one-sided z-truncation repro (laminate phantom — structure near the truncated end
+makes over-smoothing visible):
+- **Grid: padding level {none, partial, full} × row taper {off, on}** (taper on the
+  truncated side only; width = geometry-derived k).  "Partial" padding deliberately covers
+  only part of the object overshoot — the case where full padding is impractical.
+- Add one **far-overshoot case** (object extends ~3× the covered half-slab) where full
+  padding is unreasonable, to test taper + partial-pad as the fallback.
+- Hypotheses to test: (1) taper-alone softens the flash but blurs real end-slice structure
+  (prior-extrapolation starvation, per the mechanism section); (2) with full padding the
+  taper is unnecessary; (3) the combo wins only at partial padding.
+- Deliverable: the axial recommendation (expected: pad in z — slices are the cheap axis —
+  with taper as the graded transition when padding must be partial) + the width/scale
+  policy.
+
+### P2b — radial case: padding-scale knee (+ taper falsification control)
+
+On the lateral-truncation repro:
+- **Padding-scale sweep** (e.g. 1.05 → cover, ~6 points): interior bias, ring metrics, and
+  visuals vs scale — find the knee of quality vs the ~scale² memory cost, including how
+  much a NOT-fully-covering pad buys (it moves the dump site outward and absorbs part of
+  the inconsistency).
+- **Channel-taper-only control** (one or two settings): the mechanism predicts it cannot
+  remove the interior bias — run it to confirm/falsify, not to tune.
+- **Pad + channel-taper combo** at partial padding (mirror of P2a's hypothesis 3).
+- Stretch: a **data-adaptive truncation detector** (edge-channel level above the air floor,
+  fraction of affected views) as the input to an automatic scale/gate policy — design only,
+  wire up in Phase 4 if the sweep supports it.
+- Deliverable: the radial recommendation (expected: padding with a knee-derived scale
+  policy; taper at most as a partial-pad transition).
+
+### P2c — split_sino_recon seam A/B
+
+New script (`split_seam_repro.py`), object fully inside FoV and slab (no physical
+truncation — isolates the SPLIT effects).  Phantom: laminate layers crossing the split +
+a sphere straddling it (the hard, structure-at-the-seam case) and a smooth control.
+Variants, each stitched and compared to an **unsplit full recon reference** (same
+iterations):
+1. **(i) current design**: sino overlap + sine taper + recon overlap, current defaults;
+2. **(ii) truncate**: sino cut at the split row + recon overlap (the prior-extrapolation
+   variant — predicted to lose on the structured phantom, tie on the smooth one);
+3. **(iii) no-taper**: sino overlap + recon overlap enlarged so the extended rows are fully
+   explainable, taper off (separates "taper vs no taper" from "truncate vs extend");
+4. **(iv) tuned current**: (i) with geometry-derived overlap/taper width (PSF + pitch
+   ratio + a screening-length allowance) instead of the fixed half_overlap default.
+- Judge on: seam-region visuals (x-z montage), z-profile across the split, NRMSE in a
+  ±few-slice seam slab vs the unsplit reference, and iterations-to-stop.
+- Deliverable: the split design recommendation; if (ii)/(iii)/(iv) beat (i), a concrete
+  proposed change to `split_sino_recon` (with the zero-helical-shift caveat documented).
+
+### Order and decision outputs
+
+Suggested order: **P2b → P2a → P2c** (P2b is the simplest and confirms the biggest Phase 1
+win; P2c is self-contained and directly informs a shipping change) — reorder freely if SiC
+urgency says axial first.  Phase 2 ends with: per-axis remediation recommendations +
+parameter policies (geometry-derived widths, padding scales), the split design decision,
+an opt-in-vs-default proposal, and the quality-gate definitions Phase 3 will apply to the
+real scans (SiC, z62, BGA).
 
 ## Evaluation
 
@@ -114,8 +221,9 @@ convergence to distinguish them.
   model; snapshot per iteration; compare against the center crop of the truth phantom.
   Each script includes an optional padded variant (`scale_recon_shape`) as a mechanism check:
   if padding removes the artifact, the model-support explanation is confirmed.
-- **P2 — candidate sweep on the synthetic cases** (taper shapes/widths, padding scales,
-  combinations; single-variable ablations).
+- **P2 — candidate sweep on the synthetic cases** — detailed plan in "Phase 2 plan" above
+  (P2a axial taper-vs-pad grid, P2b radial padding knee, P2c split-seam A/B; single-variable
+  ablations throughout).
 - **P3 — real scans:** SiC (row case; flash + z-ringing), z62 (channel-flash-dominated),
   sic composite as the control whose error is real structure; BGA as the stretch case.
   Real-data recipes: `mbirjax_metrics/experiments/partition_sequence/README.md`; cached
@@ -131,6 +239,13 @@ convergence to distinguish them.
   `scale_recon_shape` padding in scope as the channel-case alternative.  Phase 1 on small
   synthetic data approved; visual quality is the initial metric; later phases adjusted as we
   go.  Plan docs here, scripts in `plans/experiments/flash_remediation/`.
+- 2026-07-08 (Greg): terminology — experiment "arms" renamed to **variants** everywhere
+  (docs, scripts, figure titles; metrics reproduced exactly on regeneration).
+- 2026-07-08 (Greg + discussion): the split_sino_recon seam analysis recorded in the
+  mechanism section — forward-model separability at the iso split PLUS the qGGMRF
+  prior-context role of extensions (extensions must be data-accurate, taper = graded
+  data-to-prior transition; taper-alone predicted to under-perform at physical edges).
+  Phase 2 plan drafted (P2a/P2b/P2c above); execution awaits Greg's go-ahead.
 
 ## Findings
 
@@ -175,9 +290,62 @@ extending 60% of a half-slab past the top of the covered slab; small grid (96,96
 - **The padded variant (scale_recon_shape ×1.7 in z) removes the ringing and most of the
   flash:** end_top NRMSE 0.62 → 0.071 (~9×), and it also converges faster in change-%.
 
-**Implications for Phase 2:** support padding is the standard against which any taper must
-be judged in BOTH axes.  The open value questions for a row/channel taper are cost (padding
-in z is cheap — slices are the cheap axis; lateral padding costs ~scale² memory) and
-whether a geometry-derived row taper can match the padded variant's end-slice quality at zero
-memory cost.  Phase 2 should A/B: row taper vs z-padding (same case), channel taper vs
-lateral padding, and padding scale sweeps to find the knee (how much support is enough).
+**Implications for Phase 2** (Phase 1 close-out): support padding is the standard against
+which any taper must be judged in BOTH axes; Phase 2 A/Bs taper vs padding per axis and
+sweeps the padding knee.  (Superseded in detail by the Phase 2 plan section and the P2a
+findings below.)
+
+### Phase 2 findings — P2a, axial taper-vs-padding grid (2026-07-08)
+
+**Illustrated report (self-contained, updated per sub-campaign): `phase_2_results.html`
+(this directory).**  Script: `plans/experiments/flash_remediation/z_taper_pad_grid.py`
+(figures `p2a_*`).  Same
+one-sided SiC-like case as Phase 1 (NOTE: the laminate phase shifted with the larger truth
+grid, so absolute numbers are not comparable to Phase 1's; all seven cells here share one
+phantom).  Grid: padding {none, partial 1.094, full 1.188, overfull 1.7} × row taper
+{off, on}, taper widths geometry-derived (6 rows on the default slab, 3 on partial, 0 on
+full — the full+taper cell forces 6 as the H2 probe).
+
+**Structural result — z-padding is geometry-bounded.**  With the source in the iso plane,
+no measured ray reaches |z| > h_max·(SID+R)/SDD, i.e. (SID+R)/SID × the half-slab (1.125
+here).  Confirmed BIT-EXACTLY: extending the phantom from z_hi = 1.6 to 4.0 half-slabs
+changed the sinogram by max |Δ| = 0.0.  Consequences: the planned "far-overshoot recon
+case where full padding is impractical" cannot exist in z (dropped — replaced by this
+forward-projection identity); "full" z-padding is always cheap (scale ≤ 1 + R/SID + psf
+margin), and padding past the bound buys nothing (overfull ties full, 0.1410 vs 0.1415).
+
+**Grid outcome (truncated-end NRMSE at iter 40; interior and contained-end flat ~0.054 /
+~0.074 across all cells — axial locality re-confirmed):**
+
+| variant | end_top NRMSE |
+|---|---|
+| none | 0.887 |
+| taper only | 0.344 |
+| pad partial | 0.154 |
+| pad partial + taper | 0.215 |
+| pad full | **0.141** |
+| pad full + taper (forced) | 0.220 |
+| pad overfull | 0.141 |
+
+- **H1 confirmed:** taper-alone kills the ringing but replaces it with a broad bright
+  smear over the end slices (visible in `p2a_xz_taper.png` — the starved end becomes a
+  prior extrapolation, exactly the predicted failure mode); 2.4× worse than any padding.
+- **H2 confirmed, strongly:** tapering a fully-padded slab actively HURTS (0.141 → 0.220)
+  — the taper only removes data the padded model could use.
+- **H3 REFUTED:** the combo also hurts at partial padding (0.154 → 0.215).  Reason: the
+  visible-material band is thin (≤ 12.5% of the half-slab here), so even "partial"
+  padding covers most of it and the taper has nothing left to fix — it only starves.
+- **Honest ceiling:** every variant, including full padding, smooths the last laminate
+  band in the top ~3 slices.  Top-of-slab voxels project past the detector edge for
+  roughly half the views (the classic cone-beam end wedge) — that is *incomplete
+  sampling*, not inconsistency, and no weighting or padding can restore it.
+- Taper variants do have the friendliest stop metric (change% 0.030 vs none 0.074) — they
+  quiet the metric by suppressing the region that was still (correctly) converging.
+
+**P2a recommendation:** for axial truncation, pad in z by the geometry-derived scale
+((max_visible_z + psf margin)/half_slab) and do NOT taper.  The row taper is retired for
+the axial case — its intended niche (padding impractical) does not exist in z.  For P2c
+this raises the prior that the no-taper split variant (iii) may beat the current taper
+design (i); the split case still differs (the extension's data comes through overlap rows,
+not edge rows), so P2c runs as planned.
+
