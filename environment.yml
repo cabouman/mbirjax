@@ -3,7 +3,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python>=3.9
+  - python>=3.11
   - pip
   # All Python dependencies live in pyproject.toml (the single source of truth),
   # including the "docs" and "test" extras. Conda only provides Python + pip here;
