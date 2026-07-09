@@ -527,7 +527,7 @@ def read_xrm_dir(dir_path):
     _log_imported_data(str(dir_path), arr)
 
     # Normalize the scan data
-    # arr = mjp.utilities._normalize_to_float32(arr)
+    arr = mjp.utilities._normalize_to_float32(arr)
 
     return arr, metadata
 
