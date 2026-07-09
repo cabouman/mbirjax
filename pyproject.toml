@@ -64,7 +64,10 @@ docs = [
 ]
 
 [tool.setuptools.packages]
-find = {}
+# Restrict discovery to the mbirjax package: the TOML form of `find` defaults to
+# namespaces = true, which would sweep __init__.py-less top-level dirs (demo, docs,
+# dev_scripts, tests, ...) into the wheel and pollute users' site-packages.
+find = {include = ["mbirjax*"]}
 
 [project.urls]
 homepage = "https://mbirjax.readthedocs.io"
