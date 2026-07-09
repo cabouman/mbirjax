@@ -216,6 +216,62 @@ class TestSavePreprocessing(unittest.TestCase):
         self.assertEqual(w2.dtype, np.float32)
 
 
+class TestZeissSinoShifts(unittest.TestCase):
+    """correct_sino_shifts (zeiss + zeiss_tct copies): padding must cover the largest ABSOLUTE
+    per-view shift (the translation applies absolute offsets, so range-based padding under-pads
+    whenever the shifts share a common offset), and the zeiss copy's downsample scaling must not
+    mutate the caller's zeiss_params in place."""
+
+    @staticmethod
+    def _params(x_shifts, y_shifts):
+        return {'x_shifts': np.asarray(x_shifts, dtype=np.float64),
+                'y_shifts': np.asarray(y_shifts, dtype=np.float64)}
+
+    def test_common_offset_preserves_boundary(self):
+        # A constant sinogram shifted by a COMMON offset must come back (nearly) constant:
+        # with edge-mode padding sized to the absolute shift, no zeros can enter the frame.
+        # Under range-based padding the pad is 0 here and a zero band scrolls in at the edge.
+        from mbirjax.preprocess.zeiss_tct import correct_sino_shifts
+        num_views, n = 3, 16
+        sino = np.ones((num_views, n, n), dtype=np.float32)
+        params = self._params([5.0, 5.0, 5.0], [3.0, 3.0, 3.0])
+        out = np.asarray(correct_sino_shifts(sino, params))
+        self.assertEqual(out.shape, sino.shape)
+        np.testing.assert_allclose(out, 1.0, atol=1e-5,
+                                   err_msg='boundary corrupted: padding did not cover the '
+                                           'absolute shift')
+
+    def test_impulse_moves_by_per_view_shift(self):
+        # Integer per-view shifts move an impulse exactly (linear interpolation is exact at
+        # integers): positive x -> right (channels), positive y -> down (rows).
+        from mbirjax.preprocess.zeiss_tct import correct_sino_shifts
+        num_views, n, c = 3, 17, 19
+        r0, c0 = 8, 9
+        sino = np.zeros((num_views, n, c), dtype=np.float32)
+        sino[:, r0, c0] = 1.0
+        x_shifts, y_shifts = [2.0, -3.0, 0.0], [-1.0, 4.0, 0.0]
+        out = np.asarray(correct_sino_shifts(sino, self._params(x_shifts, y_shifts)))
+        for v, (dx, dy) in enumerate(zip(x_shifts, y_shifts)):
+            peak = np.unravel_index(np.argmax(out[v]), out[v].shape)
+            self.assertEqual(peak, (r0 + int(dy), c0 + int(dx)), msg=f'view {v}')
+            self.assertAlmostEqual(float(out[v][peak]), 1.0, places=5)
+
+    def test_zeiss_copy_does_not_mutate_params_and_is_idempotent(self):
+        from mbirjax.preprocess.zeiss import correct_sino_shifts
+        num_views, n = 4, 12
+        rng = np.random.default_rng(0)
+        sino = rng.random((num_views, n, n)).astype(np.float32)
+        params = self._params([4.0, -2.0, 1.0, 3.0], [2.0, 0.0, -3.0, 1.0])
+        saved = {k: v.copy() for k, v in params.items()}
+        out1 = np.asarray(correct_sino_shifts(sino, params, downsample_factor=(2, 2),
+                                              subsample_view_factor=1))
+        np.testing.assert_array_equal(params['x_shifts'], saved['x_shifts'])   # no in-place /=
+        np.testing.assert_array_equal(params['y_shifts'], saved['y_shifts'])
+        out2 = np.asarray(correct_sino_shifts(sino, params, downsample_factor=(2, 2),
+                                              subsample_view_factor=1))
+        np.testing.assert_array_equal(out1, out2)                              # idempotent
+
+
 if __name__ == '__main__':
     unittest.main()
 

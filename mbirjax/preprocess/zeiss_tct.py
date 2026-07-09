@@ -858,15 +858,15 @@ def correct_sino_shifts(sino, zeiss_params):
     # Get sinogram view offset
     # TODO: Currrently I assume that the view offset has units of pixels
     #   I test it and think that this assumption is correct
-    sino_x_offset = zeiss_params["x_shifts"]
-    sino_y_offset = zeiss_params["y_shifts"]
+    sino_x_offset = np.asarray(zeiss_params["x_shifts"], dtype=np.float64)
+    sino_y_offset = np.asarray(zeiss_params["y_shifts"], dtype=np.float64)
 
     ### Pad the sinogram to handle boundaries
-    # Set pad size as the largest shift in pixels across views
-    max_x_offset = np.max(sino_x_offset) - np.min(sino_x_offset)
-    max_y_offset = np.max(sino_y_offset) - np.min(sino_y_offset)
-
-    pad_size = int(np.ceil(np.maximum(max_x_offset, max_y_offset)))
+    # The translation below applies each view's ABSOLUTE offset, so the padding must cover the
+    # largest absolute shift (padding by the across-view RANGE under-pads whenever the shifts
+    # share a common offset, corrupting the boundary region).
+    pad_size = int(np.ceil(np.maximum(np.max(np.abs(sino_x_offset)),
+                                      np.max(np.abs(sino_y_offset)))))
 
     if pad_size > 0:
         sino_pad = np.pad(sino, ((0, 0), (pad_size, pad_size), (pad_size, pad_size)), mode='edge')

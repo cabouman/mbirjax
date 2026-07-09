@@ -932,20 +932,19 @@ def correct_sino_shifts(sino, zeiss_params, downsample_factor, subsample_view_fa
         corrected_sino (numpy array or jax array): 3D sinogram data after alignment
     """
     # Get sinogram view offset
-    # TODO: Currrently I assume that the view offset has units of pixels
-    #   I test it and think that this assumption is correct
-    sino_x_offset = zeiss_params["x_shifts"][::subsample_view_factor]
-    sino_y_offset = zeiss_params["y_shifts"][::subsample_view_factor]
-
-    sino_x_offset /= downsample_factor[1]
-    sino_y_offset /= downsample_factor[0]
+    # OUT-OF-PLACE scaling: the slice of a numpy array is a VIEW, so an in-place /= here would
+    # silently rescale the caller's zeiss_params (and a second call would double-divide).
+    sino_x_offset = np.asarray(zeiss_params["x_shifts"][::subsample_view_factor],
+                               dtype=np.float64) / downsample_factor[1]
+    sino_y_offset = np.asarray(zeiss_params["y_shifts"][::subsample_view_factor],
+                               dtype=np.float64) / downsample_factor[0]
 
     ### Pad the sinogram to handle boundaries
-    # Set pad size as the largest shift in pixels across views
-    max_x_offset = np.max(sino_x_offset) - np.min(sino_x_offset)
-    max_y_offset = np.max(sino_y_offset) - np.min(sino_y_offset)
-
-    pad_size = int(np.ceil(np.maximum(max_x_offset, max_y_offset)))
+    # The translation below applies each view's ABSOLUTE offset, so the padding must cover the
+    # largest absolute shift (padding by the across-view RANGE under-pads whenever the shifts
+    # share a common offset, corrupting the boundary region).
+    pad_size = int(np.ceil(np.maximum(np.max(np.abs(sino_x_offset)),
+                                      np.max(np.abs(sino_y_offset)))))
 
     if pad_size > 0:
         sino_pad = np.pad(sino, ((0, 0), (pad_size, pad_size), (pad_size, pad_size)), mode='edge')
