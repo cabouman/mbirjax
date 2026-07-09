@@ -66,7 +66,7 @@ if __name__ == '__main__':
     small_shape = recon_model.get_params('recon_shape')
     big_shape = truth_model.get_params('recon_shape')
     delta_voxel = recon_model.get_params('delta_voxel')
-    print(f'small (default) recon shape: {small_shape}, truth grid: {big_shape}, '
+    print(f'small (default) recon shape: {small_shape}, ground truth phantom: {big_shape}, '
           f'delta_voxel: {delta_voxel:.3f}')
 
     phantom_big = tc.build_phantom(big_shape, small_shape, delta_voxel, radius_frac,
@@ -74,7 +74,7 @@ if __name__ == '__main__':
                                    laminate_period=laminate_period)
     truth_small = tc.center_crop(phantom_big, small_shape)
 
-    print('Forward-projecting the truth grid through the real detector...')
+    print('Forward-projecting the ground truth phantom through the real detector...')
     sinogram = np.asarray(truth_model.forward_project(phantom_big))
     # One-sidedness check: the phantom's contained end stops short of the slab edge, so
     # the detector rows viewing that side read ~0; the extended end's rows read the
@@ -107,22 +107,32 @@ if __name__ == '__main__':
         final_by_variant['padded'] = snaps[num_iterations - 1]
 
     # ---- Figures ----
+    # Montage labels carry each recon's truncated-end NRMSE; the dashed contour on the
+    # truth panel shows WHERE it is measured (interior disk x top end slices).
+    end_vals = {label: mm['nrmse_end_top'] for label, mm in metrics_by_variant.items()}
+    center_col = small_shape[1] // 2
+    region_kwargs = dict(region_mask=masks['end_top'],
+                         region_label='dashed = end-NRMSE region')
+    finals = {f'recon: {label}\nend NRMSE {vals[-1]:.3f}': final_by_variant[label]
+              for label, vals in end_vals.items()}
+    tc.save_slice_montage(truth_small, finals, axis=1, index=center_col,
+                          title=f'Axial truncation: x-z section (iter {num_iterations}; '
+                                f'truncated side = top)',
+                          path=os.path.join(fig_dir, 'z_xz_section.png'),
+                          **region_kwargs)
+    early = {f'recon: default, iter {it + 1}\nend NRMSE {end_vals["default"][it]:.3f}':
+                 snapshots_by_variant['default'][it] for it in snapshot_iters}
+    tc.save_slice_montage(truth_small, early, axis=1, index=center_col,
+                          title='Axial truncation: artifact buildup (default variant, x-z)',
+                          path=os.path.join(fig_dir, 'z_buildup.png'),
+                          **region_kwargs)
+    tc.plot_z_profile(truth_small, final_by_variant, masks,
+                      'Axial truncation: z profile (mean over interior disk)',
+                      os.path.join(fig_dir, 'z_profile.png'))
     tc.plot_convergence(metrics_by_variant,
                         ['nrmse_interior', 'nrmse_end_top', 'excess_end_top', 'change_pct'],
                         'Axial truncation (one-sided): convergence by region',
                         os.path.join(fig_dir, 'z_convergence.png'))
-    center_col = small_shape[1] // 2
-    tc.save_slice_montage(truth_small, final_by_variant, axis=1, index=center_col,
-                          title=f'Axial truncation: x-z section (iter {num_iterations}; '
-                                f'truncated side = top)',
-                          path=os.path.join(fig_dir, 'z_xz_section.png'))
-    early = {f'default it{it}': snapshots_by_variant['default'][it] for it in snapshot_iters}
-    tc.save_slice_montage(truth_small, early, axis=1, index=center_col,
-                          title='Axial truncation: artifact buildup (default variant, x-z)',
-                          path=os.path.join(fig_dir, 'z_buildup.png'))
-    tc.plot_z_profile(truth_small, final_by_variant, masks,
-                      'Axial truncation: z profile (mean over interior disk)',
-                      os.path.join(fig_dir, 'z_profile.png'))
 
     # ---- Persist numbers ----
     np.savez(os.path.join(res_dir, 'z_metrics.npz'),

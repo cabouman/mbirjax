@@ -178,6 +178,22 @@ def make_row_taper_weights(sinogram_shape, k_first=0, k_last=0):
     return weights
 
 
+def make_channel_taper_weights(sinogram_shape, k_each_side):
+    """Unit weights with a quarter-sine ramp over the first and last k detector CHANNELS.
+
+    The radial analog of make_row_taper_weights: lateral truncation is two-sided (outside
+    material sweeps across both detector edges as the gantry rotates), so both edges taper.
+    """
+    num_views, num_rows, num_channels = sinogram_shape
+    weights = np.ones(sinogram_shape, dtype=np.float32)
+    if k_each_side > 0:
+        ramp = np.sin((np.pi / 2) * np.linspace(0, 1, k_each_side,
+                                                endpoint=False)).astype(np.float32)
+        weights[:, :, :k_each_side] *= ramp[None, None, :]
+        weights[:, :, num_channels - k_each_side:] *= ramp[None, None, ::-1]
+    return weights
+
+
 def cone_axial_geometry(model, psf_margin=2):
     """Axial (z) truncation geometry for a circular-orbit cone-beam model.
 
@@ -218,6 +234,27 @@ def cone_axial_geometry(model, psf_margin=2):
 
     return {'half_slab': half_slab, 'fov_radius': fov_radius, 'max_visible_z': max_visible_z,
             'full_pad_scale': full_pad_scale, 'taper_rows': taper_rows}
+
+
+def add_transmission_noise(sinogram, i0=1e4, seed=1):
+    """Add photon-count (transmission) noise and return matching statistical weights.
+
+    Model: expected counts I = i0 * exp(-sino); noisy counts I + sqrt(I) * N(0,1) (the
+    Gaussian approximation to Poisson -- fine at these count levels); noisy sinogram
+    = -log(counts / i0), with counts floored at 1 so the log stays finite.  The returned
+    weights are mbirjax's standard 'transmission' inverse-variance weights computed from
+    the NOISY sinogram, exactly as a user would build them.
+
+    Seeded via numpy's Generator (does not touch the global np.random state that the VCD
+    partition draws depend on).  Returns (noisy_sinogram, weights), both float32.
+    """
+    rng = np.random.default_rng(seed)
+    counts = i0 * np.exp(-np.asarray(sinogram, dtype=np.float64))
+    counts = counts + np.sqrt(counts) * rng.standard_normal(sinogram.shape)
+    counts = np.maximum(counts, 1.0)
+    noisy = (-np.log(counts / i0)).astype(np.float32)
+    weights = np.asarray(mj.gen_weights(noisy, 'transmission'), dtype=np.float32)
+    return noisy, weights
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +313,7 @@ def run_tracked_recon(model, sinogram, truth_small, masks, num_iterations,
     re-seeded before every call, so the partition draws match a single continuous run
     (lessons.md section 2: VCD partitions come from global np.random).  If the model's
     recon grid is larger than truth_small (the padded variant), each snapshot is center-cropped
-    to the truth grid before metrics, so all variants are compared on identical voxels.
+    to the ground-truth phantom's grid before metrics, so all variants are compared on identical voxels.
     Optional weights (e.g. a row taper) are passed to every recon call; the auto
     regularization then derives sigma_y from the weighted sinogram, as it would for a user.
 
@@ -339,7 +376,7 @@ def plot_convergence(metrics_by_variant, keys, title, path):
 
 
 def save_slice_montage(truth, recons_by_variant, axis, index, title, path, window=None,
-                       region_mask=None, region_label=''):
+                       region_mask=None, region_label='', reference_label='truth'):
     """Truth | per-variant recon | per-variant difference, along one slice axis.
 
     window: (vmin, vmax) for truth/recon panels; the difference panels use a symmetric
@@ -367,19 +404,19 @@ def save_slice_montage(truth, recons_by_variant, axis, index, title, path, windo
                              squeeze=False)
     axes[0, 0].imshow(truth_slice, vmin=window[0], vmax=window[1], cmap='gray',
                       origin=origin)
-    truth_title = 'truth'
+    truth_title = reference_label
     if region_mask is not None:
-        # Outline the metric region's bounding box on the truth panel (same section/take
-        # transform as the volumes, so the box lands in imshow coordinates directly).
-        mask_section = take(region_mask.astype(np.float32)) > 0.5
-        ys, xs = np.nonzero(mask_section)
-        if ys.size:
-            box = plt.Rectangle((xs.min() - 0.5, ys.min() - 0.5),
-                                xs.max() - xs.min() + 1, ys.max() - ys.min() + 1,
-                                fill=False, edgecolor='red', linestyle='--', linewidth=1.5)
-            axes[0, 0].add_patch(box)
+        # Outline the metric region on the truth panel as a CONTOUR (same section/take
+        # transform as the volumes, so it lands in imshow coordinates).  A contour follows
+        # any region shape -- a rectangle for the end-slab regions, two circles for the
+        # ring annulus -- where a bounding box would mislead.
+        # No origin arg: contour uses array-index coordinates, which already align with
+        # the imshow axes (imshow's origin setting flips the axis, not the data).
+        mask_section = take(region_mask.astype(np.float32))
+        axes[0, 0].contour(mask_section, levels=[0.5], colors='red',
+                           linestyles='--', linewidths=1.5)
         if region_label:
-            truth_title = f'truth\n({region_label})'
+            truth_title = f'{reference_label}\n({region_label})'
     axes[0, 0].set_title(truth_title)
     axes[1, 0].axis('off')
     diff_span = 0.25 * (window[1] - window[0])
@@ -391,7 +428,7 @@ def save_slice_montage(truth, recons_by_variant, axis, index, title, path, windo
         short = variant.split('\n')[0].replace('recon: ', '')
         im = axes[1, col].imshow(recon_slice - truth_slice, vmin=-diff_span,
                                  vmax=diff_span, cmap='coolwarm', origin=origin)
-        axes[1, col].set_title(f'{short} - truth')
+        axes[1, col].set_title(f'{short} - {reference_label}')
         fig.colorbar(im, ax=axes[1, col], fraction=0.046)
     for ax in axes.ravel():
         ax.set_xticks([])
@@ -402,7 +439,7 @@ def save_slice_montage(truth, recons_by_variant, axis, index, title, path, windo
     plt.close(fig)
 
 
-def plot_z_profile(truth, recons_by_variant, masks, title, path, xlim=None):
+def plot_z_profile(truth, recons_by_variant, masks, title, path, xlim=None, truth_label='truth'):
     """Mean over the radial-interior disk, per slice: the instrument for axial flash/ringing.
 
     xlim: optional (lo, hi) slice range to zoom the plot (e.g. the last slices, where the
@@ -411,7 +448,7 @@ def plot_z_profile(truth, recons_by_variant, masks, title, path, xlim=None):
     interior2d = masks['interior'].any(axis=2)
     fig, ax = plt.subplots(figsize=(8, 4.5))
     z_axis = np.arange(truth.shape[2])
-    ax.plot(z_axis, truth[interior2d].mean(axis=0), 'k--', label='truth')
+    ax.plot(z_axis, truth[interior2d].mean(axis=0), 'k--', label=truth_label)
     for variant, recon in recons_by_variant.items():
         ax.plot(z_axis, recon[interior2d].mean(axis=0), label=variant)
     if xlim is not None:

@@ -1,7 +1,7 @@
 """Phase 1 repro: LATERAL truncation (object wider than the FoV) -> the radial flash ring.
 
 A wide, z-contained cylinder phantom (radius > the small model's FoV radius) is forward-
-projected through the real detector via an enlarged truth grid, then reconstructed with
+projected through the real detector via an enlarged ground-truth phantom, then reconstructed with
 the default-shape model.  Variants: the default recon, and optionally a padded-support recon
 (scale_recon_shape) as the mechanism check -- if padding absorbs the ring, the model-
 support explanation is confirmed.  See plans/flash_remediation/flash_remediation_plan.md.
@@ -57,14 +57,14 @@ if __name__ == '__main__':
     small_shape = recon_model.get_params('recon_shape')
     big_shape = truth_model.get_params('recon_shape')
     delta_voxel = recon_model.get_params('delta_voxel')
-    print(f'small (default) recon shape: {small_shape}, truth grid: {big_shape}, '
+    print(f'small (default) recon shape: {small_shape}, ground truth phantom: {big_shape}, '
           f'delta_voxel: {delta_voxel:.3f}')
 
     phantom_big = tc.build_phantom(big_shape, small_shape, delta_voxel, radius_frac,
                                    z_lo_frac, z_hi_frac, target_line_integral)
     truth_small = tc.center_crop(phantom_big, small_shape)
 
-    print('Forward-projecting the truth grid through the real detector...')
+    print('Forward-projecting the ground truth phantom through the real detector...')
     sinogram = np.asarray(truth_model.forward_project(phantom_big))
     print(f'sinogram range: [{sinogram.min():.3f}, {sinogram.max():.3f}], '
           f'edge-channel mean: {sinogram[:, :, [0, -1]].mean():.3f} '
@@ -94,22 +94,32 @@ if __name__ == '__main__':
         final_by_variant['padded'] = snaps[num_iterations - 1]
 
     # ---- Figures ----
+    # Montage labels carry each recon's ring NRMSE; the dashed contour on the truth panel
+    # shows WHERE it is measured (the RoR-edge annulus, central slices).
+    ring_vals = {label: mm['nrmse_ring'] for label, mm in metrics_by_variant.items()}
+    center_slice = small_shape[2] // 2
+    region_kwargs = dict(region_mask=masks['ring'],
+                         region_label='dashed = ring-NRMSE region')
+    finals = {f'recon: {label}\nring NRMSE {vals[-1]:.3f}': final_by_variant[label]
+              for label, vals in ring_vals.items()}
+    tc.save_slice_montage(truth_small, finals, axis=2, index=center_slice,
+                          title=f'Lateral truncation: center slice (iter {num_iterations})',
+                          path=os.path.join(fig_dir, 'lateral_center_slice.png'),
+                          **region_kwargs)
+    # An early-iteration montage shows how the ring builds up over iterations.
+    early = {f'recon: default, iter {it + 1}\nring NRMSE {ring_vals["default"][it]:.3f}':
+                 snapshots_by_variant['default'][it] for it in snapshot_iters}
+    tc.save_slice_montage(truth_small, early, axis=2, index=center_slice,
+                          title='Lateral truncation: ring buildup (default variant)',
+                          path=os.path.join(fig_dir, 'lateral_ring_buildup.png'),
+                          **region_kwargs)
+    tc.plot_radial_profile(truth_small, final_by_variant, small_shape, end_slice_margin,
+                           'Lateral truncation: radial profile (central slices)',
+                           os.path.join(fig_dir, 'lateral_radial_profile.png'))
     tc.plot_convergence(metrics_by_variant,
                         ['nrmse_interior', 'nrmse_ring', 'excess_ring', 'change_pct'],
                         'Lateral truncation: convergence by region',
                         os.path.join(fig_dir, 'lateral_convergence.png'))
-    center_slice = small_shape[2] // 2
-    tc.save_slice_montage(truth_small, final_by_variant, axis=2, index=center_slice,
-                          title=f'Lateral truncation: center slice (iter {num_iterations})',
-                          path=os.path.join(fig_dir, 'lateral_center_slice.png'))
-    # An early-iteration montage shows how the ring builds up over iterations.
-    early = {f'default it{it}': snapshots_by_variant['default'][it] for it in snapshot_iters}
-    tc.save_slice_montage(truth_small, early, axis=2, index=center_slice,
-                          title='Lateral truncation: ring buildup (default variant)',
-                          path=os.path.join(fig_dir, 'lateral_ring_buildup.png'))
-    tc.plot_radial_profile(truth_small, final_by_variant, small_shape, end_slice_margin,
-                           'Lateral truncation: radial profile (central slices)',
-                           os.path.join(fig_dir, 'lateral_radial_profile.png'))
 
     # ---- Persist numbers ----
     np.savez(os.path.join(res_dir, 'lateral_metrics.npz'),

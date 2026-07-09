@@ -1,7 +1,7 @@
-"""P2a: axial (SiC-like) case -- row taper vs z-padding vs combinations, on one grid.
+"""P2a: axial (SiC-like) case -- row taper vs z-padding vs combinations.
 
 Same one-sided z-truncation setup as z_truncation_repro.py (laminated cylinder extending
-past the top of the covered slab).  Variant grid:
+past the top of the covered slab).  Seven variants ("variants", not "cells"/"arms" -- Greg):
 
   padding {none, partial, full, overfull} x row taper {off, on}
 
@@ -80,7 +80,7 @@ if __name__ == '__main__':
     delta_voxel = recon_model.get_params('delta_voxel')
 
     geo = tc.cone_axial_geometry(recon_model, psf_margin=psf_margin)
-    print(f'small (default) recon shape: {small_shape}, truth grid: {big_shape}')
+    print(f'small (default) recon shape: {small_shape}, ground truth phantom: {big_shape}')
     print(f'axial geometry: half_slab {geo["half_slab"]:.1f}, max visible |z| '
           f'{geo["max_visible_z"]:.1f} (ratio {geo["max_visible_z"]/geo["half_slab"]:.3f}), '
           f'full pad scale {geo["full_pad_scale"]:.3f}, taper rows {geo["taper_rows"]}')
@@ -89,7 +89,7 @@ if __name__ == '__main__':
                                    z_lo_frac, z_hi_frac, target_line_integral,
                                    laminate_period=laminate_period)
     truth_small = tc.center_crop(phantom_big, small_shape)
-    print('Forward-projecting the truth grid...')
+    print('Forward-projecting the ground truth phantom...')
     sinogram = np.asarray(truth_model.forward_project(phantom_big))
 
     # ---- Far-overshoot identity check (forward-only; replaces the far recon case) ----
@@ -213,7 +213,7 @@ if __name__ == '__main__':
                       xlim=(44, small_shape[2] - 1))
     tc.plot_convergence(metrics_by_variant,
                         ['nrmse_end_top', 'nrmse_interior', 'change_pct'],
-                        'P2a axial grid: convergence by region',
+                        'P2a axial variants: convergence by region',
                         os.path.join(fig_dir, 'p2a_convergence.png'))
 
     print('\n=== Final-iteration summary (iter {}) ==='.format(num_iterations))

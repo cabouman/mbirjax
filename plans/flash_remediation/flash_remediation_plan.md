@@ -2,7 +2,7 @@
 
 **Created 2026-07-08.  Status: Phase 1 DONE (findings below + `phase_1_results.html`);
 Phase 2 IN PROGRESS — P2a DONE (axial: pad by the geometry-derived scale, no taper; row
-taper retired for the axial case), P2b/P2c next.**
+taper retired for the axial case) AND P2b DONE (radial: pad to COVER, round up under uncertainty, no taper) AND P2c DONE (split seam: sino overlap load-bearing, sine taper unnecessary — proposed: drop the taper).  Phase 2 COMPLETE; next = Phase 3 real scans.**
 Source item: `plans/current_plans.md` §2.  Scripts: `plans/experiments/flash_remediation/`.
 
 ## Problem
@@ -119,7 +119,7 @@ axis, and settle the split_sino_recon seam design — so Phase 3 only has to val
 winners on real scans.  All experiments stay in `plans/experiments/flash_remediation/`
 (library code untouched in Phase 2; variants that need modified split internals are local
 reimplementations in the experiment, using the same `copy_ct_model` pattern
-split_sino_recon itself uses).  Everything runs on local CPU in minutes per cell; the full
+split_sino_recon itself uses).  Everything runs on local CPU in minutes per variant; the full
 sweeps are at most hours.  Visual quality decides (montages + profiles); the Phase 1
 region metrics are the supporting record.
 
@@ -131,13 +131,13 @@ region metrics are the supporting record.
   exit the recon slab within the FoV (h/m·(1+R/SID) vs slab half-height) plus the PSF
   radius — the principled default k, swept around to confirm.
 - A variant-sweep driver (list of (label, model, weights) triples through the Phase 1
-  tracked-recon loop) so every cell produces the same metrics/figures.
+  tracked-recon loop) so every variant produces the same metrics/figures.
 
 ### P2a — axial case: taper vs padding vs combination — **DONE 2026-07-08, see Findings**
 
 On the one-sided z-truncation repro (laminate phantom — structure near the truncated end
 makes over-smoothing visible):
-- **Grid: padding level {none, partial, full} × row taper {off, on}** (taper on the
+- **Variants: padding level {none, partial, full} × row taper {off, on}** (taper on the
   truncated side only; width = geometry-derived k).  "Partial" padding deliberately covers
   only part of the object overshoot — the case where full padding is impractical.
 - Add one **far-overshoot case** (object extends ~3× the covered half-slab) where full
@@ -149,23 +149,36 @@ makes over-smoothing visible):
   with taper as the graded transition when padding must be partial) + the width/scale
   policy.
 
-### P2b — radial case: padding-scale knee (+ taper falsification control)
+### P2b — radial case: padding-scale knee (+ taper falsification control) — **DONE
+2026-07-08; findings below + `phase_2b_radial_results.html`**
 
-On the lateral-truncation repro:
-- **Padding-scale sweep** (e.g. 1.05 → cover, ~6 points): interior bias, ring metrics, and
-  visuals vs scale — find the knee of quality vs the ~scale² memory cost, including how
-  much a NOT-fully-covering pad buys (it moves the dump site outward and absorbs part of
-  the inconsistency).
-- **Channel-taper-only control** (one or two settings): the mechanism predicts it cannot
-  remove the interior bias — run it to confirm/falsify, not to tune.
-- **Pad + channel-taper combo** at partial padding (mirror of P2a's hypothesis 3).
-- Stretch: a **data-adaptive truncation detector** (edge-channel level above the air floor,
-  fraction of affected views) as the input to an automatic scale/gate policy — design only,
-  wire up in Phase 4 if the sweep supports it.
-- Deliverable: the radial recommendation (expected: padding with a knee-derived scale
-  policy; taper at most as a partial-pad transition).
+**Design finalized 2026-07-08 (with Greg); run as parallel sbatch jobs on gautschi
+(`radial_pad_sweep.py`, sections selectable at top of file).**  Geometry framing: the
+radial case has NO visibility bound (any point, however far out, is measured in views
+where it lies near the source–axis line), so the knee is empirical and the policy must
+track the object's overshoot.  The only hard stop is MECHANICAL: the rotating object must
+clear source and detector, R_obj < min(SID, SDD−SID) — 8× the FoV radius in the base
+geometry — so the worst-case padding scale is min(SID, SDD−SID)/R.  ~25 variants:
 
-### P2c — split_sino_recon seam A/B
+- **Core padding-scale sweep** (overshoot 1.25×, default regime): scales {1.0, 1.1, 1.2,
+  1.35≈cover, 1.5 over-cover control} + channel-taper-only (falsification control, 16-ch
+  quarter-sine each side) + pad1.2+taper combo.
+- **Overshoot axis**: {none, partial, cover} at overshoots 1.1× and 1.5×, plus an
+  **extreme 4.0× showcase** (half the rotation bound) at {1.0, 2.5, 4.1} — the stress test
+  the axial case could not have.
+- **Regime riders** at {none, knee, cover} each, as INDEPENDENT single-variable probes
+  (the P2a-R lesson): wide fan (SDD 4C→2.5C), sharp (sharpness 2/snr 35, 160 iterations —
+  the R2 convergence lesson), photon noise + transmission weights at default reg.
+- Key summary figure: **knee curves** (ring + interior NRMSE vs padding scale, per
+  overshoot and per regime).
+- Stretch (design-only): a **data-adaptive truncation detector** (edge-channel level above
+  the air floor) as input to an automatic scale policy — wire up in Phase 4 if supported.
+- Deliverable: the radial recommendation (expected: padding with an overshoot-tracking
+  scale policy; taper at most as a partial-pad transition).  Results page:
+  `phase_2b_radial_results.html`.
+
+### P2c — split_sino_recon seam A/B — **DONE 2026-07-08; findings below +
+`phase_2c_split_results.html`**
 
 New script (`split_seam_repro.py`), object fully inside FoV and slab (no physical
 truncation — isolates the SPLIT effects).  Phantom: laminate layers crossing the split +
@@ -218,11 +231,11 @@ real scans (SiC, z62, BGA).
   Method: build the phantom on an enlarged recon grid on a "truth" model that shares the
   small detector (forward-projecting the big grid through the small detector IS the physical
   truncated measurement — no sinogram cropping needed); reconstruct with the default-shape
-  model; snapshot per iteration; compare against the center crop of the truth phantom.
+  model; snapshot per iteration; compare against the center crop of the ground truth phantom.
   Each script includes an optional padded variant (`scale_recon_shape`) as a mechanism check:
   if padding removes the artifact, the model-support explanation is confirmed.
 - **P2 — candidate sweep on the synthetic cases** — detailed plan in "Phase 2 plan" above
-  (P2a axial taper-vs-pad grid, P2b radial padding knee, P2c split-seam A/B; single-variable
+  (P2a axial taper-vs-pad variants, P2b radial padding knee, P2c split-seam A/B; single-variable
   ablations throughout).
 - **P3 — real scans:** SiC (row case; flash + z-ringing), z62 (channel-flash-dominated),
   sic composite as the control whose error is real structure; BGA as the stretch case.
@@ -246,6 +259,12 @@ real scans (SiC, z62, BGA).
   prior-context role of extensions (extensions must be data-accurate, taper = graded
   data-to-prior transition; taper-alone predicted to under-perform at physical edges).
   Phase 2 plan drafted (P2a/P2b/P2c above); execution awaits Greg's go-ahead.
+- 2026-07-08 (Greg): reports reorganized — one page per sub-campaign
+  (`phase_2a_axial_results.html` = the completed axial story;
+  `phase_2b_radial_results.html` = radial, in progress) with `index.html` as the project
+  overview.  P2b design approved incl. the extreme-overshoot showcase and the physical
+  rotation bound (R_obj < min(SID, SDD−SID)); cluster sbatch jobs authorized for the
+  sweeps (partition ai requires --cpus-per-task=14 per GPU).
 
 ## Findings
 
@@ -254,8 +273,8 @@ real scans (SiC, z62, BGA).
 **Illustrated report (self-contained, figures embedded): `phase_1_results.html` (this
 directory).**  Scripts: `plans/experiments/flash_remediation/{lateral,z}_truncation_repro.py`
 (+ figures in that directory's `figures/`, gitignored).  Both cases: cone beam, magnification 2, 128 views, 40
-iterations, default parameters; truth = the phantom on the enlarged grid, metrics on the
-default-grid center crop, NRMSE normalized by the truth RMS over the RoR cylinder.
+iterations, default parameters; ground truth = the phantom on the enlarged grid, metrics on the
+default-grid center crop, NRMSE normalized by the ground-truth RMS over the RoR cylinder.
 
 **Lateral truncation** (cylinder radius 1.25× FoV, contained in z; small grid (128,128,32)):
 
@@ -295,16 +314,17 @@ which any taper must be judged in BOTH axes; Phase 2 A/Bs taper vs padding per a
 sweeps the padding knee.  (Superseded in detail by the Phase 2 plan section and the P2a
 findings below.)
 
-### Phase 2 findings — P2a, axial taper-vs-padding grid (2026-07-08)
+### Phase 2 findings — P2a, axial taper-vs-padding variants (2026-07-08)
 
-**Illustrated report (self-contained, updated per sub-campaign): `phase_2_results.html`
+**Illustrated report (self-contained, updated per sub-campaign): `phase_2a_axial_results.html`
 (this directory).**  Script: `plans/experiments/flash_remediation/z_taper_pad_grid.py`
 (figures `p2a_*`).  Same
-one-sided SiC-like case as Phase 1 (NOTE: the laminate phase shifted with the larger truth
-grid, so absolute numbers are not comparable to Phase 1's; all seven cells here share one
-phantom).  Grid: padding {none, partial 1.094, full 1.188, overfull 1.7} × row taper
+one-sided SiC-like case as Phase 1 (NOTE: the laminate phase shifted with the larger
+ground-truth phantom, so absolute numbers are not comparable to Phase 1's; all seven
+variants here share one
+phantom).  Variants: padding {none, partial 1.094, full 1.188, overfull 1.7} × row taper
 {off, on}, taper widths geometry-derived (6 rows on the default slab, 3 on partial, 0 on
-full — the full+taper cell forces 6 as the H2 probe).
+full — the full+taper variant forces 6 as the H2 probe).
 
 **Structural result — z-padding is geometry-bounded.**  With the source in the iso plane,
 no measured ray reaches |z| > h_max·(SID+R)/SDD, i.e. (SID+R)/SID × the half-slab (1.125
@@ -314,8 +334,8 @@ case where full padding is impractical" cannot exist in z (dropped — replaced 
 forward-projection identity); "full" z-padding is always cheap (scale ≤ 1 + R/SID + psf
 margin), and padding past the bound buys nothing (overfull ties full, 0.1410 vs 0.1415).
 
-**Grid outcome (truncated-end NRMSE at iter 40; interior and contained-end flat ~0.054 /
-~0.074 across all cells — axial locality re-confirmed):**
+**Outcome across the seven variants (truncated-end NRMSE at iter 40; interior and contained-end flat ~0.054 /
+~0.074 across all variants — axial locality re-confirmed):**
 
 | variant | end_top NRMSE |
 |---|---|
@@ -348,4 +368,120 @@ the axial case — its intended niche (padding impractical) does not exist in z.
 this raises the prior that the no-taper split variant (iii) may beat the current taper
 design (i); the split case still differs (the extension's data comes through overlap rows,
 not edge rows), so P2c runs as planned.
+
+### Phase 2 findings — P2a-R, robustness rider (2026-07-08)
+
+Script: `plans/experiments/flash_remediation/z_robustness_check.py` (figures `p2ar_*`;
+noise helper `truncation_common.add_transmission_noise`).  Re-checks the P2a RANKING
+{none, taper, pad_full} in three regimes (Greg's generality questions (a)–(d)):
+
+- **Governing-ratio analysis first** (recorded here because it shaped the configs): every
+  FRACTIONAL quantity in the axial story — visibility bound (1 + R/SID), exit-row band
+  (R/(SID+R)), fully-sampled core ((SID−R)/SID, so the end wedge is ~R/SID too) — is set
+  by the LATERAL fan ratio R/SID = C·δ_c/(2·SDD) alone.  Magnification per se never enters
+  (changing SID moves R proportionally), and row count changes nothing fractionally (it
+  scales h_max and the slab together).  So (a) and (b) collapse into one axis: widen   R/SID.
+- **R1 wide-cone** (SDD 4C→2.5C, rows 64→128 — the fan, and R/SID with it, widens too: 0.125→0.200): formulas VALIDATED —
+  measured bound ratio 1.200 = predicted; far-overshoot identity again bit-exact 0.
+  Ranking holds and the taper's deficit WIDENS (none 1.095 / taper-13-rows 0.718 /
+  pad_full 0.253): the wider exit-row band starves more slices.  Honest-ceiling note: the
+  end wedge grows with R/SID — even pad_full shows laminate-frequency residual near BOTH
+  ends at this fan angle (half-sampled slices, not inconsistency).
+- **R2 sharpness 2 / snr_db 35, no noise** (the BGA-artifact regularization regime):
+  ranking holds (0.780 / 0.299 / 0.150), margins similar to the default regime.
+- **R3 photon noise (i0 1e4) + transmission weights at DEFAULT regularization** (taper
+  multiplied into the weights, as a user would; R2/R3 kept as INDEPENDENT single-variable
+  probes — stacking noise on changed regularization would confound them, Greg): ranking
+  holds decisively (0.685 / 0.255 / 0.075 — taper 3.4× behind padding); pad_full's
+  difference image is pure noise where none/taper still show the organized flash band /
+  smear.  (R3's absolutes aren't comparable to the unit-weight P2a run — the transmission
+  weights shift the auto-calibrated sigma_y.)
+
+**R2 convergence probe** (`r2_convergence_probe.py`, Greg's follow-up 2026-07-08): the
+sharp regime converges ~3× slower (pad_full 0.2%-stop at iter 39 vs 13 at default reg), so
+the 40-iter R2 montage is BARELY converged; its vertical streaks/top mottle are VCD
+transients (the update unit is an (x,y) pixel COLUMN — Greg's hypothesis), gone by iter
+160.  Streak index on recon−truth halves and keeps falling (5.0e-4 → 3.1e-4 → 2.4e-4 at
+40/80/160) — no underdetermined floor.  RULER lesson: on the raw recon the index is flat
+~6.7e-3 = the phantom's own structure (ground truth alone scores the same) — subtract the
+truth before measuring artifacts.  Converged sharp-prior pad_full BEATS default-reg
+pad_full (end 0.069 vs 0.141; interior 0.040 vs 0.055 — it resolves the final laminate
+band default reg smooths), crossing over right where the default 0.2% stop fires.
+
+**Conclusion: the P2a recommendation (geometry-derived z-pad, no taper) survives all
+three regimes**; interior NRMSE was variant-independent in every config.  P2b should
+carry sharpness and noise rider configs from the start, as separate probes (the radial
+case's global bias makes regime-dependence more plausible there).
+
+### Phase 2 findings — P2b, radial padding knee (2026-07-08)
+
+**Illustrated report: `phase_2b_radial_results.html`.**  25 variants as 4 parallel sbatch
+jobs on gautschi (H100s; <1 hr wall).  All variants CONVERGED (change% ≤ 0.1, metrics flat
+iters 20→40), so the effects below are converged-solution properties.
+
+- **The knee is at "cover the object", at every overshoot and every regime.**  Every
+  scale set brackets its own cover AND goes past it (Greg's rigor demand 2026-07-08; 8
+  knee-completion variants added after the first pass).  Small overshoots show a sharp V
+  EXACTLY at cover (1.1×: min at scale 1.12, ring 0.046, clear reversal beyond — 0.077 at
+  1.2, 0.197 at 1.35; 1.25×: V at 1.35, 0.063/0.081, reversal at 1.5 = 0.099/0.100).  At
+  larger overshoot the minimum shifts MODESTLY BEYOND cover: 1.5× bottoms at scale 1.85
+  (ring 0.118 vs 0.191 at nominal cover 1.6) then reverses cleanly (0.130/0.178/0.231 at
+  2.1/2.4/2.8 — a second extension after Greg noted the curve wasn't plateauing; the
+  earlier "hockey stick" read was a truncated x-range).  4× is still descending gently at
+  4.6 (minimum likely similarly past cover; untested).  EVERY curve is a V, and the
+  penalty is ASYMMETRIC — under-padding costs orders of magnitude, over-padding costs
+  percent — so round the padding UP under uncertainty.  Beyond-cover behavior is
+  object-dependent (extra lateral voxels intersect real rays and participate), unlike
+  axial's exact overfull==full tie (no rays at all).  Regime
+  curves (widefan R/SID 0.2, sharp-160it, noise+weights) descend to the same cover knee;
+  beyond it default/widefan/noise revert up while sharp's ring edges down as its interior
+  reverses: the policy is REGIME-ROBUST.
+- **Channel taper falsified as predicted**: taper_only ring 2.21→1.44 (cosmetic) but
+  interior 0.2245 vs none 0.2252 — UNTOUCHED.  pad1.2+taper buys a small ring improvement
+  (0.207→0.189, interior unchanged) unlike axial (where it always hurt), but is not
+  competitive with cover padding.  Taper retired for the radial case too.
+- **Cover quality degrades with overshoot** (at-cover ring 0.046/0.063/0.19/1.21 at
+  1.1/1.25/1.5/4.0×): padding lets the model represent outside material but cannot restore
+  unmeasured redundancy.
+- **Extreme 4.0× showcase** (half the rotation bound; cover recon 525×525): unpadded is
+  catastrophic (ring 12.95, structure gone); cover recovers the spheres crisply but rides a
+  near-uniform DC offset (most of the residual 1.21/0.68) — the interior-tomography
+  ambiguity; removable post-hoc only with a known-air anchor (Phase 3 note for BGA-class
+  scans).
+- **The rotation bound is real and the assertion caught it**: the first wide-fan config
+  (shrink SDD only) had the 1.25× object exactly touching the detector → job rejected by
+  the script's bound check; fixed by shortening SID and SDD together at fixed
+  magnification (R/SID 0.125→0.2).
+- **Radial recommendation: pad to cover, no more, no less; no taper.**  "Cover" is not
+  derivable from scanner geometry → the shipping policy needs the data-adaptive overshoot
+  estimate (edge-channel level above air floor) — design moves to Phase 4.
+
+### Phase 2 findings — P2c, split_sino_recon seam A/B (2026-07-08)
+
+**Illustrated report: `phase_2c_split_results.html`.**  Script `split_seam_repro.py` (a
+local parameterized reimplementation of the split geometry; library untouched).  Object
+fully contained (no physical truncation → all seam error split-induced); four variants ×
+two phantoms (laminate crossing the split + smooth control), each judged against an
+unsplit 40-iter reference; seam region = interior disk × split ±4 slices.
+
+- **The sino overlap is LOAD-BEARING**: truncate (sino cut at the iso row, recon overlap
+  kept) costs seam NRMSE ~0.18 vs the reference (6× the reference's own truth error;
+  visible dark band through the straddling sphere, ~20% z-profile sag recovering over ~3
+  slices each side).  **On the smooth control too (0.17)** — REFUTING the "ties on smooth"
+  prediction: data-starved extensions settle low regardless of object structure, and reach
+  the seam via prior context AND the stitch blend.
+- **With the overlap at full weight the split is numerically FREE**: no_taper matches the
+  unsplit reference at seam NRMSE 2–3e-5 (the GPU run-to-run noise floor) on both
+  phantoms.  The iso-plane separability is exact in practice once the extensions are fed.
+- **The sine taper is unnecessary and (harmlessly) counterproductive**: current lands at
+  ~1e-3 vs reference — invisible, but ~30× the no-taper deviation.  The overlap data is
+  NOT inconsistent (every extended row's contribution is representable by the extended
+  slices), so down-weighting it only perturbs the objective — the same lesson as P2a's
+  physical edge.
+- **Default extension depth suffices**: no_taper_deep == no_taper at 1e-5 (h=5 already
+  covers the PSF+rounding coupling width).
+- **Proposed library change: remove the sine taper from split_sino_recon; keep both
+  overlaps unchanged** (a strict simplification; split then agrees with unsplit to
+  numerical noise).  Caveat: rests on the circular orbit — re-test if the
+  zero-helical-shift restriction is ever relaxed.
 

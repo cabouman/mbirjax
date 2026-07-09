@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flash remediation — project overview</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #555; --card: #f6f7f9;
+    --accent: #0a5c8a; --border: #d8dde3; --good: #0a7a3d; --bad: #a4232e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --fg: #e6e6e6; --muted: #a5adb5; --card: #1d2126;
+      --accent: #6fb8dd; --border: #333a42; --good: #57c785; --bad: #e57373;
+    }
+  }
+  html { background: var(--bg); }
+  body {
+    margin: 0 auto; padding: 2rem 1.5rem 4rem; max-width: 900px;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 0.25rem; }
+  .subtitle { color: var(--muted); margin-bottom: 1.5rem; }
+  a { color: var(--accent); }
+  .page {
+    display: block; background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.9rem 1.1rem; margin: 0.9rem 0;
+    text-decoration: none; color: var(--fg);
+  }
+  .page:hover { border-color: var(--accent); }
+  .page h2 { margin: 0 0 0.3rem; font-size: 1.08rem; color: var(--accent); }
+  .page p { margin: 0; font-size: 0.92rem; color: var(--muted); line-height: 1.5; }
+  .pending { opacity: 0.65; }
+  .pending h2 { color: var(--muted); }
+  code { background: var(--card); padding: 0.08rem 0.35rem; border-radius: 4px; font-size: 0.88em; }
+  .note { font-size: 0.9rem; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<h1>Flash remediation</h1>
+<p class="subtitle">Fixing the FoV-truncation "flash" in mbirjax MBIR reconstruction &middot;
+started 2026-07-08 &middot; plan of record: <code>flash_remediation_plan.md</code> (this
+directory)</p>
+
+<p>When a scanned object extends outside the reconstruction support — wider than the field of
+view, or taller than the covered slab — MBIR must explain measured attenuation with voxels
+that cannot represent its source. The unexplained attenuation piles up at the support
+boundary as a bright <em>flash</em> (a radial ring, or bright end slices with axial ringing),
+degrades the interior, and drags the convergence stop metric. This project characterizes the
+mechanism on controlled synthetic cases and settles, per axis, which remediation to use:
+sinogram weight <em>tapering</em> (the <code>split_sino_recon</code> precedent) versus
+reconstruction-support <em>padding</em> (<code>scale_recon_shape</code>). The pages below are
+self-contained (figures embedded) and read in order.</p>
+
+<a class="page" href="phase_1_results.html">
+  <h2>Phase 1 — What is the flash, and what causes it?</h2>
+  <p>The two truncation cases at a glance (with schematics), the enlarged-ground-truth
+  reproduction method, and the characterization results: the radial ring plus whole-interior
+  bias, the one-sided axial flash with z-ringing, and the padding mechanism check that
+  confirmed both are model-support problems. <strong>Complete.</strong></p>
+</a>
+
+<a class="page" href="phase_2a_axial_results.html">
+  <h2>Phase 2a — The axial case, settled</h2>
+  <p>The geometry that frames axial truncation (visibility bound: z-padding is always cheap),
+  the seven-variant taper-vs-padding experiment, and three robustness regimes (wide cone,
+  sharp regularization, photon noise). Verdict: pad in z by the geometry-derived scale, no
+  taper — the row taper is retired for this case. <strong>Complete.</strong></p>
+</a>
+
+<a class="page" href="phase_2b_radial_results.html">
+  <h2>Phase 2b — The radial case, settled</h2>
+  <p>The radial counterpart: no lateral visibility bound (only the physical rotation
+  clearance bounds the object), so the knee is empirical. Padding-scale sweeps across four
+  overshoots and four regimes land one answer: pad to cover the object — no more, no less —
+  the knee is regime-robust, over-cover mildly hurts, and the channel taper is falsified
+  (it cannot reach the interior bias). <strong>Complete.</strong></p>
+</a>
+
+<a class="page" href="phase_2c_split_results.html">
+  <h2>Phase 2c — The split_sino_recon seam, settled</h2>
+  <p>The seam A/B lands cleanly: the sinogram overlap is load-bearing (truncating at the
+  split costs a visible seam band, even on smooth objects), while the sine taper is not —
+  with the overlap at full weight the split reproduces the unsplit reconstruction to the
+  float-noise floor. Proposed change: drop the taper, keep the overlaps.
+  <strong>Complete.</strong></p>
+</a>
+
+<div class="page pending">
+  <h2>Phase 3 — Real scans (planned)</h2>
+  <p>Validation of the winning policies on SiC (axial, z-ringing), z62 (radial-flash
+  dominated), and the BGA scan (severe lateral truncation).</p>
+</div>
+
+<p class="note">Reproduction: scripts in <code>plans/experiments/flash_remediation/</code>
+(see the README in this directory); figures refresh via
+<code>embed_report_figures.py</code>.</p>
+
+</body>
+</html>
