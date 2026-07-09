@@ -12,9 +12,9 @@ def _masked_histogram(image, valid_mask, num_bins, xp):
 
     The range comes from masked min/max, and invalid entries are pushed to a finite sentinel ABOVE the
     range, which ``histogram``'s range semantics then drop -- so the bin EDGES and counts are exactly
-    those of the valid entries (no post-hoc count correction needed).  ``xp`` is the array module:
-    ``np`` runs eagerly on the host; ``jnp`` runs on-device (see :func:`_sharded_histogram` for the
-    jitted wrapper).  The infinity/one constants are typed to ``image.dtype`` so the ``where`` cannot
+    those of the valid entries (no post-hoc count correction needed).  ``xp`` is the array module
+    (currently always ``np``, on the host).  The infinity/one constants are typed to ``image.dtype``
+    so the ``where`` cannot
     silently upcast (a float64 scalar would double the full-size temporaries).
     """
     inf = xp.asarray(xp.inf, dtype=image.dtype)
@@ -170,9 +170,9 @@ def multi_threshold_otsu(image, classes=2, num_bins=1024, valid_mask=None):
     that can be used to partition the image intensity range into `classes` distinct segments.
 
     A NumPy image is histogrammed on the host; a JAX image is histogrammed on its own device(s) --
-    including a sharded volume, whose per-shard partial histograms combine in a cross-device reduction
-    (bit-identical counts; no gather of the volume).  Only the tiny histogram itself comes to the host
-    for the threshold search.
+    including a sharded volume, whose per-shard partial histograms are summed on the host
+    (bit-identical counts; no gather of the volume).  Only the tiny per-shard histograms come to the
+    host for the threshold search.
 
     Args:
         image (np.ndarray or jax.Array):

@@ -39,7 +39,7 @@ def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0,
         verbose (int, optional): Verbosity level. Defaults to 1.
 
     Returns:
-        tuple: (sino, translation_params, optional_params)
+        tuple: (sino, translation_params, optional_params, weights)
             - ``sino`` (jax.numpy.ndarray): Sinogram of shape (num_views, num_det_rows, num_channels)
             - ``translation_params`` (dict): Parameters for initializing TranslationModel.
             - ``optional_params`` (dict): Parameters to be passed via ``set_params``.
@@ -49,15 +49,12 @@ def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0,
         .. code-block:: python
 
             # Get data and reconstruction parameters
-            sino, translation_params, optional_params, weights = mbirjax.preprocess.zeiss.compute_sino_and_params(dataset_dir)
+            sino, translation_params, optional_params, weights = mbirjax.preprocess.zeiss_tct.compute_sino_and_params(dataset_dir)
 
             # Create the model and set parameters
             tct_model = mbirjax.TranslationModel(**translation_params)
             tct_model.set_params(**optional_params)
             tct_model.set_params(sharpness=sharpness, verbose=1)
-
-            # Generates weights array
-            weights = weights
 
             # Run reconstruction
             recon, recon_dict = tct_model.recon(sino)
@@ -862,7 +859,7 @@ def compute_weight(blank_scan, obj_scan, dark_region_ratio=0.6, safety_buffer=20
     num_views, num_rows, num_cols = obj_scan.shape
 
     # Detect dark boundary regions using the blank scan
-    # Assume that dark boundary region intensity <= 0.5 * median blank scan intensity
+    # Assume that dark boundary region intensity <= dark_region_ratio * median blank scan intensity
     weight_mask_2d = blank_scan[0] >= dark_region_ratio * np.median(blank_scan[0])
 
     # Add a safety buffer around dark boundary regions

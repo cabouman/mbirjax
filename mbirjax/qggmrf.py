@@ -15,7 +15,8 @@ def prox_gradient_at_indices(recon, prox_input, pixel_indices, sigma_prox):
     Args:
         recon (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
         prox_input (jax.array): 2D reconstructed image array with shape (num_recon_rows x num_recon_cols, num_recon_slices).
-        pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
+        pixel_indices (int array): 1D array of shape (N_indices,) holding indices into the flattened
+            (num_recon_rows x num_recon_cols) grid of voxel cylinders to be updated.
         sigma_prox (float): Standard deviation parameter of the proximal map.
 
     Returns:
@@ -81,7 +82,8 @@ def qggmrf_gradient_and_hessian_at_indices(flat_recon, recon_shape, pixel_indice
         recon_shape (tuple of ints): shape of the original recon:  (num_recon_rows, num_recon_cols, num_recon_slices).
             num_recon_rows and num_recon_cols are always the full (unsharded) values; the slice count entry should match
             ``flat_recon``'s (local) slice count -- only the in-slice term uses recon_shape, and it ignores the slice count.
-        pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a flattened array to be updated.
+        pixel_indices (int array): 1D array of shape (N_indices,) holding indices into the flattened
+            (num_recon_rows x num_recon_cols) grid of voxel cylinders to be updated.
         qggmrf_params (tuple): The parameters b, sigma_x, p, q, T
         left_halo (jax.array or None): 1D array of shape (num_recon_rows x num_recon_cols,) holding the slice
             immediately to the left (lower global slice index) of this shard, used to compute the inter-slice prior
@@ -210,8 +212,8 @@ def qggmrf_grad_and_hessian_per_slice(flat_recon_slice, recon_shape, pixel_indic
         The locations of flat_recon_slice[pixel_indices] within the recon are given by
         row_index, col_index = jnp.unravel_index(pixel_indices, shape=(num_rows, num_cols))
         recon_shape (tuple of ints): shape of the original recon:  (num_recon_rows, num_recon_cols, num_recon_slices).
-        pixel_indices (int array): Array of shape (N_indices, num_recon_slices) representing the indices of voxels in a
-        flattened recon.
+        pixel_indices (int array): 1D array of shape (N_indices,) holding indices into the flattened
+            (num_recon_rows x num_recon_cols) grid of voxel cylinders to be updated.
         qggmrf_params: b, sigma_x, p, q, T
         initial_gradient_slice (jax array): Array of the same shape as flat_recon_slice
         initial_hessian_slice (jax array): Array of the same shape as flat_recon_slice

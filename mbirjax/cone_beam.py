@@ -1150,9 +1150,9 @@ class ConeBeamModel(TomographyModel):
                 - Dictionary of metadata containing recon and model parameters for each half.
 
         Raises:
-            ValueError: If inputs are missing or shapes are inconsistent.
+            ValueError: If inputs are missing or shapes are inconsistent, if half_overlap < 2,
+                or if the geometry has nonzero helical z-shifts.
             AssertionError: If array dimensions are invalid.
-            TypeError: If half_overlap is not an integer.
 
         Example:
             >>> import jax.numpy as jnp
@@ -1275,7 +1275,7 @@ class ConeBeamModel(TomographyModel):
         full_det_center = (full_num_rows - 1) / 2.0
 
         # Sine filter (float32) applied to the overlap rows of each half's weights to reduce boundary
-        # artifacts.  Note that 0 weight is used deliberately on the most extreme view to reduce ringing.
+        # artifacts.  Note that 0 weight is used deliberately on the most extreme row to reduce ringing.
         num_filter_pts = half_overlap_sino
         sine_filter_inputs = (np.pi / 2) * np.linspace(0, 1, num_filter_pts, endpoint=False)
         sine_filter = np.sin(sine_filter_inputs).astype(np.float32)

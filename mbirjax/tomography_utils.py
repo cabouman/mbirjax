@@ -106,7 +106,7 @@ def generate_direct_recon_filter(num_channels, filter_name="ramp"):
         filter_name (string, optional): Name of the filter to be generated. Defaults to "ramp."
 
     Returns:
-        filter (jnp): The computed filter (filter.size = 2*num_channels + 1).
+        filter (jnp): The computed filter (filter.size = 2*num_channels - 1).
     """
 
     # If you want to add a new filter, place its name into supported_filters, and ...

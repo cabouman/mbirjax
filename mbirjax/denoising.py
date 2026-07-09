@@ -136,7 +136,8 @@ class QGGMRFDenoiser(TomographyModel):
         Args:
             noisy_image (jax array or ndarray): 3D array containing noisy_image with shape (num_views, num_det_rows, num_det_channels).
             sigma_noise (float, optional): Estimated noise standard deviation in the image.  If None, then this is estimated from the image.
-            verbose (int, optional): Verbosity level.
+            verbose (int, optional): Unused in the body; present because TomographyModel
+                calls this method with verbose= (signature compatibility).
 
         Returns:
             (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``noisy_image``.

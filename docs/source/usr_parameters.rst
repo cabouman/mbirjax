@@ -53,7 +53,7 @@ positivity_flag
 
 This parameter determines if positivity is enforced in MBIR reconstruction.
 
-.. _param-verbose:
+.. _param-max_overrelaxation:
 
 max_overrelaxation
 """"""""""""""""""
@@ -61,7 +61,7 @@ max_overrelaxation
 
 This parameter limits the step size of VCD updates.
 
-.. _param-max_overrelaxation:
+.. _param-verbose:
 
 verbose
 """""""

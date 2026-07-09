@@ -1922,21 +1922,10 @@ class TomographyModel(ParameterHandler):
         views to slices [g0:g1).  This is why the caller must sum the results
         across view-owners (see ``mbirjax._sharding.sum_band_to_owner()``).
 
-        For each view-owner, the **detector-row axis** of its view-shard is cropped
-        to rows [g0:g1) (all views and all channels kept) and the projector is run;
-        the kernel sizes its output-slice axis from the number of input rows, so it
-        returns exactly slices [g0:g1).  The view-owners run in parallel, one thread
-        each (reusing ``pool``).
-
-        NOTE -- this row-crop is **parallel-beam-specific**: it works only because
-        detector row r back-projects to slice r alone (the projection mixes
-        channels, never rows).  Divergent geometries (cone / translation /
-        multiaxis) draw a slice from a *range* of rows and so cannot crop rows.  The
-        planned geometry-neutral replacement passes the full view plus a slice band
-        ``(g0 dynamic, L static)`` and lets each geometry map the band to the rows
-        it needs -- all local, since a view-owner holds every row for its own views.
-        See the "geometry-neutral slice-band projector interface" design note in
-        sharding_implementation_plan_v2.md.
+        For each view-owner, ``_back_project_view_shard_to_band`` maps its view-shard to
+        slices [g0:g1) (geometry-neutral banded kernel by default; ``ParallelBeamModel``
+        overrides it with a detector-row crop).  The view-owners run in parallel, one
+        thread each (reusing ``pool``).
 
         Args:
             shard_info (dict): device -> (local view-shard data, its GLOBAL view
@@ -1964,8 +1953,8 @@ class TomographyModel(ParameterHandler):
 
         Default (geometry-neutral) behavior: run the geometry's BANDED back kernel on the FULL
         view, producing slices [g0, g1) directly -- correct when a slice is drawn from a RANGE of
-        detector rows (so the rows cannot be cropped).  This is the general case; cone uses it as
-        is, as will translation/multiaxis once ported.  ``ParallelBeamModel`` OVERRIDES it with a
+        detector rows (so the rows cannot be cropped).  This is the general case; cone, translation,
+        and multiaxis use it as is.  ``ParallelBeamModel`` OVERRIDES it with a
         cheaper detector-row crop (its row r back-projects to slice r alone), a specialization that
         avoids processing the full detector rows.
 
@@ -2146,10 +2135,6 @@ class TomographyModel(ParameterHandler):
             no_warning (bool, optional): If True, disables validity checking and warning messages. Defaults to False.
             no_compile (bool, optional): If True, suppresses projector recompilation after updates. Defaults to False.
             **kwargs: Arbitrary keyword arguments specifying parameter names and values to update.
-
-        Returns:
-            bool: True if projector recompilation is required and not suppressed by `no_compile`,
-            otherwise False.
 
         Example:
             >>> import mbirjax as mj
@@ -2368,8 +2353,8 @@ class TomographyModel(ParameterHandler):
 
     @staticmethod
     def subsample_views(array, max_views_to_use=20, num_real_views=None):
-        """Return an evenly-spaced subsample of at most ``max_views_to_use`` views (axis 0) as a host
-        NumPy array.
+        """Return an evenly-spaced subsample of approximately ``max_views_to_use`` views (axis 0) as a
+        host NumPy array.
 
         Statistical sinogram estimates -- the support indicator (:meth:`_get_sino_indicator`), the RMS /
         typical value, the auto-crop width, the auto-regularization stats -- do not need every view, so
@@ -2385,7 +2370,7 @@ class TomographyModel(ParameterHandler):
 
         Args:
             array (ndarray or jax array): array batched along axis 0 (views).
-            max_views_to_use (int, optional): cap on the number of views retained. Defaults to 20.
+            max_views_to_use (int, optional): approximate number of views to retain. Defaults to 20.
             num_real_views (int or None, optional): if set, sample only ``array[:num_real_views]``.
 
         Returns:
@@ -2823,11 +2808,11 @@ class TomographyModel(ParameterHandler):
         Returns:
             (recon, recon_stats): tuple of 3D reconstruction and a tuple containing arrays of per-iteration stats.
             With return_checkpoint=True: (recon, recon_stats, checkpoint).
-            recon_stats = (fm_rmse, pm_rmse, nrms_update), where fm is forward model, pm is prior model, and
-            nrms_update is ||recon(i+1) - recon(i)||_2 / ||recon(i+1)||_2.
+            recon_stats = (fm_rmse, pm_loss, nmae_update, alpha_values), where fm is forward model, pm is prior model,
+            and nmae_update is ||recon(i+1) - recon(i)||_1 / ||recon(i+1)||_1.
 
         Note:
-            To maximize GPU memory, each of sinogram, weights, init_recon, and prox_input should be on the CPU for large recons.
+            For repeated recons on a large sinogram, see prepare_sino_for_devices.
         """
         # Ensure that everything has the right shape and is on the main device
         self.verify_valid_params()
@@ -3168,7 +3153,7 @@ class TomographyModel(ParameterHandler):
             prox_input (jax array): optional input for proximal map with same shape as reconstruction.
 
         Returns:
-            (callable) vcd_subset_updater(error_sinogram, flat_recon, pixel_indices) that updates the recon.
+            (callable) vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, staged_halos=None) that updates the recon.
         """
 
         positivity_flag = self.get_params('positivity_flag')
@@ -3363,7 +3348,6 @@ class TomographyModel(ParameterHandler):
         Compute forward model terms used in line-search updates:
         ``forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)`` and
         ``forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)``.
-        This supports batching to a worker, with only two floats returned per batch.
 
         The two scalars are left wherever the reductions produced them (the sino mesh in the
         sharded path); the caller reconciles them onto the recon mesh.

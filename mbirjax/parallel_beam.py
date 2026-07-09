@@ -214,7 +214,8 @@ class ParallelBeamModel(TomographyModel):
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
-            jax array of shape (num_det_rows, num_det_channels)
+            jax array of shape (voxel_values.shape[1], num_det_channels); equals
+            (num_det_rows, num_det_channels) when the full cylinder is passed.
         """
         # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
         # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
@@ -276,7 +277,8 @@ class ParallelBeamModel(TomographyModel):
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
         Returns:
-            jax array of shape (len(pixel_indices), num_det_rows)
+            jax array of shape (len(pixel_indices), sinogram_view.shape[0]); equals
+            (len(pixel_indices), num_det_rows) when the full view is passed.
         """
         # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
         # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.

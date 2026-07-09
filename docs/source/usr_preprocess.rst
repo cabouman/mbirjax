@@ -17,7 +17,7 @@ NorthStar Instrument (NSI) reader
 .. autofunction:: load_scans_and_params
 
 
-Zeiss Versa cone beam reader
+Zeiss Versa and Ultra reader
 ----------------------------
 
 .. currentmodule:: mbirjax.preprocess.zeiss
