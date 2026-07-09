@@ -35,6 +35,10 @@ current state; these carry the why and the numbers.
 - `partition_sequence/partition_sequence_plan.md` — the VCD partition-sequence convergence
   study (ACTIVE as of 2026-07; experiment code in the sibling repo,
   `mbirjax_metrics/experiments/partition_sequence/`).
+- `flash_remediation/flash_remediation_plan.md` — the FoV-truncation "flash" remediation
+  program (ACTIVE as of 2026-07): sinogram weight edge tapering vs recon-support padding
+  (`scale_recon_shape`); synthetic characterization in
+  `experiments/flash_remediation/`.
 
 ## Findings from experiments
 
