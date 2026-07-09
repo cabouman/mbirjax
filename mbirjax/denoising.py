@@ -8,7 +8,6 @@ import jax.numpy as jnp
 import jax.lax as lax
 import mbirjax as mj
 from mbirjax import TomographyModel
-from mbirjax._device_setup import gpu_devices
 
 QGGMRFDenoiserParamNames = mj.ParamNames | Literal['sigma_noise']
 
@@ -36,10 +35,8 @@ class QGGMRFDenoiser(TomographyModel):
         self.set_params(sharpness=0)  # The default sharpness level is 0 for the denoiser.
 
         self.set_params(granularity=[16], partition_sequence=[0])  # For qggmrf denoising, we can fix a partition
-        if gpu_devices():
-            self.set_params(use_gpu='automatic')  # Use the gpu when one is available.
-        else:
-            self.set_params(use_gpu='none')
+        # Device selection: the automatic default (construction-time layout) already uses the
+        # GPU when one is available and the CPU otherwise; use_gpu is deprecated.
 
     @overload
     def get_params(self, parameter_names: Union[QGGMRFDenoiserParamNames, list[QGGMRFDenoiserParamNames]]) -> Any: ...

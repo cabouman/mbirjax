@@ -40,7 +40,7 @@ def log_oom_guidance(logger, on_gpu):
         logger.error(">>>     to lower the per-device peak memory of the early VCD iterations")
         logger.error(">>>   - reducing recon_shape (e.g. via set_params or auto_set_recon_geometry)")
         logger.error(">>>   - reconstructing the volume in slice subsets")
-        logger.error(">>>   - running on the cpu with ct_model.set_params(use_gpu='none') before calling recon")
+        logger.error(">>>   - running on the cpu with ct_model.configure_devices('cpu') before calling recon")
     else:
         logger.error(">>> Insufficient CPU memory: try reducing recon_shape, or run where more memory is available.")
 
@@ -116,7 +116,9 @@ _reconstruction_defaults_dict = {
     'granularity': Param([1, 2, 4, 8, 16, 32, 64, 128, 256], False),
     'partition_sequence': Param([0, 2, 4, 6, 7], False),
     'verbose': Param(1, False),
-    'use_gpu': Param('automatic', True),  # 'automatic' or 'none' ('full' is a deprecated synonym of 'automatic')
+    'use_gpu': Param('automatic', True),  # DEPRECATED: use configure_devices ('cpu' forces CPU-only).
+                                          # Kept (with set_params forwarding) for one deprecation
+                                          # cycle so existing scripts and saved params still work.
     'max_overrelaxation': Param(1.5, False),  # This is used in vcd_subset_updater() to limit the maximum step size
     'use_ror_mask': Param(True, False),
 }

@@ -202,10 +202,14 @@ class TomographyModel(ParameterHandler):
         Resolves ``devices`` to a concrete device list and PINS it: a later ``set_params`` (which
         re-runs ``set_devices``) keeps these devices rather than re-auto-selecting.
 
-          * ``None``  -- automatic: the same choice ``use_gpu='automatic'`` makes by default --
-            shard across all available GPUs (or, with no GPU, all available CPU devices), trimmed
-            by ``_auto_device_count`` so the last shard is never entirely padding.  A single
+          * ``None``  -- automatic (the default construction behavior): shard across all
+            available GPUs (or, with no GPU, all available CPU devices), trimmed by
+            ``_auto_device_count`` so the last shard is never entirely padding.  A single
             available device gives a trivial 1-device layout.
+          * ``'cpu'`` / ``'gpu'`` -- all devices of that platform, trimmed as for automatic.
+            ``configure_devices('cpu')`` forces CPU-only operation (this replaces the
+            deprecated ``set_params(use_gpu='none')``); ``'gpu'`` raises when no GPU backend
+            is available.
           * ``int n`` -- use the first ``n`` devices of the default platform (GPUs if any, else CPUs);
             ``configure_devices(1)`` is the way to force single-device operation.
           * ``sequence of ints`` -- use those indices into the default device list (``jax.devices()``).
@@ -219,7 +223,7 @@ class TomographyModel(ParameterHandler):
         recompile, so device selection is order-independent with respect to shape changes.
 
         Args:
-            devices (None, int, or sequence of ints / jax devices): see above.
+            devices (None, str, int, or sequence of ints / jax devices): see above.
 
         Returns:
             Nothing; builds recon_placement / sino_placement and the empirical device-to-device
@@ -233,6 +237,20 @@ class TomographyModel(ParameterHandler):
 
         (``None`` is handled by configure_devices via ``_auto_device_pool``.)
         """
+        if isinstance(devices, str):
+            platform = devices.lower()
+            if platform == 'cpu':
+                pool = list(cpu_devices())
+            elif platform == 'gpu':
+                pool = list(gpu_devices())
+                if not pool:
+                    raise ValueError("configure_devices('gpu') was requested but no GPU backend "
+                                     "is available.")
+            else:
+                raise ValueError("configure_devices platform string must be 'cpu' or 'gpu'; "
+                                 "got {!r}.".format(devices))
+            # Trim exactly as automatic selection does (never a fully-padded last shard).
+            return pool[:self._auto_device_count(len(pool))]
         if isinstance(devices, (int, np.integer)):
             return default_devices()[:int(devices)]
         devices = list(devices)
@@ -862,9 +880,8 @@ class TomographyModel(ParameterHandler):
         Determine whether to run the reconstruction entirely on the GPU (when one is available) or
         entirely on the CPU, and set the corresponding devices.
 
-        This determination can be overridden by using ct_model.set_params(use_gpu=string), where string is
-        'automatic' (use the gpu when available) or 'none' (cpu only).  ('full' is a deprecated synonym
-        of 'automatic'.)
+        Device selection is controlled by :meth:`configure_devices` (``'cpu'`` forces CPU-only;
+        the deprecated ``set_params(use_gpu=...)`` is honored by forwarding there).
 
         Returns:
             Nothing, but instance variables are set to appropriate values.
@@ -877,13 +894,15 @@ class TomographyModel(ParameterHandler):
         gpus = gpu_devices()   # () when there is no GPU backend
         if not gpus and use_gpu not in ['automatic', 'none']:
             warnings.warn("'use_gpu' is set to {} but no gpu is available. Proceeding on cpu. "
-                          "Use set_params(use_gpu='automatic') to avoid this warning.".format(use_gpu))
+                          "(use_gpu is deprecated; devices are controlled by "
+                          "configure_devices.)".format(use_gpu))
 
         # A pinned configuration (configure_devices) keeps its devices across recompiles; otherwise
         # auto-select (_auto_device_pool: shard across all GPUs or all CPU devices, a single device
         # giving a trivial 1-device layout).  Either way _set_device_layout rebuilds the placements
         # and re-derives the pad metadata from the current shapes, so the layout tracks a
-        # 'full' <-> 'none' flip or a sinogram_shape change.
+        # sinogram_shape change.  (A use_gpu flip does NOT flow through here on a pinned layout;
+        # the deprecated parameter is honored by set_params forwarding to configure_devices.)
         cur_devices = self.recon_placement.devices if self._sharding_configured else self._auto_device_pool()
         self._set_device_layout(cur_devices, pinned=self._sharding_configured)
         return
@@ -2136,11 +2155,38 @@ class TomographyModel(ParameterHandler):
             >>> import mbirjax as mj
             >>> ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
             >>> ct_model.set_params(recon_shape=(128, 128, 128), sharpness=0.7)
+
+        Note:
+            ``use_gpu`` is DEPRECATED: device selection is an execution-environment choice, not
+            a model parameter (a persisted value silently follows a saved model to a different
+            machine).  Use :meth:`configure_devices` instead -- ``configure_devices('cpu')``
+            for CPU-only, ``configure_devices(None)`` for automatic.  During the deprecation
+            window the request is HONORED by forwarding to configure_devices, so it now also
+            takes effect over a previous device pin (it was formerly ignored, silently, once
+            configure_devices had been called).
         """
+        use_gpu = kwargs.get('use_gpu')
+        if use_gpu is not None and not no_warning:
+            warnings.warn(
+                "use_gpu is deprecated and will be removed: use configure_devices('cpu') for "
+                "CPU-only operation, configure_devices(None) for automatic, or pass explicit "
+                "devices.  The request is honored for now by forwarding to configure_devices.",
+                DeprecationWarning, stacklevel=2)
         recompile_flag = super().set_params(no_warning=no_warning, no_compile=no_compile, **kwargs)
         if recompile_flag:
             self.set_devices()
             self.create_projectors()
+        if use_gpu is not None and not no_compile:
+            # Deprecation window: honor the request by forwarding to the real control surface.
+            # 'none' pins the CPU pool; 'automatic'/'full' restores automatic tracking.  Either
+            # way the LATEST instruction wins -- including over a previous configure_devices pin.
+            if use_gpu == 'none':
+                self.configure_devices('cpu')
+            else:
+                self._sharding_configured = False
+                self.set_devices()
+            self.create_projectors()   # the platform may have changed: refresh the static
+                                       # kernel-algorithm flags baked from the tile policy
 
     def verify_valid_params(self):
         """
@@ -2814,7 +2860,12 @@ class TomographyModel(ParameterHandler):
         # already resident on these devices may be returned by to_sino as a no-copy reshard that
         # SHARES the caller's buffers (or unchanged, e.g. prepare_sino_for_devices) -- deleting
         # that would invalidate the caller's array, so leave it.
-        if isinstance(sinogram, jax.Array):
+        if init_error_sinogram is not None:
+            # RESUME path: the sinogram is never placed here (the error sinogram replaces its
+            # only use), so there are no fresh buffers of ours to free -- and `sinogram` still
+            # IS the caller's array, which must not be deleted.
+            own_sinogram = False
+        elif isinstance(sinogram, jax.Array):
             own_sinogram = set(sinogram.devices()).isdisjoint(self.sino_placement.devices)
         else:
             own_sinogram = True   # numpy/host input -> to_sino copies to device buffers we own

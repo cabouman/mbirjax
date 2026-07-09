@@ -158,7 +158,6 @@ class ParameterHandler:
                 recompile_flag = entry.recompile_flag
                 print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
         print("----")
-        self.set_params(use_gpu=self.get_params('use_gpu'))
 
     @staticmethod
     def convert_arrays_to_strings(cur_params):
