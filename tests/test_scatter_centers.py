@@ -48,9 +48,10 @@ class TestScatterCenters(unittest.TestCase):
         np.testing.assert_array_equal(np.asarray(px_major), ref.T)        # (P, V)
 
     def test_chunked_wrapper_matches_single_call(self):
-        # Force the chunked path with a tiny threshold: results must match the single-call
-        # path EXACTLY for forward (same per-chunk programs, concatenated) and to summation
-        # order for back (the chunk accumulation reorders the view sum).
+        # Force the chunked path with a tiny threshold: chunked and single-call results match to
+        # float-reorder NOISE -- bit-exact on CPU, but a few float32 ULP apart on GPU, where the
+        # chunk boundaries reorder a reduction (the forward channel scatter and the back view sum).
+        # So both are gated with a tolerance, not bit-equality (measured GPU delta ~1e-5 abs).
         model = make_model()
         recon_shape = model.get_params('recon_shape')
         idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=False)
@@ -67,7 +68,8 @@ class TestScatterCenters(unittest.TestCase):
             back_chunked = np.asarray(pf.sparse_back_project(sino, idx))
         finally:
             projectors.N_PC_SINGLE_CALL_MAX_BYTES = saved
-        np.testing.assert_array_equal(fwd_chunked, fwd_single)
+        np.testing.assert_allclose(fwd_chunked, fwd_single, rtol=1e-5,
+                                   atol=1e-5 * np.abs(fwd_single).max())
         np.testing.assert_allclose(back_chunked, back_single, rtol=1e-5,
                                    atol=1e-5 * np.abs(back_single).max())
         # Also with owned views (the sharded path's calling convention): an odd-sized subset
@@ -80,7 +82,8 @@ class TestScatterCenters(unittest.TestCase):
         finally:
             projectors.N_PC_SINGLE_CALL_MAX_BYTES = saved
         self.assertEqual(fwd_o.shape[0], len(owned))
-        np.testing.assert_array_equal(fwd_o_chunked, fwd_o)
+        np.testing.assert_allclose(fwd_o_chunked, fwd_o, rtol=1e-5,
+                                   atol=1e-5 * np.abs(fwd_o).max())
 
     def test_wrapper_refuses_outer_jit(self):
         # The CONCRETENESS contract: inside an outer jit the centers would become tracers
