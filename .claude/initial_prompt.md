@@ -26,25 +26,42 @@ Greg challenged the P2c synthetic verdict with real data; the Lilly D01788 inves
 (reproduction, ablations, revised plan-only proposal) is fully recorded in the plan doc's
 P2c CORRECTION section.  What remains in flight:
 
-1. **A synthetic reproduction of the Lilly seam stripes is still NOT achieved** (two
-   attempts, results already retrieved to `plans/experiments/flash_remediation/results/`):
-   `structured_widefan` (Lilly's R/SID 0.2, unit weights, 40 iters) was CLEAN (no_taper
-   seam-vs-ref 1e-4), and `widefan_noise15` (photon noise + transmission weights + 15
-   iters) raised all variants to ~2e-3 but WITHOUT Lilly's signature ordering (its taper
-   0.0026 ≥ no_taper 0.0020 ≥ deep 0.0016 — on Lilly, taper beat no_taper 11×; the ~2e-3
-   is likely noise-realization sensitivity, not the structural stripes).  Remaining
-   suspects: detector-rotation correction residue, dynamic range / regularization balance,
-   real object structure at the seam, det_row_offset asymmetry.  Either iterate further
-   (cheap sbatch runs via `split_seam_repro.py` RUNS entries) or report the reproduction
-   gap honestly — do not paper over it.
-2. **`phase_2c_split_results.html` still needs the real-data correction section** (Greg
-   approved): Lilly reproduction + figures + corrected verdict + the synthetic-repro
-   outcome from (1).  Lilly figures are already at
-   `plans/experiments/flash_remediation/figures/p2c_lilly_{seam_xz,seam_profiles,ablation_rms}.png`
-   (gitignored) — register in `embed_report_figures.py` FIG_MAP, write captions, re-embed.
-   Also revise the page's TL;DR/§3 verdict and the `index.html` Phase-2c card (both still
-   state the withdrawn "drop the taper" conclusion).
-3. The revised proposal (geometry-derived h_recon) is PLAN ONLY — Greg said no code yet.
+1. **The P2c page was REWRITTEN 2026-07-09** (Greg-approved real-data-first storyline:
+   problem → cause → interventions → synthetic lessons + honest gap); figures are the
+   windowed variant montages from `lilly_variant_figures.py`.  Key late finding folded
+   in: **at 8× downsampling (the new fast-turnaround workhorse) the stripes persist and
+   the shipped taper STOPS working** (6.1e-3 vs no-taper 7.9e-3), while the
+   geometry-derived extension fixes it (9.0e-4; formula depth h_recon=9 == 12) — the
+   h_recon proposal is a defect fix, not a cleanup.  All embedded, preview-verified,
+   staged.
+2. **The synthetic reproduction is CLOSED (2026-07-09 evening)** — the stripes' driver
+   is the SUB-ROW MISALIGNMENT between the sino cut row and the recon split slice (~0.4
+   rows on Lilly).  Found by REVERSE ablation on the real data (consistent sino stripes
+   7.7e-3 → inconsistency out; unit weights stripe 8.5e-3 → weights out; zeroed axial
+   offsets CLEAN 1.1e-5, a 740× drop) after eleven build-up conditions failed; confirmed
+   by a fully synthetic dose-response (det_row_offset 0.15/0.30/0.45 rows →
+   7e-5/2.7e-4/3.3e-3, object-INDEPENDENT, zigzag signature, the real Lilly point on the
+   curve).  Mechanism refinement: aligned symmetric truncation is benign at h=5; default
+   synthetic models lock the grids (mismatch always 0) so they can never show this
+   artifact.  Full chain: plan doc P2c CORRECTION + `split_seam_lilly8x.py` header +
+   `lilly_consistency_check.py`/`lilly_cons2.py`.  Also from earlier in the day: the
+   library-version confound was checked and ruled out (both 568f6b7 and the current
+   branch stripe; the shipped taper split at the current branch is clean at 4×,
+   4.1e-4), with provenance proven from the git reflog after Greg flagged checkout
+   ambiguity.  WORKFLOW LESSONS (Greg, 2026-07-09): show provenance BEFORE claiming
+   version-dependent results (the editable install uses a META-PATH finder — assert
+   mbirjax.__file__ in-process); when build-up search stalls, REVERSE-ablate the real
+   failing case.
+3. The proposals are PLAN ONLY — Greg said no code yet.  **`phase_2d_remedies.html`
+   (added 2026-07-09) is the synthesis**: per-case verdicts with rationale, equations,
+   code sketches, and pros/cons — axial = extend to the exact bound (1+R/SID)
+   AUTOMATICALLY in auto_set_recon_geometry, R from the RECON grid so it composes with
+   lateral padding (Greg: a holder always leaves the FoV at one end, so truncation is
+   the norm; costs = default-shape change → re-baseline the regression dashboards);
+   lateral = DETECT-AND-WARN only (deliberate do-nothing on
+   auto-padding); split = geometry h_recon as default + `align_split_grid` opt-in (at
+   ρ=1 the grids are commensurate, so alignment needs a sub-slice recon-grid shift — it
+   is NOT reachable by index choice) + taper retired with the change.
 
 ## Standing context
 

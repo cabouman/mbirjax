@@ -81,12 +81,29 @@ self-contained (figures embedded) and read in order.</p>
 </a>
 
 <a class="page" href="phase_2c_split_results.html">
-  <h2>Phase 2c — The split_sino_recon seam, settled</h2>
-  <p>The seam A/B lands cleanly: the sinogram overlap is load-bearing (truncating at the
-  split costs a visible seam band, even on smooth objects), while the sine taper is not —
-  with the overlap at full weight the split reproduces the unsplit reconstruction to the
-  float-noise floor. Proposed change: drop the taper, keep the overlaps.
-  <strong>Complete.</strong></p>
+  <h2>Phase 2c — The split_sino_recon seam: the stripes, their cause, and the fix</h2>
+  <p>On real data (Lilly D01788) the no-taper split produces structural &plusmn;40% seam
+  stripes. Reproduced synthetically and root-caused: the load-bearing driver is a sub-row
+  misalignment between the sinogram cut row and the recon split slice (~0.4 rows on
+  Lilly; default synthetic models lock the grids and can never show it), acting on the
+  extension-end truncation. The shipped sine taper suppresses the stripes at 4&times;
+  downsampling but <em>fails at 8&times;</em>; the geometry-derived deeper extension
+  fixes both regimes, and exact cut&ndash;split alignment removes the driver at zero
+  cost. Proposals (plan only): h<sub>recon</sub> from geometry and/or align the split
+  with the cut. <strong>Complete.</strong></p>
+</a>
+
+<a class="page" href="phase_2d_remedies.html">
+  <h2>Phase 2d — Recommended remedies</h2>
+  <p>The synthesis: per case (axial, lateral, split seam), the proposed fix with
+  rationale, equations, implementation sketches, and an honest pros/cons weighing.
+  Verdicts: axial — extend to the exact geometric bound (1 + R/SID, R from the recon
+  grid) automatically in <code>auto_set_recon_geometry</code> (a holder always leaves
+  the FoV at one end, so truncation is the norm); lateral — detect and warn, deliberately
+  no auto-padding (cover is not derivable and under-padding is catastrophic); split seam
+  — geometry-derived h<sub>recon</sub> as the default, grid-shift alignment opt-in,
+  taper retired with it.
+  All plan-only. <strong>Complete.</strong></p>
 </a>
 
 <div class="page pending">

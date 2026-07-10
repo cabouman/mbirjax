@@ -46,9 +46,13 @@ FIG_MAP = {
         'P2b knee curves by regime': 'p2b_knee_regimes.png',
     },
     'phase_2c_split_results.html': {
+        'Lilly D01788 x-z sections near the seam': 'p2c_lilly_stripes_xz.png',
+        'Lilly D01788 seam profiles': 'p2c_lilly_seam_profiles.png',
+        'Lilly D01788 split variants at 4x': 'p2c_lilly_variants.png',
+        'Lilly D01788 seam ablations per-slice RMS': 'p2c_lilly_ablation_rms.png',
+        'Lilly D01788 split variants at 8x': 'p2c_lilly_variants_ds8.png',
         'P2c structured x-z sections vs unsplit reference': 'p2c_structured_xz.png',
-        'P2c structured z profile across the split': 'p2c_structured_z_profile.png',
-        'P2c smooth z profile across the split': 'p2c_smooth_z_profile.png',
+        'Synthetic reproduction of the seam stripes': 'p2c8_offset_reproduction.png',
     },
 }
 

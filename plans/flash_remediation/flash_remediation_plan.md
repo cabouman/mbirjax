@@ -503,8 +503,148 @@ slice 231):
   5 ≈ **1.1 slices** → 74× stripes.  The original synthetic had R/SID 0.125 → **0.6
   slices** → invisible (2e-5): the synthetic verdict was an artifact of a fortunately
   narrow fan angle, and the sensitivity to fractional-slice mismatch is much steeper than
-  assumed.  Synthetic reproduction at R/SID 0.2 (`structured_widefan` run in
-  `split_seam_repro.py`) added to close the loop.
+  assumed.  *(The fan-angle attribution was later SUPERSEDED — see the
+  reproduction-closed bullet below: the wide-fan replication stayed clean; the real
+  blind spot was the locked detector-row/slice grids.)*
+- **Synthetic reproduction NOT yet achieved (honest gap, 2026-07-09)** — two attempts in
+  `split_seam_repro.py`: `structured_widefan` (R/SID 0.2, unit weights, 40 iters;
+  unexplained depth ~1.0 slices ≈ Lilly's) came back CLEAN (no_taper seam-vs-ref ~1e-4),
+  so mismatch depth alone is NOT sufficient; `widefan_noise15` (photon noise +
+  transmission weights + 15 iters) raised all variants to ~2e-3 but WITHOUT Lilly's
+  signature ordering (taper 0.0026 ≥ no_taper 0.0020 ≥ deep 0.0016 — on Lilly the taper
+  wins 11×) → noise-realization sensitivity, not the stripes.  Offset-asymmetry suspect
+  weakened by inspection: the synthetic already carries a 0.5-row/slice fractional
+  misalignment (even-count centered grids) vs Lilly's ~0.1–0.4; NSI's detector-rotation
+  correction on this scan is a ~0.04° resample — also unlikely.  **A library-version
+  confound ran through the whole comparison** (found 2026-07-09): the Lilly stripes come
+  from 568f6b7 (6/26), ALL synthetic probes from `greg/kernel_investigation` post-kernel-
+  campaign.  **RULED OUT same day** by `lilly_head_check.py` (the Lilly no-taper split
+  re-run against the current branch, single variable = library version): the current
+  branch stripes at full strength (peak per-slice seam RMS 7.3e-3 vs the 6/26 run's
+  ~8e-3, >200× background) — the stripes are a property of the data + split geometry,
+  not of either projector version, and the revised h_recon proposal applies to the
+  current library as-is.  Provenance verified from records after Greg flagged checkout
+  ambiguity (the repo hosting the editable install was switched 568f6b7 →
+  kernel_investigation during the day): the git reflog (switch at 16:43) + volume
+  timestamps confirm the repro (12:29) and ablations (16:12–16:31) ran at 568f6b7 and
+  the head check (17:29) at e53d5c5, with the job log printing the live commit.
+  GOTCHA for future version A/Bs: the conda env's editable install uses a META-PATH
+  finder, so PYTHONPATH-ing a worktree would silently import the wrong version — always
+  assert `mbirjax.__file__` inside the process.  Confirming variant (`lilly_shipped_check.py`,
+  same day): the SHIPPED `split_sino_recon` (taper and all) at the current branch is
+  CLEAN on Lilly — peak 4.1e-4 at the split, smooth decay, matching the 6/26-era taper
+  ablation (6.5e-4) and Greg's stripes-went-away-with-the-taper experience — so the
+  taper's fix carries over to the current library too.
+- **The 8× regime probe (2026-07-09, Greg's request; `lilly_ds8_check.py` /
+  `lilly_ds8_deep.py`): stripes persist AND the taper stops working.**  At 8× detector
+  downsampling + 8× view subsampling (225 views, 235×187 detector, split at slice 116;
+  the governing mismatch is scale-free, still ~1.05 unexplained slices) the no-taper
+  split stripes at peak seam RMS 7.9e-3 — and the sine taper only trims it to **6.1e-3**
+  (vs the 11× fix at 4×; banding visible in the tapered recon itself).  The
+  geometry-derived extension still fixes it: **9.0e-4 at h_recon = 9 (the formula
+  value), identical at h_recon = 12** — depth beyond the formula buys nothing, as
+  cause-removal predicts.  Interpretation: the taper is a SUPPRESSOR whose effectiveness
+  is regime-dependent (view count / per-bin statistics shifted the balance); the matched
+  extension removes the cause and carries across regimes.  Practical upshot: **the
+  shipped split stripes at coarse downsampling** — the h_recon proposal is a defect fix,
+  not a cleanup.  8× = the fast-turnaround workhorse for further seam work.
+- **Page rewrite (2026-07-09, Greg-approved storyline)**: `phase_2c_split_results.html`
+  restructured real-data-first (problem → cause incl. the unexplained-band cartoon →
+  interventions with windowed recon+difference montages at 4× and 8× → synthetic
+  contributions + blind-spot lesson + honest gap → reproduction); the
+  announce-then-retract record lives only here in the plan doc.  Figures:
+  `lilly_variant_figures.py` (recon window 0–0.05 so the body spans the grayscale,
+  difference ±0.025 ≈ p99 of |split−unsplit|; body 0.013–0.035, pins 0.17–0.2).
+- **REPRODUCTION CLOSED + MECHANISM REFINED (2026-07-09 evening): the stripes' driver is
+  the SUB-ROW MISALIGNMENT between the sino cut row and the recon split slice.**  The
+  hunt (all in `split_seam_lilly8x.py`'s header + `lilly_consistency_check.py` /
+  `lilly_cons2.py`):
+  - Build-up rounds 1–4 at Lilly-matched R/SID 0.21 / 8×-scale ALL CLEAN (<2× bg): solid
+    10× pins, transmission_root texture (exonerated by measurement too — Lilly line
+    integrals are mild, p99 ~0.6, weights ≥~0.55), photon noise, segmented pins matching
+    the real 1–3-slice chains (measured from the ref volume), row binning — LINEAR
+    binning is PROVABLY inert (averaging line integrals = projecting an axially smoothed
+    object: still consistent), transmission-space binning's Jensen gap too weak (~1e-3)
+    at this contrast.
+  - REVERSE ablation on the real problem (Greg's simplify-the-data direction): consistent
+    sino (= forward projection of the ref recon) STRIPES 7.7e-3/298× → inconsistency
+    ruled out; + unit weights STRIPES 8.5e-3 → weights ruled out; + axial offsets zeroed
+    (odd slices → split exactly on iso) CLEAN 1.1e-5 → **740× drop, driver found**.
+  - Forward confirmation, fully synthetic: det_row_offset ∈ {0.15, 0.30, 0.45} rows with
+    the recon grid centered (relative mismatch = the offset): 7.3e-5 / 2.7e-4 / 3.3e-3 —
+    steeply superlinear; smooth body at 0.45 = 3.3e-3, **object-INDEPENDENT** (the pins
+    were only where the stripes were visible); every-other-slice zigzag ±15–19%
+    one-sided above the split, decaying over ~10 slices — the Lilly signature, and the
+    real Lilly point (mismatch |0.45−0.05| ≈ 0.4, 7.9e-3) sits on the synthetic curve.
+    Figure `p2c8_offset_reproduction.png` (embedded in the page §4).
+  - Mechanism refinement: at EXACT cut–split alignment the symmetric per-half end
+    deficit is benign at h=5 even at R/SID 0.21 — the depth formula sets the scale but
+    the misalignment breaks the halves' symmetry and converts it into the alternating
+    seam disagreement.  Default synthetic models CANNOT show this artifact: they place
+    both grids symmetrically, so cut and split come out mutually aligned (even the
+    "0.5-offset" widefan case had both shifted together → relative mismatch 0).  Real
+    scans position the grids independently (NSI: det_row_offset −1.95 rows,
+    recon_slice_offset +1.95 slices → cut 0.05 off iso, split 0.45 off).
+  - **NEW FIX CANDIDATE (plan only): align the split with the cut** — alignment alone
+    took the consistent-Lilly seam 8.5e-3 → 1.1e-5 at default h_recon=5, better than the
+    deep extension (9.0e-4), no extra slices.  IMPLEMENTABILITY CAVEAT (2026-07-09, late):
+    at pitch ratio ρ=1 (the default) the row and slice grids are COMMENSURATE, so the
+    mismatch is INVARIANT under every choice of cut row / split slice — alignment is only
+    reachable via an OPT-IN sub-slice shift of the global recon grid (≤ δ_slice/2), which
+    moves the output sampling vs recon() (not bit-comparable / registration-identical).
+    When ρ≠1 an index search can reduce it without a shift.  Menu for Phase 4:
+    geometry-derived h_recon as DEFAULT (margin absorbs the ≤0.5 mismatch) +
+    `align_split_grid` opt-in, taper retired with the h_recon change (full analysis in
+    `phase_2d_remedies.html`).
+  - Method lessons: (a) synthetic blind spots now have two instances with one root —
+    geometry symmetry; stress conclusions at real datasets' governing ratios AND with
+    their broken symmetries; (b) when build-up search stalls, REVERSE-ablate the real
+    failing case — it converges by construction (Greg's direction); (c) linear vs
+    nonlinear binning: averaging line integrals is inert, count-space binning is not.
+- **Phase 2d page ADDED (2026-07-09, Greg-requested): `phase_2d_remedies.html`** — the
+  synthesis: per-case remedies with rationale, equations, implementation sketches, and
+  pros/cons incl. deliberate do-nothing.  Verdicts: AXIAL = extend to the exact bound
+  automatically in `auto_set_recon_geometry` (Greg's call: R computed from the RECON
+  grid — composes with lateral padding; a sinogram-derived R would silently under-pad z
+  after lateral cover-padding — and always-on because a holder virtually always leaves
+  the FoV at one end, so truncation is the norm, waste ≤ the other end's ~5–10%, and no
+  threshold exists; cost = default-shape change → re-baseline the regression
+  dashboards).  REFINED PER GREG 2026-07-09 (late): compute the excess PER END —
+  E_end = max(0, |v_end|·(SID+R)/SDD − H_iso/2) with v_end the detector row-edge heights
+  INCLUDING det_row_offset (translate detector up → top wedge taller, bottom shorter; a
+  symmetric scale under-pads one end by the offset term); ceil per end, clamp at 0,
+  shift recon_slice_offset by (E_top−E_bot)/2; helical z-shifts attach per end (E_top at
+  z_max, E_bot at z_min); implement via the model's own coordinate chain
+  (recon_ijk_to_xyz → geometry_xyz_to_uv_mag → detector_uv_to_mn inverted at the row
+  edges, worst case y=−R); side benefit = fixes today's det_row_offset-blind auto
+  centering (NSI hand-compensates via recon_slice_offset).  `scale_recon_shape` STAYS a
+  pure fixed scaler (Greg) — just WARN on uncompensated lateral growth.  Open
+  implementation check: R = RoR-mask radius vs grid half-diagonal (√2 difference) —
+  check what the projector actually updates.  Asymmetric side-view SVG added to the
+  page (made strongly asymmetric per Greg; TL;DR reorganized to one linked bullet per
+  case).  EDGE CASES analyzed on the page (Greg's question): det_channel_offset ≠ 0
+  leaves the z formulas unchanged (oblique rays have smaller z-slope — dividing by SDD
+  is conservative; the offset acts via the enlarged half-fan FoV → R, which flows
+  through since R comes from the recon shape; also exposes the lateral auto-shape's own
+  channel-offset blindness — sibling gap, out of scope); det_row_offset > H/2 is handled
+  by the max(0,·) clamps unchanged (near end gets no extension; clamp activates already
+  at offset ≈ (H/2)·(R/SID)/(1+R/SID)); add-only then wastes the unmeasured near end of
+  the offset-blind base slab — the full fix would TRIM it to v_near·(SID−R)/SDD (the one
+  appearance of the near-side factor), worth doing only for half-cone scans.
+  Translation + multiaxis-parallel have analogous per-end bounds — future work,
+  cone beam first (Greg). LATERAL = detect-and-warn only (cover not derivable, under-pad
+  catastrophic, O(s²) memory — the deliberate do-nothing case; detection per Greg
+  2026-07-09 = reuse the `_get_sino_indicator` support mask that
+  `auto_set_regularization_params` already computes for `auto_set_sigma_y` — support
+  touching the edge channels ⇒ truncated; free, no new threshold; its safety margin can
+  miss very faint truncation, the benign direction); SPLIT = geometry h_recon
+  default + `align_split_grid` opt-in + taper retired with it.  SPLIT REFINEMENTS per
+  Greg 2026-07-09 (late): R from RECON parameters (as axial); ρ written explicitly as
+  δ_row/(mag·δ_slice) — the physical content is the perpendicular-ray 1/mag conversion,
+  = 1 at defaults, no "δ_row at iso" intermediate; page now states WHY h_recon is small:
+  the seam sits at the perpendicular (iso) ray where cone divergence is minimal — §1's
+  wedge evaluated at h≈0 (excess h_sino·ρ·R/SID ≈ 1 slice) vs the slab ends where it
+  scales with the full detector half-height.  All plan-only.
 - **Both fixes work on Lilly** (seam max vs matching unsplit): shipped taper 6.5e-4 (11×
   better); **geometry-derived deep extension (h_recon 12, NO taper) 5.7e-4 at 15 iters,
   decaying to 3.2e-4 at 60** — the deep extension restores normal convergence at the seam
@@ -518,4 +658,7 @@ slice 231):
 - Methodological lesson (for lessons.md eventually): a synthetic validation inherits its
   geometry's blind spots — the fan angle silently gated this failure mode; stress
   synthetic conclusions at the real datasets' governing ratios before generalizing.
+  *(The fan-angle attribution was later SUPERSEDED — the wide-fan replication stayed
+  clean; the real blind spot was the locked detector-row/slice grids.  Final lesson form
+  in the reproduction-closed bullet above.)*
 
