@@ -56,3 +56,14 @@ unique `alt` text (so it works on the already-embedded files; it is idempotent).
 new figure is added to a report, add its `alt → png` entry to `FIG_MAP` at the top of that
 script.  The report prose (values quoted in captions and tables) is hand-written — if a
 rerun changes the numbers, update the text too.
+
+## Publishing the pages for live viewing
+
+```bash
+./publish_pages.sh                   # from this directory
+```
+
+Rsyncs the self-contained HTML pages (only — the destination is publicly served, so the
+plan doc, README, and scripts stay out) to `/depot/bouman/www/mbirjax/flash_remediation/`
+via gautschi.  Idempotent; rerun after every embed refresh.  Knobs (remote, destination,
+exact-mirror `DELETE`) at the top of the script.
