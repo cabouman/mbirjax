@@ -31,8 +31,8 @@ def get_2d_ror_mask(recon_shape, *, use_ror_mask=True, crop_radius_pixels=0, cro
     if use_ror_mask is False:
         if crop_radius_pixels != 0 and crop_radius_fraction != 0.0:
             raise ValueError('crop_radius_pixels and crop_radius_fraction must be zero if use_ror_mask is set to False.')
-            
-        return np.ones_like(recon_shape[:2])
+
+        return np.ones(recon_shape[:2], dtype=bool)
 
     elif use_ror_mask is True:
         # Set up a mask to zero out points outside the ROR
@@ -191,6 +191,16 @@ def gen_pixel_partition(recon_shape, num_subsets, use_ror_mask=True):
         warning += 'reconstruction.  \nReducing the number of subsets to equal the number of indices.'
         warnings.warn(warning)
 
+    # A single subset needs no permutation: the subsets are SORTED below, so a shuffle would be
+    # exactly undone -- but it would consume global np.random state.  Skipping it keeps
+    # full-index "partitions" (gen_full_indices: the Hessian diagonal, the direct-recon init)
+    # from advancing the RNG, so a restarted recon (init_recon + first_iteration, with
+    # caller-held partitions) reproduces a continuous run's per-iteration subset
+    # permutations -- and hence its trajectory -- exactly.  The returned partition is
+    # bit-identical to the permute-then-sort path.
+    if num_subsets == 1:
+        return jnp.array(np.sort(indices).reshape(1, -1))
+
     # Determine the number of indices to repeat to make the total number divisible by num_subsets
     num_indices_per_subset = int(np.ceil((len(indices) / num_subsets)))
     array_size = num_subsets * num_indices_per_subset
@@ -338,13 +348,21 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
     Returns:
         (jax array): Weights used in mbircone reconstruction, with the same array shape as ``sinogram``
     """
+    # The masks below are element-wise comparisons, so they inherit the sharding of their source
+    # (the sinogram or init_recon) rather than being pinned to a single device -- that keeps the
+    # init_recon=None path sharding-transparent (delta_metal follows the sinogram, so the final
+    # element-wise weights are sharded with no gather).  NOTE: the init_recon path still materializes
+    # single-device intermediates -- forward_project here uses the default gathered output, and
+    # multi_threshold_otsu may gather -- so it is not yet memory-bounded for very large sharded
+    # problems; sharding that path is the mar/preprocessing follow-on.
+
     # If init_recon is not provided, then identify the distorted sino entries with Otsu's thresholding method.
     if init_recon is None:
         print("init_recon is not provided. Automatically determine distorted sinogram entries with Otsu's method.")
         # assuming three categories: metal, non_metal, and background.
         [bk_thresh_sino, metal_thresh_sino] = mjp.multi_threshold_otsu(sinogram, classes=3)
         print("Distorted sinogram threshold = ", metal_thresh_sino)
-        delta_metal = jnp.array(sinogram > metal_thresh_sino, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
+        delta_metal = (sinogram > metal_thresh_sino).astype(jnp.float32)
 
     # If init_recon is provided, identify the distorted sino entries by forward projecting init_recon.
     else:
@@ -355,12 +373,12 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
 
         print("metal_threshold = ", metal_threshold)
         # Identify metal voxels
-        metal_mask = jnp.array(init_recon > metal_threshold, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
+        metal_mask = (init_recon > metal_threshold).astype(jnp.float32)
         # Forward project metal mask to generate a sinogram mask
         metal_mask_projected = ct_model.forward_project(metal_mask)
 
         # metal mask in the sinogram domain, where 1 means a distorted sino entry, and 0 else.
-        delta_metal = jnp.array(metal_mask_projected > 0.0, dtype=jnp.dtype(jnp.float32), device=ct_model.main_device)
+        delta_metal = (metal_mask_projected > 0.0).astype(jnp.float32)
 
     # weights for undistorted sino entries
     weights = jnp.exp(-sinogram*(1+gamma*delta_metal)/beta)
@@ -368,24 +386,41 @@ def gen_weights_mar(ct_model, sinogram, init_recon=None, metal_threshold=None, b
     return weights
 
 
-def gen_weights(sinogram, weight_type):
+def gen_weights(sinogram, weight_type, ct_model=None):
     """
     Compute optional weights used in MBIR reconstruction based on the noise model.
 
     The weights should be proportional to the inverse variance of the noise for each sinogram entry.
     They can be used to improve reconstruction quality.
 
+    The result is returned where the input lives, so it feeds reconstruction without landing a large
+    array on a single device:
+
+    - a host (NumPy) sinogram yields host weights (reconstruction streams them to the devices
+      shard-by-shard);
+    - a JAX array yields JAX weights inheriting its sharding (a view-sharded sinogram gives
+      view-sharded weights, with no cross-device communication or gather).
+
+    To build the weights already distributed across a multi-device reconstruction -- avoiding any
+    single-device copy of a large host sinogram -- pass the model as ``ct_model``: the sinogram is
+    placed in the model's view-sharded device form first, then weighted per shard.
+
     Args:
-        sinogram (jax.Array): A 3D JAX array of shape (num_views, num_det_rows, num_det_channels)
+        sinogram (ndarray or jax.Array): A 3D array of shape (num_views, num_det_rows, num_det_channels)
             representing the sinogram.
         weight_type (str): The type of noise model to use for weighting. Must be one of:
             - 'unweighted': Use uniform weights (all ones).
             - 'transmission': Use exponential decay, `exp(-sinogram)`.
             - 'transmission_root': Use square-root decay, `exp(-sinogram / 2)`.
             - 'emission': Use reciprocal decay, `1 / (abs(sinogram) + 0.1)`.
+        ct_model (TomographyModel, optional): If given, distribute the sinogram in this model's
+            sinogram device form (view-sharded across its devices) before weighting, so the weights
+            are returned sharded and ready for reconstruction with no single-device copy.  Defaults to
+            None (the result preserves the input's residence, as described above).
 
     Returns:
-        jax.Array: A 3D array of weights with the same shape as the input sinogram.
+        ndarray or jax.Array: A 3D array of weights with the same shape as the input sinogram, on the
+        host or sharded across devices to match the input (or ``ct_model``).
 
     Raises:
         Exception: If `weight_type` is not one of the supported options.
@@ -400,30 +435,26 @@ def gen_weights(sinogram, weight_type):
         >>> weights.shape
         (180, 64, 128)
     """
-    weight_list = []
-    num_views = sinogram.shape[0]
-    batch_size = 128
-    main_device = jax.devices('cpu')[0]
-    try:
-        gpus = jax.devices('gpu')
-        worker_device = gpus[0]
-    except RuntimeError:
-        worker_device = main_device
-
-    for i in range(0, num_views, batch_size):
-        sino_batch = jax.device_put(sinogram[i:min(i + batch_size, num_views)], worker_device)
-
-        if weight_type == 'unweighted':
-            weights = jnp.ones(sino_batch.shape)
-        elif weight_type == 'transmission':
-            weights = jnp.exp(-sino_batch)
-        elif weight_type == 'transmission_root':
-            weights = jnp.exp(-sino_batch / 2)
-        elif weight_type == 'emission':
-            weights = 1.0 / (jnp.absolute(sino_batch) + 0.1)
-        else:
-            raise Exception("gen_weights: undefined weight_type {}".format(weight_type))
-        weight_list.append(jax.device_put(weights, main_device))
-
-    weights = jnp.concatenate(weight_list, axis=0)
+    # Optionally place the sinogram in the model's view-sharded device form first, so the weights are
+    # built per shard (no single-device copy of a large host sinogram).
+    if ct_model is not None:
+        sinogram = ct_model._shard_sinogram(sinogram)
+    # The weights are an element-wise function of the sinogram, computed in one pass with the input's
+    # OWN array module so the result stays where the input is: a host (NumPy) sinogram yields host
+    # weights, a JAX array yields JAX weights inheriting its sharding (each shard processed in place --
+    # element-wise ops need no cross-device communication).  This keeps a large host sinogram OFF the
+    # devices until reconstruction streams it shard-by-shard, and never lands the whole array on one
+    # device.  On a single device the peak is ~2x the sinogram (input + output); shard the sinogram
+    # (or pass ct_model) when it is too large for one device.
+    xp = jnp if isinstance(sinogram, jax.Array) else np
+    if weight_type == 'unweighted':
+        weights = xp.ones_like(sinogram)        # ones_like (not ones) preserves the input's sharding
+    elif weight_type == 'transmission':
+        weights = xp.exp(-sinogram)
+    elif weight_type == 'transmission_root':
+        weights = xp.exp(-sinogram / 2)
+    elif weight_type == 'emission':
+        weights = 1.0 / (xp.absolute(sinogram) + 0.1)
+    else:
+        raise Exception("gen_weights: undefined weight_type {}".format(weight_type))
     return weights

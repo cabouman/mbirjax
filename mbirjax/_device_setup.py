@@ -150,4 +150,60 @@ def _setup_devices() -> None:
     os.environ.setdefault("XLA_FLAGS", flag)
 
 
+def _quiet_benign_xla_logs() -> None:
+    """Hide jaxlib's benign multi-GPU allocator chatter by raising its C++ log level.
+
+    On the first multi-GPU allocation XLA's VMM allocator probes advanced
+    memory-handle types (FABRIC / POSIX_FD) for fast inter-GPU sharing.  In
+    environments that forbid them (most single-node jobs / containers) it logs a
+    scary-looking but HARMLESS warning -- ``cuMemCreate with FABRIC+POSIX_FD handle
+    types failed: CUDA_ERROR_NOT_PERMITTED; will retry with simpler handle types``
+    -- and then succeeds with a fallback handle.  These are C++ WARNING-level logs;
+    ``TF_CPP_MIN_LOG_LEVEL=2`` drops INFO+WARNING while keeping ERROR/FATAL (and all
+    Python tracebacks / ``warnings.warn`` messages, which use a different path), so
+    real failures still surface.
+
+    Set via ``setdefault`` so it is overridable: export ``TF_CPP_MIN_LOG_LEVEL=0``
+    (or ``1``) before importing mbirjax to get the full jaxlib logs back.  Like the
+    device flag above, this only takes effect if applied BEFORE jax is imported
+    (the value is read once at jaxlib init); if jax is already imported it is a
+    harmless no-op.
+    """
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
+
+# ── Device accessors (single source of truth for jax.devices) ─────────────────
+# The rest of mbirjax queries the available devices through these helpers instead
+# of calling jax.devices() ad hoc, so device discovery lives in ONE place.  JAX
+# already caches its backend's device list per process, so these add naming and a
+# single chokepoint, not a second cache.  jax is imported lazily (inside the
+# functions) so importing this module never initialises a JAX backend -- the XLA
+# device-count flag set above must take effect BEFORE the first jax import.
+
+def gpu_devices():
+    """All GPU devices as a tuple, or () when there is no GPU backend."""
+    import jax
+    try:
+        return tuple(jax.devices("gpu"))
+    except RuntimeError:
+        return ()
+
+
+def cpu_devices():
+    """All (possibly virtual) CPU devices as a tuple."""
+    import jax
+    return tuple(jax.devices("cpu"))
+
+
+def default_devices():
+    """The default-platform devices: GPUs if any are present, otherwise CPUs.
+
+    Mirrors ``jax.devices()`` (no argument), which returns the highest-priority
+    available backend's devices -- GPU when a GPU backend exists, else CPU.
+    Returned as a list so callers can index/slice it directly.
+    """
+    return list(gpu_devices()) or list(cpu_devices())
+
+
+_quiet_benign_xla_logs()
 _setup_devices()

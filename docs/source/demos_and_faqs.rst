@@ -22,6 +22,41 @@ There are more demos here: `MBIRJAX demos <https://github.com/cabouman/mbirjax/b
 The separate repo `mbirjax_applications <https://github.com/cabouman/mbirjax_applications>`__ provides a wider variety of examples using real data.
 
 
+Data Generation
+---------------
+
+Most demos start from synthetic data created with :func:`~mbirjax.utilities.generate_demo_data`.  It builds a 3D
+phantom (a simplified Shepp-Logan head or a cube) and the corresponding simulated sinogram for a chosen
+geometry, so you can try MBIRJAX without a real dataset:
+
+.. code-block:: python
+
+    import mbirjax as mj
+    phantom, sinogram, params = mj.generate_demo_data(object_type='shepp-logan', model_type='cone',
+                                                      num_views=64, num_det_rows=128, num_det_channels=128)
+    angles = params['angles']
+    ct_model = mj.ConeBeamModel(sinogram.shape, angles,
+                                source_detector_dist=params['source_detector_dist'],
+                                source_iso_dist=params['source_iso_dist'])
+    recon, recon_dict = ct_model.recon(sinogram)
+
+Key options:
+
+* ``object_type`` -- ``'shepp-logan'`` or ``'cube'``.
+* ``model_type`` -- ``'parallel'``, ``'cone'``, or ``'translation'``; ``params`` returns the matching
+  geometry parameters (always the view ``angles``, plus the source distances for cone beam).
+* ``num_views``, ``num_det_rows``, ``num_det_channels`` -- the sinogram size; increase these (with a GPU)
+  to make a larger problem.
+* ``target_max_attenuation`` -- scales the phantom so its sinogram has a realistic peak attenuation
+  regardless of the array size (without it, the sinogram values grow with the volume size).
+
+The phantom and sinogram are always returned as host NumPy arrays, ready to pass to a reconstruction.
+On a multi-GPU machine the generation is automatically distributed across the available devices, so even
+large phantoms are built without exceeding the memory of a single GPU.  The phantom is a reference object;
+the sinogram is the input you would normally reconstruct.  See :ref:`synthetic-data-generation` for the
+full list of options and the related phantom generators.
+
+
 FAQs
 ----
 
@@ -44,7 +79,7 @@ Q: Why is my reconstruction blurry?
 +++++++++++++++++++++++++++++++++++
 
 A:  If your reconstruction is blurry, the first thing to try is to increase the sharpness parameter.  Values of
-``sharpness=1.0`` or ``sharpness=2.0`` are typical, but larger values can further improve sharpness.
+``sharpness=1.0`` or ``sharpness=1.5`` are typical, but larger values can further improve sharpness.
 You can also increase the assumed SNR by setting the parameter ``snr_db=35`` or ``snr_db=40``. This is similar to increasing sharpness but will also create higher contrast edges in the reconstruction.
 
 If the reconstruction remains blurry, it is often the case that some geometry parameter is incorrectly set for your data.
@@ -61,17 +96,18 @@ So you should find a fast GPU with the largest possible memory. These days that 
 The GPU will be hosted on a CPU, and it is best if that CPU also has even a larger amount of memory, ideally greater than 200GB.
 
 Note that a 2K x 2K x 2K reconstruction occupies 32GB of memory, not counting the sinogram or memory needed for processing.
-If your reconstruction is too large for your GPU memory, MBIRJAX will use CPU memory for some processing and then transfer
-to the GPU as needed; this reduces memory use but increases reconstruction time.  If you have no GPU or your GPU memory is small relative
-to the problem size, then all processing is done on the CPU.
+If your machine has multiple GPUs, MBIRJAX automatically divides the reconstruction across them: the memory
+available for the problem grows roughly in proportion to the number of GPUs, and large reconstructions typically
+get faster as well.  The log line at the start of each reconstruction (or ``model.device_summary``) reports which
+devices were used.  If you have no GPU, all processing is done on the CPU.  See :doc:`usr_multi_gpu` for details.
 
-If you have a parallel beam system, you can select a subset of rows of your sinogram, reconstruct them separately, and then
-concatenate them at the end.  If you have a cone beam system, you can reconstruct a subset of the central slices.  In either
-case, you can do a center cropped reconstruction as in Demo 3: Cropped Center, although as seen in that demo, this can
-introduce an intensity shift and other artifacts.
+If your reconstruction is still too large, then for a parallel beam system you can select a subset of rows of your
+sinogram, reconstruct them separately, and then concatenate them at the end.  If you have a cone beam system, you can
+reconstruct a subset of the central slices or use :meth:`~mbirjax.ConeBeamModel.split_sino_recon`.  In either case, you can do
+a center cropped reconstruction as in Demo 3: Cropped Center, although as seen in that demo, this can introduce an
+intensity shift and other artifacts.
 
-We continue to improve the time and memory efficiency of MBIRJAX and will investigate multi-GPU/multi-CPU solutions.
-So stay tuned for further improvements.
+We continue to improve the time and memory efficiency of MBIRJAX.
 
 
 Q: Why does my reconstruction have artifacts?

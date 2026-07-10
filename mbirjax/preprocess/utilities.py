@@ -5,8 +5,27 @@ import os
 import jax.numpy as jnp
 import jax
 import cv2
+import h5py
 import mbirjax as mj
 import scipy
+
+from . import pipeline
+
+def _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean, flat_indices, defective_pixel_array_jax):
+    """Per-view-batch transmission kernel (pure device-array op).
+
+    Computes ``-log`` of the dark-corrected, blank-normalized object scan, sets shared defective
+    pixels to NaN, and interpolates the NaNs.  ``blank_minus_dark = |blank_mean - dark_mean|`` is
+    precomputed by the caller (it does not vary across batches).
+    """
+    obj_batch = jnp.abs(obj_batch - dark_scan_mean)
+    # jnp.nan for non-positive ratios so nanmedian later removes them along with defective pixels.
+    sino_batch = -jnp.log(jnp.where(obj_batch / blank_minus_dark > 0, obj_batch / blank_minus_dark, jnp.nan))
+    if flat_indices is not None:
+        # Shared defective pixels (same in every view) -> NaN for nanmedian interpolation.
+        sino_batch = put_in_slice(sino_batch, flat_indices, jnp.nan)
+    return interpolate_defective_pixels(sino_batch, defective_pixel_array_jax)
+
 
 def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array=(), batch_size=90):
     """
@@ -29,8 +48,8 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_a
             A 3D dark scan of shape (num_dark_scans, num_det_rows, num_det_channels). 
             If `num_dark_scans > 1`, a pixel-wise mean will be computed.
         defective_pixel_array (ndarray, optional): 
-            An array of defective pixel indices. Format can be either 
-            (view_idx, row_idx, channel_idx) or (row_idx, channel_idx), if shared across views.
+            An array of defective pixel indices, one (row_idx, channel_idx) pair per row;
+            these pixels are treated as defective in every view.
             If `None`, invalid pixels are inferred from `NaN` or `inf` values.
         batch_size (int): 
             Number of views to process in each GPU batch.
@@ -38,124 +57,196 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_a
     Returns:
         ndarray: 
             The computed sinogram, with shape (num_views, num_det_rows, num_det_channels).
-    """    # Compute mean for blank and dark scans and move them to GPU if available
-    import tqdm
+    """
+    # Blank/dark means (device); blank_minus_dark does not vary across batches, so precompute it once.
     blank_scan_mean = jnp.array(np.mean(blank_scan, axis=0, keepdims=True))
     dark_scan_mean = jnp.array(np.mean(dark_scan, axis=0, keepdims=True))
+    blank_minus_dark = jnp.abs(blank_scan_mean - dark_scan_mean)
 
-    sino_batches_list = []  # Initialize a list to store sinogram batches
-
-    num_views = obj_scan.shape[0]  # Total number of views
-
-    num_defective_pixels = len(defective_pixel_array)
-    if num_defective_pixels > 0:
+    if len(defective_pixel_array) > 0:
         defective_pixel_array_jax = jnp.array(defective_pixel_array)
         flat_indices = jnp.ravel_multi_index(defective_pixel_array_jax.T, obj_scan.shape[1:])
     else:
         defective_pixel_array_jax = ()
         flat_indices = None
 
-    # Process obj_scan in batches
-    for i in tqdm.tqdm(range(0, num_views, batch_size)):
-
-        obj_scan_batch = obj_scan[i:min(i + batch_size, num_views)]
-        obj_scan_batch = jnp.array(obj_scan_batch)
-
-        obj_scan_batch = jnp.abs(obj_scan_batch - dark_scan_mean)
-        blank_scan_batch = jnp.abs(blank_scan_mean - dark_scan_mean)
-
-        # We use jnp.nan here because we'll later use np.nanmedian to get rid of nans and other defective pixels.
-        sino_batch = -jnp.log(jnp.where(obj_scan_batch / blank_scan_batch > 0, obj_scan_batch / blank_scan_batch, jnp.nan))
-
-        # We'll set all defective pixels to NaN to be able to use jnp.nanmedian in interpolate_defective_pixels
-        num_defective_pixels = len(defective_pixel_array)
-        if num_defective_pixels > 0:
-            # For obj_scan, we need to set the bad pixels at every view to 0, so we can't use put directly.
-            sino_batch = put_in_slice(sino_batch, flat_indices, jnp.nan)
-
-        sino_batch = interpolate_defective_pixels(sino_batch, defective_pixel_array_jax)
-        sino_batches_list.append(np.array(sino_batch))
-
-    sino = np.concatenate(sino_batches_list, axis=0)
+    sino = pipeline.map_view_batches(
+        obj_scan,
+        lambda obj_batch: _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean,
+                                               flat_indices, defective_pixel_array_jax),
+        batch_size)
     print("Sinogram computation complete.")
-
     return sino
 
 
-def interpolate_defective_pixels(sino, defective_pixel_array=()):
-    """
-    Interpolates defective sinogram entries with the mean of neighboring pixels.
+def _warn_unfilled(num_residual):
+    """Host-side warning hook (invoked via ``jax.debug.callback``) when some pixels could not be filled.
+
+    ``jax.debug.callback`` runs this on the host even from inside a jitted/traced kernel, so the dense
+    NaN-fill below can stay fully jittable while still surfacing the rare "cluster too big" case."""
+    num_residual = int(num_residual)
+    if num_residual > 0:
+        warnings.warn(f"NaN-fill: {num_residual} pixel(s) left after the fill passes (defective/zinger "
+                      f"clusters wider than the fill reach); setting them to 0. Increase num_passes if "
+                      f"this is unexpected.")
+
+
+def _box3x3_sum(x):
+    """Sum over each 3x3 (row, channel) window, per view, zero-padded at the detector edges.
+
+    ``x`` has shape (num_views, num_det_rows, num_det_channels); the window spans only the trailing two
+    (detector) axes.  Uses ``reduce_window`` -- a fused sliding-window sum -- so it does NOT materialize
+    nine shifted copies of the array (O(N) memory, unlike stack-the-9-neighbors-and-reduce)."""
+    return jax.lax.reduce_window(x, 0.0, jax.lax.add,
+                                 window_dimensions=(1, 3, 3),
+                                 window_strides=(1, 1, 1),
+                                 padding='SAME')
+
+
+def _interpolate_fill_pass(sino):
+    """One dense pass: replace each NaN pixel with the MEAN of its finite 3x3 in-view neighbors.
+
+    Finite pixels are unchanged.  A NaN with no finite neighbor stays NaN (it gets filled on a later
+    pass, as the surrounding NaN region shrinks inward).  Computed densely with two box sums (values and
+    a validity mask), so it is jittable and memory-light -- no per-NaN gather, no neighbor stack."""
+    is_nan = jnp.isnan(sino)
+    valid = (~is_nan).astype(sino.dtype)
+    filled = jnp.where(is_nan, jnp.zeros((), sino.dtype), sino)        # NaNs contribute 0 to the sum
+    neighbor_sum = _box3x3_sum(filled)
+    neighbor_count = _box3x3_sum(valid)
+    neighbor_mean = neighbor_sum / jnp.maximum(neighbor_count, 1.0)    # avoid 0/0 where no valid neighbor
+    return jnp.where(is_nan & (neighbor_count > 0), neighbor_mean, sino)
+
+
+def _fill_nan_pixels(sino, num_passes=3):
+    """Fill every NaN pixel with the mean of its finite 3x3 in-view neighbors, in ``num_passes`` dense
+    passes (each fills the NaN frontier inward by one pixel), then warn (host-side) about and zero any
+    pixel still NaN (a defective/zinger cluster wider than the fill reach).  Pure + fixed-shape ->
+    jittable.  Shared by ``interpolate_defective_pixels`` and the zinger correction -- they differ only
+    in HOW pixels are flagged NaN before calling this."""
+    for _ in range(num_passes):
+        sino = _interpolate_fill_pass(sino)
+    # ordered=True ties the callback to the data dependency so the warning fires before the result is
+    # consumed (rather than firing asynchronously and possibly being missed).
+    jax.debug.callback(_warn_unfilled, jnp.sum(jnp.isnan(sino)), ordered=True)
+    return jnp.nan_to_num(sino, nan=0.0)
+
+
+def _zinger_fill(sino, zinger_threshold, num_passes=3):
+    """Mark zinger pixels (anomalously negative: ``value < zinger_threshold``) and non-finite values NaN,
+    then fill them from their finite 3x3 in-view neighbors via :func:`_fill_nan_pixels`.  Pure +
+    fixed-shape -> jittable (per view-batch); ``zinger_threshold`` is a precomputed scalar."""
+    sino = jnp.where(jnp.isfinite(sino), sino, jnp.nan)        # +-inf / NaN -> NaN
+    sino = jnp.where(sino < zinger_threshold, jnp.nan, sino)   # flag zingers
+    return _fill_nan_pixels(sino, num_passes)
+
+
+def interpolate_defective_pixels(sino, defective_pixel_array=(), num_passes=3):
+    """Replace defective / non-finite sinogram pixels with the mean of their finite 3x3 in-view neighbors.
+
+    Invalid pixels are the non-finite entries (NaN / +-inf -- e.g. the transmission's ``obj/blank <= 0``
+    pixels) plus any pixel listed in ``defective_pixel_array`` (the same detector coords in every view).
+    They are marked NaN and then filled by ``num_passes`` dense neighborhood-mean passes: each pass
+    replaces every NaN that has >=1 finite neighbor with the mean of its finite 3x3 in-view neighbors, so
+    a NaN region shrinks inward by one pixel per pass.  ``num_passes`` thus bounds the largest fillable
+    dead-pixel cluster (radius ``num_passes``); any pixel still NaN afterward triggers a warning and is
+    set to 0.
+
+    This is a fully **jittable, fixed-shape** computation (dense ``reduce_window`` passes -- no
+    ``argwhere``, no data-dependent ``while`` loop), so the whole scan->sinogram kernel can be wrapped in
+    a single ``jax.jit``.  The fill uses the neighbor MEAN (not median): for dead pixels surrounded by
+    valid data the two are nearly identical, and they affect <1% of pixels.
 
     Args:
-        sino (jax array, float): Sinogram data with 3D shape (num_views, num_det_rows, num_det_channels).
-        defective_pixel_array (jax array): A list of tuples containing indices of invalid sinogram pixels, with the format (detector_row_idx, detector_channel_idx) or (view_idx, detector_row_idx, detector_channel_idx).
+        sino (jax array, float): (num_views, num_det_rows, num_det_channels).
+        defective_pixel_array (array or tuple): shared (det_row, det_channel) coords of defective pixels,
+            or () for none.  (The transmission caller already NaN-marks these; re-marking here is cheap
+            and keeps this function correct when called on its own.)
+        num_passes (int): number of dense fill passes = max fillable dead-pixel cluster radius.
 
     Returns:
-        2-element tuple containing:
-        - **sino** (*jax array, float*): Corrected sinogram data with shape (num_views, num_det_rows, num_det_channels).
-        - **defective_pixel_list** (*list(tuple)*): Updated defective_pixel_list with the format (detector_row_idx, detector_channel_idx) or (view_idx, detector_row_idx, detector_channel_idx).
+        jax array, float: sinogram with invalid pixels interpolated (any unfillable ones set to 0).
     """
+    num_views, num_rows, num_channels = sino.shape
 
-    sino_shape = sino.shape
-    sino = jnp.nan_to_num(sino, copy=False, nan=jnp.nan, posinf=jnp.nan, neginf=jnp.nan)
-
-    # First handle the defective_pixel_array, each of which goes across all views
-    # For each nan entry, we take the 3x3 neighbors in the same view and apply nanmedian.
-    sino = sino.reshape((sino_shape[0], -1))
-    neighbor_radius = 1
-
-    # Generate all i_offset and j_offset combinations.  num_nbrs_1d = 2 * neighbor_radius + 1
-    offsets = jnp.arange(-neighbor_radius, neighbor_radius + 1)
-    i_offsets, j_offsets = jnp.meshgrid(offsets, offsets, indexing='ij')  # Shape (num_nbrs_1d, num_nbrs_1d)
-    i_offsets = i_offsets.ravel()  # (num_nbrs_1d^2,)
-    j_offsets = j_offsets.ravel()  # (num_nbrs_1d^2,)
-    offsets_expanded = jnp.stack((i_offsets, j_offsets), axis=1)[None, :, :]  # (1, num_nbrs_1d^2, 2)
-
+    # Mark every invalid pixel NaN: non-finite values, plus the known shared defective pixels.
+    sino = jnp.where(jnp.isfinite(sino), sino, jnp.nan)
     if len(defective_pixel_array) > 0:
-        # Broadcast defective_pixel_array to match offset shapes
-        defective_pixel_expanded = defective_pixel_array[:, None, :]  # (num_defective_pixels, 1, 2)
+        # mode='clip' (a no-op for these in-bounds coords) keeps ravel_multi_index jittable -- the
+        # default mode='raise' forces a concrete bounds check that fails under jit.
+        defective_flat = jnp.ravel_multi_index(jnp.asarray(defective_pixel_array).T,
+                                               (num_rows, num_channels), mode='clip')  # (num_defective,)
+        sino = sino.reshape(num_views, -1).at[:, defective_flat].set(jnp.nan).reshape(
+            num_views, num_rows, num_channels)
 
-        # Add the indices and offsets to get valid neighbors, then convert to indices.  We use clip mode
-        # for raveling to stay in bounds.  If a neighbor is out of bounds, clipping will yield a neighbor.
-        neighbor_coords = defective_pixel_expanded + offsets_expanded  # (num_defective_pixels, num_nbrs_1d^2, 2)
-        flat_indices = jnp.ravel_multi_index(neighbor_coords.transpose(2, 0, 1),
-                                             sino_shape[1:], mode='clip')  # (num_defective_pixels, num_nbrs_1d^2)
+    # Dense neighborhood-mean fill, a fixed number of passes (shared with the zinger correction).
+    return _fill_nan_pixels(sino, num_passes)
 
-        # Gather neighbor values for all views and use nanmedian to replace the values in sino
-        neighbor_values_flat = sino[:, flat_indices]  # (num_views, num_defective_pixels, num_nbrs_1d^2)
-        median_values = jnp.nanmedian(neighbor_values_flat, axis=2)
-        flat_indices = jnp.ravel_multi_index(defective_pixel_array.T, sino_shape[1:])
-        sino = put_in_slice(sino, flat_indices, median_values)
 
-    # Repeat on individual nans until there are no more.  Each index now has 3 components.
-    sino = sino.reshape(sino_shape)
-    nan_indices = jnp.argwhere(jnp.isnan(sino))
-    offsets_expanded = jnp.stack((0*i_offsets, i_offsets, j_offsets), axis=1)[None, :, :]  # (1, num_nbrs_1d^2, 3)
-    num_nans = nan_indices.shape[0]
-    while num_nans > 0:
-        sino = sino.flatten()
 
-        nan_inds_expanded = nan_indices[:, None, :]  # (num_nans, 1, 3)
-        neighbor_coords = nan_inds_expanded + offsets_expanded  # (num_nans, num_nbrs_1d^2, 2)
-        flat_indices = jnp.ravel_multi_index(neighbor_coords.transpose(2, 0, 1),
-                                             sino_shape, mode='clip')  # (num_nans, num_nbrs_1d^2)
+def _rotation_kernel(sino_batch, det_rotation):
+    """Per-view-batch detector-rotation kernel (pure device-array op): rotate each view's
+    (row, channel) plane by ``det_rotation`` radians with bilinear interpolation, zero outside.
 
-        # Gather neighbor values for all views and replace the values, ignoring any nan values
-        neighbor_values_flat = sino[flat_indices]  # (num_nans, num_nbrs_1d^2)
-        median_values = jnp.nanmedian(neighbor_values_flat, axis=1)
-        flat_indices = jnp.ravel_multi_index(nan_indices.T, sino_shape)
-        sino = sino.at[flat_indices].set(median_values)
+    This is a direct 2-D bilinear rotation that mirrors ``dm_pix.rotate``'s geometry (same rotation
+    matrix, rotation center, and constant zero-fill boundary) but computes the rotated sampling grid
+    ONCE for the (row, channel) plane and reuses it across all views.  ``dm_pix.rotate`` instead treats
+    the whole (rows, cols, views) block as a single 3-D image: it builds a full 3-D coordinate grid (the
+    2-D grid replicated across every view) and does ``2**3 = 8``-corner linear interpolation, which
+    transiently allocates tens of GB for a large view batch -- the dominant preprocessing GPU peak.
+    Because the view axis is an identity dimension there (each output view samples only its own input
+    view), the per-view result is plain 4-corner 2-D bilinear interpolation, which we compute directly:
+    gather the 4 neighbors for every view in one shot with shared 2-D weights.  ~10x less memory and
+    faster, matching dm_pix to floating-point tolerance (not bit-exact: different op ordering).
 
-        sino = sino.reshape(sino_shape)
-        nan_indices = jnp.argwhere(np.isnan(sino))
-        new_num_nans = nan_indices.shape[0]
-        if new_num_nans >= num_nans:
-            raise ValueError('Unable to remove all defective pixels from sinogram.')
-        else:
-            num_nans = new_num_nans
+    Args:
+        sino_batch (jax array): (num_views, num_det_rows, num_det_channels).
+        det_rotation (float): rotation angle in radians (dm_pix sign convention).
+    """
+    num_views, num_rows, num_cols = sino_batch.shape
+    cos_a = jnp.cos(det_rotation)
+    sin_a = jnp.sin(det_rotation)
+    center_row = (num_rows - 1) / 2.0
+    center_col = (num_cols - 1) / 2.0
 
-    return sino
+    # For each OUTPUT pixel (i, j), find the INPUT location it samples, using the same affine map dm_pix
+    # applies: coord = R @ pixel + offset, with offset = center - R @ center (rotation about the center).
+    grid_i, grid_j = jnp.meshgrid(jnp.arange(num_rows), jnp.arange(num_cols), indexing='ij')  # (rows, cols)
+    offset_row = center_row - (cos_a * center_row + sin_a * center_col)
+    offset_col = center_col - (-sin_a * center_row + cos_a * center_col)
+    src_row = cos_a * grid_i + sin_a * grid_j + offset_row   # (num_rows, num_cols)
+    src_col = -sin_a * grid_i + cos_a * grid_j + offset_col
 
+    # Bilinear neighbors, matching dm_pix: lower = floor, upper = ceil, weight = coord - floor; the
+    # gather indices are clipped into range and out-of-image samples are zeroed afterwards via the mask.
+    lower_row = jnp.floor(src_row)
+    lower_col = jnp.floor(src_col)
+    frac_row = src_row - lower_row     # (num_rows, num_cols)
+    frac_col = src_col - lower_col
+    r0 = jnp.clip(lower_row.astype(jnp.int32), 0, num_rows - 1)
+    r1 = jnp.clip(jnp.ceil(src_row).astype(jnp.int32), 0, num_rows - 1)
+    c0 = jnp.clip(lower_col.astype(jnp.int32), 0, num_cols - 1)
+    c1 = jnp.clip(jnp.ceil(src_col).astype(jnp.int32), 0, num_cols - 1)
+
+    # Gather the 4 neighbors for EVERY view at once; the (num_rows, num_cols) weights broadcast over the
+    # leading view axis.  sino_batch[:, r, c] has shape (num_views, num_rows, num_cols).
+    rotated = (((1.0 - frac_row) * (1.0 - frac_col)) * sino_batch[:, r0, c0]
+               + ((1.0 - frac_row) * frac_col) * sino_batch[:, r0, c1]
+               + (frac_row * (1.0 - frac_col)) * sino_batch[:, r1, c0]
+               + (frac_row * frac_col) * sino_batch[:, r1, c1])
+
+    # Zero any output pixel whose sample fell outside the original image (mode='constant', cval=0).
+    in_bounds = (src_row >= 0) & (src_row <= num_rows - 1) & (src_col >= 0) & (src_col <= num_cols - 1)
+    return rotated * in_bounds
+
+
+# Jitted rotation: XLA fuses the 4-corner gather + weighted sum + boundary mask into a single kernel,
+# reusing buffers (lower peak than eager op-by-op, which materializes every intermediate) and avoiding
+# per-op dispatch (faster, which matters most for multi-device throughput).  ``det_rotation`` flows as a
+# traced scalar, so one compile per (num_views, num_rows, num_cols) shape is reused across angles.  Run
+# under ``jax.default_device(device)`` (as the preprocessing workers are), the computation -- and its
+# arange/meshgrid constants -- lands on that worker's device.
+_rotation_kernel_jit = jax.jit(_rotation_kernel)
 
 
 def correct_det_rotation(sino, det_rotation=0.0, batch_size=30):
@@ -173,28 +264,7 @@ def correct_det_rotation(sino, det_rotation=0.0, batch_size=30):
         - A tuple (sino_corrected, weights) if weights is not None.
     """
 
-    import dm_pix
-    import tqdm
-    num_views = sino.shape[0]  # Total number of views
-    sino_batches_list = []  # Initialize a list to store sinogram batches
-
-    # Process in batches with looping and progress printing
-    for i in tqdm.tqdm(range(0, num_views, batch_size)):
-
-        # Get the current batch (from i to i + batch_size)
-        sino_batch = jnp.array(sino[i:min(i + batch_size, num_views)])
-
-        # Apply the rotation on this batch
-        sino_batch = sino_batch.transpose(1, 2, 0)
-        sino_batch = dm_pix.rotate(sino_batch, det_rotation, order=1, mode='constant', cval=0.0)
-        sino_batch = sino_batch.transpose(2, 0, 1)
-
-        # Append the rotated batch to the list
-        sino_batches_list.append(np.array(sino_batch))
-
-    sino_rotated = np.concatenate(sino_batches_list, axis=0)
-
-    return sino_rotated
+    return pipeline.map_view_batches(sino, lambda b: _rotation_kernel_jit(b, det_rotation), batch_size)
 
 
 def correct_background_offset(sino, edge_width=9, option='global'):
@@ -251,6 +321,72 @@ def correct_background_offset(sino, edge_width=9, option='global'):
 
 
 # ####### subroutines for image cropping and down-sampling
+def _downsample_obj_kernel(obj_batch, flat_indices, new_size1, new_size2, block_shape):
+    """Per-view-batch object-scan downsample kernel (pure device-array op): set defective pixels to
+    NaN, crop to a block-divisible size, and block-average with nanmean."""
+    if flat_indices is not None:
+        obj_batch = put_in_slice(obj_batch, flat_indices, jnp.nan)
+    obj_batch = obj_batch[:, 0:new_size1, 0:new_size2]
+    obj_batch = obj_batch.reshape((obj_batch.shape[0],) + block_shape)
+    return jnp.nanmean(obj_batch, axis=(2, 4))
+
+
+def _downsample_blank_dark(blank_scan, dark_scan, downsample_factor, defective_pixel_array=()):
+    """Host-side part of view-data downsampling: NaN-mask defective pixels, crop to a block-divisible
+    size, and block-average the blank and dark scans.  Returns the downsampled blank/dark, the NEW
+    (downsampled-grid) defective array, and the parameters :func:`_downsample_obj_kernel` needs for the
+    object scan.  (blank/dark share the object scan's detector dimensions, so its block params are
+    computed here.)
+
+    Returns:
+        (blank_scan, dark_scan, defective_pixel_array, obj_flat_indices, new_size1, new_size2, block_shape)
+    """
+    # Set defective pixels to NaN for use with nanmean.  blank_scan and dark_scan may have different
+    # numbers of views, so loop each over its OWN leading dimension (a single shared loop over
+    # blank_scan.shape[0] would index out of bounds on a singleton dark_scan, or vice versa).
+    if len(defective_pixel_array) > 0:
+        flat_indices = np.ravel_multi_index(defective_pixel_array.T, blank_scan.shape[1:])
+        for i in range(blank_scan.shape[0]):
+            np.put(blank_scan[i], flat_indices, np.nan)
+        for i in range(dark_scan.shape[0]):
+            np.put(dark_scan[i], flat_indices, np.nan)
+    else:
+        flat_indices = None
+
+    # Crop the scan if the size is not divisible by downsample_factor (blank/dark share the object
+    # scan's detector dimensions).
+    new_size1 = downsample_factor[0] * (blank_scan.shape[1] // downsample_factor[0])
+    new_size2 = downsample_factor[1] * (blank_scan.shape[2] // downsample_factor[1])
+
+    blank_scan = blank_scan[:, 0:new_size1, 0:new_size2]
+    dark_scan = dark_scan[:, 0:new_size1, 0:new_size2]
+
+    # Reshape into blocks specified by the downsampling factor and then use nanmean to average over the blocks.
+    block_shape = (blank_scan.shape[1] // downsample_factor[0], downsample_factor[0],
+                   blank_scan.shape[2] // downsample_factor[1], downsample_factor[1])
+
+    # Take the mean over blocks, ignoring nans.  Any blocks with all nans will yield a nan.
+    blank_scan = np.stack([
+        np.nanmean(scan.reshape(block_shape), axis=(1, 3))
+        for scan in blank_scan
+    ], axis=0)
+
+    dark_scan = np.stack([
+        np.nanmean(scan.reshape(block_shape), axis=(1, 3))
+        for scan in dark_scan
+    ], axis=0)
+
+    # new defective pixel list = {indices of pixels where the downsampling block contains all bad pixels}
+    nan_mask = np.isnan(blank_scan).any(axis=0)  # Combine across all views
+    defective_pixel_array = np.argwhere(nan_mask)
+    if len(defective_pixel_array) == 0:
+        defective_pixel_array = ()
+
+    # flat_indices stays a HOST array so the per-view object-scan kernel is device-agnostic (it
+    # auto-promotes to each batch's device); this matters for the multi-device fused path.
+    return blank_scan, dark_scan, defective_pixel_array, flat_indices, new_size1, new_size2, block_shape
+
+
 def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, defective_pixel_array=(), batch_size=90):
     """
     Performs down-sampling of the scan images in the detector plane.
@@ -276,70 +412,126 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
         - **dark_scan** (ndarray): Downsampled dark scan(s). Shape (num_dark_views, new_rows, new_cols).
         - **defective_pixel_array** (ndarray): Updated defective pixel coordinates. Shape (N_def, 2).
     """
-    import tqdm
     assert len(downsample_factor) == 2, 'factor({}) needs to be of len 2'.format(downsample_factor)
     assert (downsample_factor[0] >= 1 and downsample_factor[1] >= 1), 'factor({}) along each dimension should be greater or equal to 1'.format(downsample_factor)
 
-    # Set defective pixels to nan for use with nanmean
-    if len(defective_pixel_array) > 0:
-        # Set defective pixels to 0
-        flat_indices = np.ravel_multi_index(defective_pixel_array.T, blank_scan.shape[1:])
-        for i in range(blank_scan.shape[0]):
-            np.put(blank_scan[i], flat_indices, np.nan)
-            np.put(dark_scan[i], flat_indices, np.nan)
-    else:
-        flat_indices = None
+    blank_scan, dark_scan, defective_pixel_array, obj_flat_indices, new_size1, new_size2, block_shape = \
+        _downsample_blank_dark(blank_scan, dark_scan, downsample_factor, defective_pixel_array)
 
-    # crop the scan if the size is not divisible by downsample_factor.
-    new_size1 = downsample_factor[0] * (obj_scan.shape[1] // downsample_factor[0])
-    new_size2 = downsample_factor[1] * (obj_scan.shape[2] // downsample_factor[1])
-
-    blank_scan = blank_scan[:, 0:new_size1, 0:new_size2]
-    dark_scan = dark_scan[:, 0:new_size1, 0:new_size2]
-
-    # Reshape into blocks specified by the downsampling factor and then use nanmean to average over the blocks.
-    block_shape = (blank_scan.shape[1] // downsample_factor[0], downsample_factor[0],
-                   blank_scan.shape[2] // downsample_factor[1], downsample_factor[1])
-
-    # Take the mean over blocks, ignoring nans.  Any blocks with all nans will yield a nan.
-    blank_scan = np.stack([
-        np.nanmean(scan.reshape(block_shape), axis=(1, 3))
-        for scan in blank_scan
-    ], axis=0)
-
-    dark_scan = np.stack([
-        np.nanmean(scan.reshape(block_shape), axis=(1, 3))
-        for scan in dark_scan
-    ], axis=0)
-
-    # For obj_scan, we'll batch over the views.
-    num_views = obj_scan.shape[0]  # Total number of views
-    obj_scan_list = []  # Initialize a list to store sinogram batches
-
-    # Process in batches using jax with looping and progress printing
-    if flat_indices is not None:
-        flat_indices = jnp.array(flat_indices)
-    for i in tqdm.tqdm(range(0, num_views, batch_size)):        # Get the current batch (from i to i + batch_size)
-        obj_scan_batch = jnp.array(obj_scan[i:min(i + batch_size, num_views)])  # Send to the gpu if there is one
-        if flat_indices is not None:
-            obj_scan_batch = put_in_slice(obj_scan_batch, flat_indices, jnp.nan)
-        # Crop and reshape into blocks
-        obj_scan_batch = obj_scan_batch[:, 0:new_size1, 0:new_size2]
-        obj_scan_batch = obj_scan_batch.reshape((obj_scan_batch.shape[0],) + block_shape)
-
-        # Compute block mean and append this batch to the list back on the cpu
-        obj_scan_batch = jnp.nanmean(obj_scan_batch, axis=(2, 4))
-        obj_scan_list.append(np.array(obj_scan_batch))
-
-    obj_scan = np.concatenate(obj_scan_list, axis=0)
-
-    # new defective pixel list = {indices of pixels where the downsampling block contains all bad pixels}
-    nan_mask = np.isnan(blank_scan).any(axis=0)  # Combine across all views
-    defective_pixel_array = np.argwhere(nan_mask)
-    if len(defective_pixel_array) == 0:
-        defective_pixel_array = ()
+    # Object scan: batch over views through the shared driver, block-averaging each view-batch.
+    obj_scan = pipeline.map_view_batches(
+        obj_scan,
+        lambda b: _downsample_obj_kernel(b, obj_flat_indices, new_size1, new_size2, block_shape),
+        batch_size)
 
     return obj_scan, blank_scan, dark_scan, defective_pixel_array
+
+
+def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
+                 downsample_factor=(1, 1), det_rotation=0.0, zinger_pixel_ratio=None,
+                 batch_size=90, devices=None, max_views_to_use=20):
+    """Fused scan -> sinogram for cropped scan data, view-sharded across devices.
+
+    Runs (optional downsample) -> transmission -> (optional detector rotation) -> (optional zinger
+    correction) as a single on-device pass per view-batch, so the object scan is uploaded once and the
+    sinogram gathered once -- instead of a separate host round-trip for each stage.  Equivalent to
+    calling ``downsample_view_data`` (when ``downsample_factor`` exceeds 1), then
+    ``compute_sino_transmission``, then ``correct_det_rotation`` (and ``interpolate_zinger_pixels`` when
+    ``zinger_pixel_ratio`` is set), but without materializing the intermediates on the host.
+    Background-offset correction is left to the caller (a cheap host pass).
+
+    Every stage here is **per-view** (the defective/zinger interpolation uses within-view neighbors), so
+    the views are split into contiguous shards across ``devices`` and processed concurrently with no
+    cross-device communication; the result is identical regardless of device count (and to the
+    single-device sequential path).  Detector rotation is skipped entirely when ``det_rotation == 0``.
+
+    Zinger correction (``zinger_pixel_ratio`` not None) is folded in here so it costs no extra host
+    round-trip, and it runs **before** the caller's offset/shift passes -- correct, since a zinger should
+    be removed before a sub-pixel detector shift could interpolate it into its neighbors.  Its threshold
+    is ``-ratio * RMS(sino over support)`` estimated from a cheap pre-pass over a ~``max_views_to_use``
+    view subsample (the threshold is statistical; detection then runs on every view in the main pass).
+
+    Args:
+        obj_scan, blank_scan, dark_scan (ndarray): cropped scans (object batched along axis 0).
+        defective_pixel_array (ndarray or tuple): shared defective-pixel (row, col) coords, or ().
+        downsample_factor (tuple[int, int]): detector row/channel downsample; (1, 1) skips downsampling.
+        det_rotation (float): detector rotation in radians; 0 skips the rotation.
+        zinger_pixel_ratio (float or None): if set, fold in zinger correction with this ratio; None skips it.
+        batch_size (int): number of views per on-device batch.
+        devices (sequence or None): devices to spread the views over; ``None`` uses ``jax.devices()``.
+        max_views_to_use (int): views sampled for the zinger threshold estimate (when zinger is enabled).
+
+    Returns:
+        numpy.ndarray: the sinogram, shape (num_views, num_det_rows, num_det_channels).
+    """
+    if devices is None:
+        devices = jax.devices()
+
+    obj_flat_indices = new_size1 = new_size2 = block_shape = None
+    do_downsample = downsample_factor[0] * downsample_factor[1] > 1
+    if do_downsample:
+        blank_scan, dark_scan, defective_pixel_array, obj_flat_indices, new_size1, new_size2, block_shape = \
+            _downsample_blank_dark(blank_scan, dark_scan, downsample_factor, defective_pixel_array)
+
+    # Transmission constants kept as HOST NumPy so the fused kernel is device-agnostic: each value
+    # auto-promotes to its batch's device, which is what lets the SAME kernel run on every view shard.
+    # mean/abs are the identical IEEE float32 ops whether evaluated here on the host or on a device, so
+    # this matches the single-device (jnp-constant) result bit-for-bit.  blank_minus_dark does not vary
+    # across batches, so precompute it once.
+    blank_scan_mean = np.mean(blank_scan, axis=0, keepdims=True)
+    dark_scan_mean = np.mean(dark_scan, axis=0, keepdims=True)
+    blank_minus_dark = np.abs(blank_scan_mean - dark_scan_mean)
+
+    # Defective-pixel indices for the transmission kernel, raveled against the detector grid the kernel
+    # sees (the downsampled grid when downsampling; blank/dark share the object scan's detector dims).
+    trans_det_shape = blank_scan.shape[1:]
+    if len(defective_pixel_array) > 0:
+        defective_pixel_array = np.asarray(defective_pixel_array)
+        trans_flat_indices = np.ravel_multi_index(defective_pixel_array.T, trans_det_shape)
+    else:
+        defective_pixel_array = ()
+        trans_flat_indices = None
+
+    do_rotation = det_rotation != 0.0
+    do_zinger = zinger_pixel_ratio is not None
+
+    # The whole per-batch kernel -- (downsample) -> transmission -> interpolate -> (rotation) ->
+    # (zinger) -- is jittable (interpolate/zinger use a fixed-iteration dense fill instead of
+    # argwhere/while), so we wrap it in a single jax.jit.  XLA then fuses the stages, reuses buffers, and
+    # dispatches one kernel per batch instead of dozens of eager ops (lower memory + faster, esp.
+    # multi-device).  The host constants (blank_minus_dark, etc.), the do_* flags, det_rotation, and the
+    # zinger threshold are captured as compile constants.  Run under each worker's jax.default_device,
+    # the kernel compiles per device with its constants on that device (one compile per shape per device,
+    # reused per batch).  ``zinger_threshold`` is built fresh per call so we can compile a no-zinger
+    # variant for the threshold pre-pass below.
+    def build_fused_kernel(zinger_threshold):
+        @jax.jit
+        def fused_kernel(obj_batch):
+            if do_downsample:
+                obj_batch = _downsample_obj_kernel(obj_batch, obj_flat_indices, new_size1, new_size2, block_shape)
+            sino_batch = _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean,
+                                              trans_flat_indices, defective_pixel_array)
+            if do_rotation:
+                sino_batch = _rotation_kernel(sino_batch, det_rotation)
+            if zinger_threshold is not None:
+                sino_batch = _zinger_fill(sino_batch, zinger_threshold)
+            return sino_batch
+        return fused_kernel
+
+    # Zinger threshold pre-pass: the threshold is the RMS over the sinogram support, which we estimate by
+    # running the kernel (without zinger) on a ~max_views_to_use even view subsample -- cheap, single
+    # device.  This avoids a second full pass over the sinogram (the standalone interpolate_zinger_pixels
+    # path) by folding the correction into the main pass below.
+    zinger_threshold = None
+    if do_zinger:
+        obj_sub = mj.TomographyModel.subsample_views(obj_scan, max_views_to_use)
+        sino_sub = pipeline.map_view_batches(obj_sub, build_fused_kernel(None),
+                                             batch_size, devices=[devices[0]])
+        zinger_threshold = _zinger_threshold(sino_sub, zinger_pixel_ratio, max_views_to_use)
+
+    sino = pipeline.map_view_batches(obj_scan, build_fused_kernel(zinger_threshold), batch_size, devices=devices)
+    print("Sinogram computation complete.")
+    return sino
 
 
 
@@ -559,9 +751,9 @@ def project_vector_to_vector(u1, u2):
     u1_proj = np.dot(u1, u2)*u2
     return u1_proj
 
-from functools import partial
-@partial(jax.jit, static_argnames=['top_margin', 'bottom_margin'])
-def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0):
+
+# Not jitted, so a numpy recon stays on the host (jit would force the whole volume onto one GPU).
+def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0, num_real_slices=None):
     """
     Applies a cylindrical mask to a 3D reconstruction volume.
 
@@ -572,16 +764,20 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
     This function is useful for removing `flash` that typically accumulates on the boundaries of an MBIR reconstruction volume.
 
     Note:
-        This function may need to be converted to batch over slices for very large recons.
+        A numpy recon is masked on the host and a jax recon on-device, so a large host volume is
+        never shipped onto a single device (which would OOM for big recons).
 
     Args:
-        recon (jnp.ndarray): 3D volume with shape (num_rows, num_cols, num_slices).
+        recon (np.ndarray or jax.Array): 3D volume with shape (num_rows, num_cols, num_slices).
         radial_margin (int): Margin to subtract from the cylinder radius in pixels.
         top_margin (int): Number of top slices to set to zero along the Z-axis.
         bottom_margin (int): Number of bottom slices to set to zero along the Z-axis.
+        num_real_slices (int or None): Number of REAL slices when ``recon`` is a device-form volume whose
+            slice axis is zero-padded (see the recon placement).  The bottom margin is applied at the end
+            of the real slices, not the padded end.  None (default) means all slices are real.
 
     Returns:
-        jnp.ndarray: Masked 3D volume of the same shape as `recon`.
+        np.ndarray or jax.Array: Masked 3D volume of the same shape and array module as `recon`.
 
     Example:
         >>> import jax.numpy as jnp
@@ -590,6 +786,9 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
         >>> masked_vol.shape
         (128, 128, 64)
     """
+    # Use recon's own array module so a numpy recon stays on the host and a jax recon stays on-device.
+    xp = jnp if isinstance(recon, jax.Array) else np
+
     num_recon_rows, num_recon_cols, num_slices = recon.shape
     row_center = (num_recon_rows - 1) / 2
     col_center = (num_recon_cols - 1) / 2
@@ -597,31 +796,41 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
     base_radius = max(row_center, col_center)
     radius = base_radius - radial_margin
 
-    # Create circular mask in (row, col) plane
-    row_coords, col_coords = jnp.meshgrid(jnp.arange(num_recon_rows), jnp.arange(num_recon_cols), indexing='ij')
+    # Create circular mask in (row, col) plane (small; built on recon's module).
+    row_coords, col_coords = xp.meshgrid(xp.arange(num_recon_rows), xp.arange(num_recon_cols), indexing='ij')
     dist_sq = (row_coords - row_center) ** 2 + (col_coords - col_center) ** 2
     circular_mask = (dist_sq <= radius ** 2).astype(recon.dtype)
 
-    # Apply cylindrical mask to all slices
+    # Circular mask: this multiply allocates the one new array we return; input is untouched.
     recon = recon * circular_mask[:, :, None]
 
-    # Apply a mask to the top and bottom margins
-    slice_mask = jnp.ones((num_slices, ))
-    if top_margin > 0:
-        slice_mask = slice_mask.at[:top_margin].set(0)
-    if bottom_margin > 0:
-        slice_mask = slice_mask.at[-bottom_margin:].set(0)
-    recon = recon * slice_mask[None, None, :]
+    # Zero top/bottom margins in place on that new array (no second full-volume copy -> 2x not 3x).
+    # numpy is truly in place; jax is immutable so use .at[].set (on-device, not the big path).
+    # The bottom margin ends at the REAL slice count: on a slice-padded device-form volume, [-b:] would
+    # zero the (already-zero) padding instead of the real bottom slices.
+    num_real_slices = recon.shape[2] if num_real_slices is None else num_real_slices
+    if xp is np:
+        if top_margin > 0:
+            recon[:, :, :top_margin] = 0
+        if bottom_margin > 0:
+            recon[:, :, num_real_slices - bottom_margin:num_real_slices] = 0
+    else:
+        if top_margin > 0:
+            recon = recon.at[:, :, :top_margin].set(0)
+        if bottom_margin > 0:
+            recon = recon.at[:, :, num_real_slices - bottom_margin:num_real_slices].set(0)
 
     return recon
 
-def est_crop_width(sino, safety_buffer=20):
+def est_crop_width(sino, safety_buffer=20, max_views_to_use=20):
     """Estimate crop widths for removing blank margins in a 3D sinogram.
 
     Args:
         sino (np.ndarray): Input sinogram array .
         safety_buffer (int, optional): Safety buffer (in pixels) to keep around the
             detected object region on each boundary. Defaults to 20.
+        max_views_to_use (int, optional): Cap on the number of views sampled for the support
+            estimate. Defaults to 20.
 
     Returns:
         crop_top (int): Number of detector rows to crop from the top.
@@ -630,6 +839,14 @@ def est_crop_width(sino, safety_buffer=20):
         crop_right (int): Number of detector channels to crop from the right.
 
     """
+    # The crop boundaries need full detector row/column resolution, but support detection is
+    # statistical across views -- so subsample VIEWS (axis 0), exactly as auto_set_regularization_params
+    # does, to keep this fast on large sinograms.  _get_sino_indicator on the full sinogram is several
+    # full-array host passes (finiteness check, histogram, median of the object subset, the full int8
+    # mask); on ~max_views_to_use views it is cheap.  The safety_buffer absorbs the small approximation
+    # from sampling fewer views (the object's row/column extent is stable across the rotation).
+    sino = mj.TomographyModel.subsample_views(sino, max_views_to_use)
+
     sino_indicator_mask = mj.TomographyModel._get_sino_indicator(sino)
 
     union_mask = np.any(sino_indicator_mask, axis=0)
@@ -1153,3 +1370,162 @@ def apply_inverse_beam_hardening_curve(beam_hardened_projection, cheb_coeffs, y_
 
     y_scaled = 2.0 * (y_eval - y_min) / (y_max - y_min) - 1.0
     return np.polynomial.chebyshev.chebval(y_scaled, cheb_coeffs)
+
+
+def _zinger_threshold(sino, zinger_pixel_ratio, max_views_to_use=20):
+    """Zinger-detection threshold = ``-zinger_pixel_ratio * RMS(sino over its support)``.
+
+    The threshold is a STATISTICAL quantity, so it is estimated from a view subsample (via
+    ``TomographyModel.subsample_views``) -- pass the FULL sinogram; the subsampling happens here, which
+    avoids running ``_get_sino_indicator`` + ``sino**2`` over the whole (possibly ~20 GB) sinogram.
+    Returns a Python float (negative; zingers are anomalously negative)."""
+    sino_sub = mj.TomographyModel.subsample_views(sino, max_views_to_use)
+    sino_indicator = mj.TomographyModel._get_sino_indicator(sino_sub)
+    typical_sino_value = float(np.average(sino_sub ** 2, None, sino_indicator) ** 0.5)
+    return -zinger_pixel_ratio * typical_sino_value
+
+
+def detect_zinger_pixels(sino, zinger_pixel_ratio=0.1, max_views_to_use=20):
+    """
+    Detect zinger pixels from sinogram.
+
+    Zinger pixels are identified as unusually negative values. A pixel is
+    classified as a zinger if:
+
+        value < -zinger_pixel_ratio * typical_sino_value
+
+    Args:
+        sino (numpy.ndarray): A 3D sinogram of shape (num_views, num_det_rows, num_det_channels).
+        zinger_pixel_ratio (float, optional): Ratio used for zinger pixels detection. Defaults to 0.1.
+        max_views_to_use (int, optional): Cap on the number of views sampled for the typical-value
+            (threshold) estimate. Defaults to 20.
+
+    Returns:
+        ndarray:
+            Array of zinger pixel indices with shape (num_zinger_pixels, 3). Format in (view_idx, row_idx, channel_idx).
+    """
+    # Estimate the threshold from a view subsample (statistical; done inside _zinger_threshold), then
+    # DETECT across ALL views (a zinger can occur in any view).
+    zinger_threshold = _zinger_threshold(sino, zinger_pixel_ratio, max_views_to_use)
+    zinger_pixel_array = np.argwhere(np.asarray(sino) < zinger_threshold).astype(int)
+
+    return zinger_pixel_array.reshape((-1, 3))
+
+
+def interpolate_zinger_pixels(sino, zinger_pixel_ratio=0.1, num_passes=3, batch_size=90, devices=None,
+                              max_views_to_use=20):
+    """
+    Detect and interpolate zinger sinogram entries (anomalously negative values) with the MEAN of their
+    finite 3x3 in-view neighbors.
+
+    A pixel is a zinger if ``value < -zinger_pixel_ratio * RMS(sino over support)`` (the threshold is
+    estimated once from a cheap view subsample).  Detection + fill run **per view-batch through the
+    shared pipeline driver** -- memory-bounded and optionally multi-device -- reusing the same
+    :func:`_zinger_fill` / :func:`_fill_nan_pixels` machinery as :func:`interpolate_defective_pixels`
+    (dense ``reduce_window`` passes; no ``argwhere``, no data-dependent loop).  This is a thin wrapper:
+    the same zinger correction is also available folded into :func:`scan_to_sino` via its
+    ``zinger_pixel_ratio`` argument (one pass, no extra host round-trip).
+
+    Args:
+        sino (numpy or jax array): A 3D sinogram of shape (num_views, num_det_rows, num_det_channels).
+        zinger_pixel_ratio (float, optional): Ratio used for zinger detection. Defaults to 0.1.
+        num_passes (int, optional): Dense fill passes = max fillable zinger-cluster radius. Defaults to 3.
+        batch_size (int, optional): Views per on-device batch. Defaults to 90.
+        devices (sequence or None, optional): Devices to spread the views over; None = single device.
+        max_views_to_use (int, optional): Views sampled for the threshold estimate. Defaults to 20.
+
+    Returns:
+        numpy.ndarray: Corrected 3D sinogram; any pixel still NaN after ``num_passes`` is set to 0 (with
+        a warning).
+    """
+    zinger_threshold = _zinger_threshold(sino, zinger_pixel_ratio, max_views_to_use)
+    kernel = jax.jit(lambda b: _zinger_fill(b, zinger_threshold, num_passes))
+    return pipeline.map_view_batches(sino, kernel, batch_size, devices=devices)
+
+
+def save_preprocessing(file_path, sinogram, cone_beam_params, optional_params, weights=None):
+    """Save a preprocessed sinogram and its geometry parameters for a two-stage (preprocess -> recon)
+    workflow.
+
+    This lets preprocessing run once and write its result to disk, so reconstruction can be launched as
+    a separate process -- useful for debugging (inspect/reuse the preprocessed sinogram) and so the
+    memory-tight recon starts with a clean GPU allocator.  Reload with :func:`load_preprocessing` and
+    rebuild the model with ``ConeBeamModel(**cone_beam_params)`` + ``set_params(**optional_params)``.
+
+    Only the GEOMETRY/preprocessing parameters are saved (the two dicts above); regularization
+    parameters (sharpness, sigma_x, snr_db, ...) are deliberately NOT saved -- they are a recon-time
+    choice and are set in the recon stage (iterating on them without re-preprocessing is the point of
+    the split).  For full model persistence (geometry + regularization), use the parameter-handler
+    save/load instead.
+
+    The sinogram, any array-valued parameters (e.g. ``angles``), and ``weights`` (if given) are stored
+    as HDF5 datasets; the remaining scalar parameters are stored as one JSON attribute.  The sinogram
+    (and weights) are written as float32.
+
+    Args:
+        file_path (str): Output HDF5 path (parent directories are created).
+        sinogram (ndarray or jax.Array): The preprocessed sinogram (gathered to the host and cast to
+            float32 before writing).
+        cone_beam_params (dict): Parameters for the model constructor (as returned by, e.g.,
+            ``mbirjax.preprocess.nsi.compute_sino_and_params``).
+        optional_params (dict): Parameters applied via ``set_params`` after construction.
+        weights (ndarray or jax.Array, optional): Custom reconstruction weights to save alongside the
+            sinogram.  Defaults to None -- omit them when the recon will regenerate standard weights with
+            ``gen_weights`` (cheaper to recompute than to store a second full-size array); pass them only
+            when they are custom and worth preserving.
+
+    Returns:
+        None
+    """
+    import json
+    mj.makedirs(file_path)
+
+    def _is_array(v):
+        # numpy/jax arrays (and other ndim>0 array-likes) -> datasets; scalars/tuples/str -> JSON.
+        return hasattr(v, 'ndim') and getattr(v, 'ndim', 0) > 0
+
+    scalar_params = {'cone_beam_params': {}, 'optional_params': {}}
+    with h5py.File(file_path, 'w') as f:
+        f.create_dataset('sinogram', data=np.asarray(sinogram, dtype=np.float32))
+        if weights is not None:
+            f.create_dataset('weights', data=np.asarray(weights, dtype=np.float32))
+        for dname, d in (('cone_beam_params', cone_beam_params), ('optional_params', optional_params)):
+            for key, value in d.items():
+                if _is_array(value):
+                    f.create_dataset('{}__{}'.format(dname, key), data=np.asarray(value))
+                else:
+                    scalar_params[dname][key] = value
+        # numpy scalars -> Python via .item(); tuples -> JSON lists (sinogram_shape restored on load).
+        f.attrs['params'] = json.dumps(scalar_params, default=lambda o: o.item())
+        f.attrs['format'] = 'mbirjax_preprocessing_v1'
+
+
+def load_preprocessing(file_path):
+    """Load a sinogram and geometry parameters saved by :func:`save_preprocessing`.
+
+    Args:
+        file_path (str): Path to the HDF5 file written by :func:`save_preprocessing`.
+
+    Returns:
+        tuple: ``(sinogram, cone_beam_params, optional_params, weights)`` -- a host NumPy sinogram, the
+        two parameter dicts (ready for ``ConeBeamModel(**cone_beam_params)`` +
+        ``set_params(**optional_params)``), and ``weights`` (a host NumPy array if custom weights were
+        saved, else ``None`` -- in which case the recon should regenerate them with ``gen_weights``).
+    """
+    import json
+    params = {'cone_beam_params': {}, 'optional_params': {}}
+    with h5py.File(file_path, 'r') as f:
+        sinogram = f['sinogram'][()]
+        weights = f['weights'][()] if 'weights' in f else None
+        scalar_params = json.loads(f.attrs['params'])
+        for dname in params:
+            params[dname].update(scalar_params.get(dname, {}))
+            prefix = dname + '__'
+            for ds_name in f:
+                if ds_name.startswith(prefix):
+                    params[dname][ds_name[len(prefix):]] = f[ds_name][()]
+    cone_beam_params, optional_params = params['cone_beam_params'], params['optional_params']
+    # JSON turns the sinogram_shape tuple into a list; restore the tuple the constructor expects.
+    if 'sinogram_shape' in cone_beam_params:
+        cone_beam_params['sinogram_shape'] = tuple(int(x) for x in cone_beam_params['sinogram_shape'])
+    return sinogram, cone_beam_params, optional_params, weights

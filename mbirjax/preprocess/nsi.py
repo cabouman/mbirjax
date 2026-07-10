@@ -85,41 +85,34 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
                                                                       crop_pixels_bottom=crop_pixels_bottom)
 
     if verbose > 0:
-        print("\n\n########## Cropping and downsampling scans")
+        print("\n\n########## Cropping scans")
     ### crop the scans based on input params
     obj_scan, blank_scan, dark_scan, defective_pixel_array = mjp.crop_view_data(obj_scan, blank_scan, dark_scan,
                                                                                        crop_pixels_sides=crop_pixels_sides,
                                                                                        crop_pixels_top=crop_pixels_top,
                                                                                        crop_pixels_bottom=crop_pixels_bottom,
                                                                                        defective_pixel_array=defective_pixel_array)
-
-    ### downsample the scans with block-averaging
-    if downsample_factor[0]*downsample_factor[1] > 1:
-        obj_scan, blank_scan, dark_scan, defective_pixel_array = mjp.downsample_view_data(obj_scan, blank_scan, dark_scan,
-                                                                                                 downsample_factor=downsample_factor,
-                                                                                                 defective_pixel_array=defective_pixel_array)
+    obj_scan_shape = obj_scan.shape
 
     if verbose > 0:
-        print("\n\n########## Computing sinogram from object, blank, and dark scans")
-    sino = mjp.compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_array)
-    scan_shapes = obj_scan.shape, blank_scan.shape, dark_scan.shape
+        print("\n\n########## Computing sinogram (downsample -> transmission -> detector rotation, fused)")
+    # det_rotation is not an allowed TomographyModel parameter, so pop it for the fused pipeline.
+    det_rotation = optional_params.pop("det_rotation")
+    # Fused scan -> sinogram: (downsample) -> transmission -> (rotation) in one on-device pass per
+    # view-batch -- the object scan is uploaded once and the sinogram gathered once, with no per-stage
+    # host round-trips.
+    sino = mjp.scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array,
+                            downsample_factor=downsample_factor, det_rotation=det_rotation)
     del obj_scan, blank_scan, dark_scan  # delete scan images to save memory
 
     if verbose > 0:
-        print("\n\n########## Correcting sinogram data to account for background offset and detector rotation")
-
-    # Rotation correction
-    det_rotation = optional_params["det_rotation"]
-    sino = mjp.correct_det_rotation(sino, det_rotation=det_rotation)
-    del optional_params["det_rotation"]  # We delete this since it's not an allowed parameter in TomographyModel.
-
-    # Background offset correction
+        print("\n\n########## Correcting sinogram data to account for background offset")
+    # Background offset correction (a cheap host pass).
     sino = mjp.correct_background_offset(sino, option='per_view')
 
     if verbose > 0:
-        print('obj_scan shape = ', scan_shapes[0])
-        print('blank_scan shape = ', scan_shapes[1])
-        print('dark_scan shape = ', scan_shapes[2])
+        print('cropped obj_scan shape = ', obj_scan_shape)
+        print('sinogram shape = ', sino.shape)
 
     return sino, cone_beam_params, optional_params
 

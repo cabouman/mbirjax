@@ -26,6 +26,36 @@ class TestUtilities(unittest.TestCase):
             warnings.warn('Run mbirjax._utils.update_param_literal() to update ParamNames in ParameterHandler')
         assert consistent
 
+    def test_merge_log_files(self):
+
+        print('Testing merge_log_files')
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            merged_path = os.path.join(tmp_dir, 'merged.log')
+            path_a = os.path.join(tmp_dir, 'a.log')
+            path_b = os.path.join(tmp_dir, 'b.log')
+            with open(path_a, 'w') as f:
+                f.write('content a\n')
+            with open(path_b, 'w') as f:
+                f.write('content b\n')
+
+            # Missing temps are skipped; existing ones appear in order under their headers, then are removed.
+            mj.merge_log_files(merged_path, [('first', path_a), ('missing', path_a + '.nope'), ('second', path_b)])
+            with open(merged_path, 'r') as f:
+                text = f.read()
+            self.assertEqual(text, '======== first ========\ncontent a\n'
+                                   '======== second ========\ncontent b\n')
+            self.assertNotIn('missing', text)
+            self.assertFalse(os.path.exists(path_a))
+            self.assertFalse(os.path.exists(path_b))
+
+            # No temps at all (including None paths): no output file is written.
+            merged_path_2 = os.path.join(tmp_dir, 'merged2.log')
+            mj.merge_log_files(merged_path_2, [('first', path_a), ('none', None)])
+            self.assertFalse(os.path.exists(merged_path_2))
+
     def test_concatenate_function_in_batches(self):
 
         print('Testing concatenate_function_in_batches')
@@ -113,6 +143,56 @@ class TestUtilities(unittest.TestCase):
             target = jnp.sum((mult_factor + 1) * data_to_batch), jnp.ones(fixed_output_size) * num_batches
             assert (jnp.allclose(output[0], target[0]))
             assert (jnp.allclose(output[1], target[1]))
+
+
+class TestExportReconHostResidence(unittest.TestCase):
+    """The HDF5 export path must stay on the HOST for a host recon, so a large volume is never copied
+    back onto a single device (the OOM Charlie hit at downsampling 1, f32[1370,1880,1880] ~ 18 GiB).
+
+    This is a host-RESIDENCE guard (the real failure is placement, deterministic at any size), not an
+    actual large run: feed a small host recon and assert nothing is promoted to a jax device, plus a
+    small export -> import round-trip.
+    """
+
+    def test_apply_cylindrical_mask_host_in_host_out(self):
+        import mbirjax.preprocess as mjp
+        recon = np.random.RandomState(0).rand(16, 16, 8).astype(np.float32)
+        out = mjp.apply_cylindrical_mask(recon, radial_margin=2, top_margin=1, bottom_margin=1)
+        self.assertIsInstance(out, np.ndarray)             # host in -> host out (no device promotion)
+        self.assertEqual(out.dtype, np.float32)
+        np.testing.assert_array_equal(out[:, :, 0], 0)     # top margin zeroed
+        np.testing.assert_array_equal(out[:, :, -1], 0)    # bottom margin zeroed
+        self.assertEqual(float(out[0, 0, 4]), 0.0)         # a corner outside the cylinder is zeroed
+
+    def test_apply_cylindrical_mask_jax_in_jax_out(self):
+        import jax
+        import mbirjax.preprocess as mjp
+        recon = jnp.asarray(np.random.RandomState(1).rand(16, 16, 8).astype(np.float32))
+        out = mjp.apply_cylindrical_mask(recon)
+        self.assertIsInstance(out, jax.Array)              # jax in -> jax out (on-device preserved)
+
+    def test_export_import_roundtrip_host(self):
+        import os, tempfile
+        recon = np.random.RandomState(2).rand(12, 10, 6).astype(np.float32)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'recon.h5')
+            mj.export_recon_hdf5(path, recon, recon_dict=None, remove_flash=True)
+            self.assertTrue(os.path.exists(path))
+            loaded, _ = mj.import_recon_hdf5(path)
+            self.assertIsInstance(loaded, np.ndarray)      # host array back
+            self.assertEqual(loaded.shape, recon.shape)    # round-trips to (row, col, slice)
+
+    def test_export_import_roundtrip_values(self):
+        # No flash mask, so the round-trip must be EXACT: catches any re-introduced
+        # axis flip or transpose mismatch between export and import (the import-side
+        # slice-axis reversal removed in e80f4d0 would fail this test).
+        import os, tempfile
+        recon = np.random.RandomState(3).rand(12, 10, 6).astype(np.float32)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'recon.h5')
+            mj.export_recon_hdf5(path, recon, recon_dict=None)
+            loaded, _ = mj.import_recon_hdf5(path)
+            np.testing.assert_array_equal(loaded, recon)
 
 
 if __name__ == '__main__':

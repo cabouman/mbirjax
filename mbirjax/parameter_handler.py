@@ -2,6 +2,7 @@ import warnings
 import copy
 import logging
 import io
+from collections import namedtuple
 from collections.abc import Iterable, Sized
 from typing import Literal, Union, Any, TextIO, overload
 import os
@@ -16,6 +17,14 @@ import mbirjax as mj
 # NOTE:  additions/deletions here should also be made to _utils.py
 ParamNames=Literal['geometry_type','file_format','sinogram_shape','delta_det_channel','delta_det_row','det_row_offset','det_channel_offset','sigma_y','alu_unit','alu_value','recon_shape','delta_voxel','voxel_row_aspect','voxel_slice_aspect','sigma_x','sigma_prox','p','q','T','qggmrf_nbr_wts','auto_regularize_flag','positivity_flag','snr_db','sharpness','granularity','partition_sequence','verbose','use_gpu','max_overrelaxation','use_ror_mask',]
 
+# GeometryParams namedtuple classes are created at most ONCE per distinct field-name tuple and
+# cached here, rather than rebuilt on every get_geometry_parameters() call.  jax registers
+# namedtuples as pytrees and keys the jit static-argument cache on the pytree treedef -- which
+# includes the namedtuple CLASS -- so a fresh class per call gives each model instance a distinct
+# pytree type and defeats the shared (module-level) projector jit cache, forcing a re-trace per
+# instance.  Sharing one class per geometry keeps the treedef stable across instances.
+_GEOMETRY_PARAMS_CLASSES = {}
+
 
 class ParameterHandler:
     array_prefix = ':ARRAY:'
@@ -26,18 +35,44 @@ class ParameterHandler:
         self.logger = None
         self.log_buffer = None
 
-    def setup_logger(self, *, logfile_path: str = "./logs/recon.log", print_logs: bool = True):
-        """
-        Initialize self.logger and self.log_buffer.
+    @staticmethod
+    def make_geometry_params(field_names, values):
+        """Build a geometry-parameters namedtuple using a class SHARED across calls and model
+        instances.  The class is created once per distinct field-name tuple and cached, so the
+        same geometry always produces the same pytree type (a stable treedef); this lets the
+        projectors' module-level jit cache be shared across instances instead of re-tracing for
+        each one.  ``values`` are unchanged -- only the namedtuple class is reused.
 
         Args:
-            logfile_path: Path to the log file. If None or empty, file logging is skipped.
-            verbosity: 0 -> WARNING, 1 -> INFO, 2+ -> DEBUG
+            field_names (sequence of str): the geometry parameter names, in order.
+            values (sequence): the corresponding values, in the same order.
+
+        Returns:
+            A ``GeometryParams`` namedtuple instance.
+        """
+        field_names = tuple(field_names)
+        cls = _GEOMETRY_PARAMS_CLASSES.get(field_names)
+        if cls is None:
+            cls = namedtuple('GeometryParams', field_names)
+            _GEOMETRY_PARAMS_CLASSES[field_names] = cls
+        return cls(*values)
+
+    def setup_logger(self, *, logfile_path: str = "~/.mbirjax/logs/recon.log", print_logs: bool = True):
+        """
+        Initialize self.logger and self.log_buffer.
+        The logging level comes from the model's 'verbose' parameter (0 -> WARNING, 1 -> INFO, 2+ -> DEBUG).
+
+        Args:
+            logfile_path: Path to the log file ('~' is expanded to the user's home, so the
+                default lands in the per-user mbirjax directory rather than littering the
+                current working directory). If None or empty, file logging is skipped.
             print_logs: If True, emit logs to console.
 
         Raises:
             Exception: If logfile_path directory cannot be created.
         """
+        if logfile_path:
+            logfile_path = os.path.expanduser(logfile_path)
         # Map verbosity to logging level
         verbose = self.get_params('verbose')
         if verbose < 1:
@@ -85,6 +120,19 @@ class ParameterHandler:
 
         self.logger = logger
 
+    def _log_run_header(self, first_iteration, logfile_path, print_logs):
+        """Set up the run logger (on the first iteration, or whenever none exists) and log the
+        MBIRJAX version and the resolved device layout.
+
+        Lives here with the logger it configures; the version and ``_device_report`` it logs are
+        provided by the TomographyModel subclass.  Shared by recon/prox (``initialize_recon``) and
+        the denoiser so both report the version and whether the run is sharded and on which devices.
+        """
+        if first_iteration == 0 or self.logger is None:
+            self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
+        self.logger.info('MBIRJAX Version = {}'.format(self.version))
+        self.logger.info('Reconstruction devices: {}'.format(self._device_report()))
+
     def print_params(self):
         """
         Print the current parameter values in the model.
@@ -110,7 +158,6 @@ class ParameterHandler:
                 recompile_flag = entry.recompile_flag
                 print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
         print("----")
-        self.set_params(use_gpu=self.get_params('use_gpu'))
 
     @staticmethod
     def convert_arrays_to_strings(cur_params):

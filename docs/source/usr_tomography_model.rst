@@ -51,6 +51,21 @@ Recon Shape and Voxel Spacing
 .. automethod:: mbirjax.TomographyModel.get_magnification
 
 
+Device Configuration
+--------------------
+
+On a machine with multiple GPUs, MBIRJAX automatically divides a reconstruction across them to
+increase the available memory and reduce reconstruction time -- with no change to your script,
+and for every geometry.  The methods below give explicit control over which devices are used
+and report what was chosen.  See :doc:`usr_multi_gpu` for a full discussion.
+
+.. automethod:: mbirjax.TomographyModel.configure_devices
+
+.. automethod:: mbirjax.TomographyModel.prepare_sino_for_devices
+
+.. autoproperty:: mbirjax.TomographyModel.device_summary
+
+
 .. _SaveLoadDocs:
 
 Saving and Loading
@@ -59,12 +74,6 @@ Saving and Loading
 .. automethod:: mbirjax.TomographyModel.save_recon_hdf5
 
 .. automethod:: mbirjax.TomographyModel.load_recon_hdf5
-
-
-Data Generation
----------------
-
-.. automethod:: mbirjax.TomographyModel.gen_modified_3d_sl_phantom
 
 
 .. _detailed-parameter-docs:

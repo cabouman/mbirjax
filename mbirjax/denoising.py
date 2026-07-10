@@ -1,5 +1,6 @@
 import io
 import datetime
+import warnings
 from typing import Literal, Union, overload, Any
 import numpy as np
 import jax
@@ -15,6 +16,13 @@ class QGGMRFDenoiser(TomographyModel):
     """
     The QGGMRFDenoiser uses the MBIRJAX recon framework to implement a qggmrf proximal map denoiser.
     The primary interface is through :meth:`denoise`.
+
+    The forward model is the identity (the residual image plays the role of the error sinogram), so
+    the image slice-shards on the recon mesh exactly like a reconstruction.  :meth:`denoise` has two
+    paths: on a single device it runs the whole sweep in one JIT (the fast path, no qGGMRF halos --
+    a single shard uses the reflected boundary condition); across multiple devices it slice-shards
+    the image and runs a Python loop that stages the qGGMRF halos once per pass (host-side, so it
+    cannot live in a JIT), mirroring :meth:`TomographyModel.vcd_recon`.
     """
 
     def __init__(self, image_shape):
@@ -27,11 +35,8 @@ class QGGMRFDenoiser(TomographyModel):
         self.set_params(sharpness=0)  # The default sharpness level is 0 for the denoiser.
 
         self.set_params(granularity=[16], partition_sequence=[0])  # For qggmrf denoising, we can fix a partition
-        try:
-            jax.devices('gpu')
-            self.set_params(use_gpu='full')  # If the denoising problem doesn't fit on the gpu, we should divide it up.
-        except RuntimeError:
-            self.set_params(use_gpu='none')
+        # Device selection: the automatic default (construction-time layout) already uses the
+        # GPU when one is available and the CPU otherwise; use_gpu is deprecated.
 
     @overload
     def get_params(self, parameter_names: Union[QGGMRFDenoiserParamNames, list[QGGMRFDenoiserParamNames]]) -> Any: ...
@@ -88,10 +93,15 @@ class QGGMRFDenoiser(TomographyModel):
         Args:
             image (jax array or ndarray): 3D array containing noisy image with shape (num_views, num_det_rows, num_det_channels).
         """
-        support_indicator = self._get_sino_indicator(image, sigma_noise=0.0)
-        sigma_noise = self._get_estimate_of_recon_std(image, support_indicator)
-        support_indicator = self._get_sino_indicator(image, sigma_noise=sigma_noise)
-        sigma_noise = self._get_estimate_of_recon_std(image, support_indicator)
+
+        num_pts_to_use = np.minimum(5_000_000, image.size)
+        stride = round((image.size / num_pts_to_use) ** (1 / 3))
+        small_image = image[::stride, ::stride, ::stride]
+
+        support_indicator = self._get_sino_indicator(small_image, sigma_noise=0.0)
+        sigma_noise = self._get_estimate_of_recon_std(small_image, support_indicator)
+        support_indicator = self._get_sino_indicator(small_image, sigma_noise=sigma_noise)
+        sigma_noise = self._get_estimate_of_recon_std(small_image, support_indicator)
         return sigma_noise
 
     def _get_estimate_of_recon_std(self, noisy_image, support_indicator):
@@ -119,13 +129,15 @@ class QGGMRFDenoiser(TomographyModel):
 
         return recon_std  # typical_image_value
 
-    def _get_sino_indicator(self, noisy_image, sigma_noise=None):
+    def _get_sino_indicator(self, noisy_image, sigma_noise=None, verbose=1):
         """
         Compute a binary mask that indicates the region of noisy_image support.
 
         Args:
             noisy_image (jax array or ndarray): 3D array containing noisy_image with shape (num_views, num_det_rows, num_det_channels).
             sigma_noise (float, optional): Estimated noise standard deviation in the image.  If None, then this is estimated from the image.
+            verbose (int, optional): Unused in the body; present because TomographyModel
+                calls this method with verbose= (signature compatibility).
 
         Returns:
             (ndarray): Weights used in mbircone reconstruction, with the same array shape as ``noisy_image``.
@@ -144,7 +156,8 @@ class QGGMRFDenoiser(TomographyModel):
         raise NotImplementedError('recon is not implemented for QGGMRFDenoiser.  Use `denoise` instead.')
 
     def denoise(self, image, sigma_noise=None, use_ror_mask=False, init_image=None, max_iterations=15,
-                stop_threshold_change_pct=0.2, first_iteration=0, logfile_path='./logs/recon.log', print_logs=True):
+                stop_threshold_change_pct=0.2, first_iteration=0, logfile_path='~/.mbirjax/logs/recon.log',
+                print_logs=True, output_sharded=False):
         """
         Compute the MAP denoiser assuming AWGN and the 3D qGGMRF prior.
 
@@ -168,12 +181,16 @@ class QGGMRFDenoiser(TomographyModel):
             max_iterations (int, optional): maximum number of iterations of the VCD algorithm to perform.
             stop_threshold_change_pct (float, optional): Stop reconstruction when 100 * ||delta_recon||_1 / ||recon||_1 change from one iteration to the next is below stop_threshold_change_pct.  Defaults to 0.2.  Set this to 0 to guarantee exactly max_iterations.
             first_iteration (int, optional): Set this to be the number of iterations previously completed when restarting a recon using init_recon.  This defines the first index in the partition sequence.  Defaults to 0.
-            logfile_path (str, optional): Path to the output log file.  Defaults to './logs/recon.log'.
+            logfile_path (str, optional): Path to the output log file.  Defaults to '~/.mbirjax/logs/recon.log'.
             print_logs (bool, optional): If true then print logs to console.  Defaults to True.
+            output_sharded (bool, optional): If False (default), return a numpy array in the
+                problem's real shape.  If True, return the internal device form (slice-sharded on a
+                multi-device denoiser, with a possibly padded slice axis; on a single device the
+                same array either way).  Defaults to False.
 
         Returns:
             tuple: (denoised_image, denoiser_dict)
-                - denoised_image (jax array): A denoised image of the same shape as image
+                - denoised_image (numpy or jax array): A denoised image of the same shape as image
                 - denoiser_dict (dict): A dict obtained from :meth:`get_recon_dict` with entries
                     * 'recon_params'
                     * 'notes'
@@ -194,11 +211,13 @@ class QGGMRFDenoiser(TomographyModel):
         if sigma_noise is None:
             sigma_noise = self.estimate_image_noise_std(image)
         self.set_params(sigma_noise=sigma_noise)
-        if first_iteration == 0 or self.logger is None:
-            self.setup_logger(logfile_path=logfile_path, print_logs=print_logs)
-
+        self._log_run_header(first_iteration, logfile_path, print_logs)
         self.logger.info('Initializing QGGMRFDenoiser')
+        # Disable warning about background estimation
+        verbose = self.get_params('verbose')
+        self.set_params(verbose=0)
         regularization_params = self.auto_set_regularization_params(image)
+        self.set_params(verbose=verbose)
 
         # Generate set of voxel partitions
         image_shape, granularity = self.get_params(['recon_shape', 'granularity'])
@@ -213,24 +232,80 @@ class QGGMRFDenoiser(TomographyModel):
         if init_image is None:
             init_image = image.copy()
 
-        flat_error_image = (image - init_image).reshape((-1, image.shape[-1]))
-        flat_error_image = jax.device_put(flat_error_image, self.sinogram_device)
-        image_out = init_image
+        # Recon-domain flat layout (num_pixels, num_slices), sharded on the last axis (slices)
+        # immediately: distributing image/init_image across devices first makes the residual
+        # subtraction per-shard, so no full-sized array is materialized on one device (a single
+        # device is the trivial 1-shard case -- identical values to a plain device_put there).
+        image_shape = self.get_params('recon_shape')
+        flat_image = self._shard_recon(init_image.reshape((-1, image_shape[2])))
+        flat_error_image = self._shard_recon(image.reshape((-1, image.shape[-1]))) - flat_image
 
-        verbose, sigma_y = self.get_params(['verbose', 'sigma_y'])
-
-        # Initialize the output image
-        flat_image = image_out.reshape((-1, image_shape[2]))
-        flat_image = jax.device_put(flat_image, self.sinogram_device)
-
-        # Create the finer grained image update operators
-
+        verbose = self.get_params('verbose')
         fm_constant = 1.0 / (self.get_params('sigma_y') ** 2.0)
         qggmrf_nbr_wts, sigma_x, p, q, T = self.get_params(['qggmrf_nbr_wts', 'sigma_x', 'p', 'q', 'T'])
         b = mj.get_b_from_nbr_wts(qggmrf_nbr_wts)
         qggmrf_params = tuple((b, sigma_x, p, q, T))
-        image_shape = self.get_params('recon_shape')
 
+        max_iters = max_iterations
+        stop_thresh = stop_threshold_change_pct / 100.0  # scalar threshold
+
+        self.logger.info('Starting VCD iterations')
+        if verbose >= 2:
+            output = io.StringIO()
+            mj.get_memory_stats(file=output)
+            self.logger.debug(output.getvalue())
+            self.logger.debug('--------')
+
+        # Two paths (see class docstring): a single device runs the whole sweep on-device in one
+        # JIT (the fast path when the image fits on one device -- a single shard needs no qGGMRF
+        # halos, so the reflected BC applies as-is); multiple devices slice-shard the flat arrays
+        # and run a Python loop that stages the qGGMRF halos once per pass (extract_halos is
+        # host-side, so it cannot live in a JIT), mirroring vcd_recon.  Both have the same
+        # signature, so dispatch by picking the function.
+        denoise_fcn = (self._denoise_single_device if len(self.recon_placement.devices) == 1
+                       else self._denoise_sharded)
+        flat_image, nmae_update, alpha_values, num_iters = denoise_fcn(
+            flat_image, flat_error_image, partition, fm_constant, qggmrf_params, image_shape,
+            max_iters, stop_thresh, first_iteration)
+
+        fm_rmse = None
+        recon_params = (fm_rmse, nmae_update[0:num_iters], alpha_values[0:num_iters])
+        stop_threshold_change_pct = [100 * float(val) for val in recon_params[1]]
+        alpha_values = [float(val) for val in recon_params[2]]
+
+        prior_loss = None
+        recon_param_values = [int(num_iters), granularity, partition_sequence, fm_rmse, prior_loss,
+                              regularization_params, stop_threshold_change_pct, alpha_values]
+        recon_params = mj.ReconParams(*tuple(recon_param_values))._asdict()
+
+        notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
+        denoiser_dict = self.get_recon_dict(recon_params, notes=notes)
+        if output_sharded:
+            # Keep the internal device form (slice-sharded; the slice axis may be padded).
+            denoised_image = flat_image.reshape(self._recon_device_shape())
+        else:
+            # Default: gather to a numpy real-shape array (a no-op on one device; crops any padded
+            # slices on multiple devices), then restore the 3-D image shape.
+            denoised_image = self.reshape_recon(self._gather_recon(flat_image))
+
+        return denoised_image, denoiser_dict
+
+    def _log_denoise_progress(self, cur_iter, cur_nmae, first_iteration, max_iters):
+        """Log one denoising-iteration progress line.  Called directly in the sharded path and via
+        ``jax.debug.callback`` from the single-device JIT, so it accepts numpy/jax scalars."""
+        self.logger.info('After iteration {} of a max of {}: Pct change={:.4f}'.format(
+            int(cur_iter) + first_iteration, max_iters, 100 * float(cur_nmae)))
+
+    def _denoise_single_device(self, flat_image, flat_error_image, partition, fm_constant,
+                               qggmrf_params, image_shape, max_iters, stop_thresh, first_iteration):
+        """Run the whole denoising sweep on one device in a single JIT (the fast path when the
+        image fits on one device; a single shard needs no qGGMRF halos -- reflected BC applies).
+
+        ``flat_image``/``flat_error_image`` arrive already on the (single) recon device -- a 1-shard
+        NamedSharding from ``_shard_recon``, which the whole-sweep JIT and the single-device prior
+        handle identically to a plain device_put.  Returns (flat_image, nmae_history,
+        alpha_history, num_iters), the histories padded to ``max_iters`` (the exit slices them).
+        """
         @jax.jit  # JIT the whole sweep
         def denoise_over_partition(local_flat_image, local_flat_error_image):
             """Run vcd_subset_denoiser over every subset in `partition`
@@ -265,16 +340,8 @@ class QGGMRFDenoiser(TomographyModel):
             return final_carry  # unpack outside if you like
 
         # pre-allocate history arrays (static length = max_iters)
-        max_iters = max_iterations
         nmae_update_init = jnp.zeros(max_iters)
         alpha_values_init = jnp.zeros(max_iters)
-
-        stop_thresh = stop_threshold_change_pct / 100.0  # scalar threshold
-
-        def log_updates(updates):
-            cur_iter, cur_nmae = updates
-            iter_output = 'After iteration {} of a max of {}: Pct change={:.4f}'.format(cur_iter + first_iteration, max_iters, 100 * cur_nmae)
-            self.logger.info(iter_output)
 
         @jax.jit
         def run_denoising_loop(local_flat_image, local_flat_error_image):
@@ -320,12 +387,12 @@ class QGGMRFDenoiser(TomographyModel):
 
                 # Insert call back to print progress
                 print_rate = 5
-                iter_updates = (i, nmae_body[i])
                 _ = lax.cond(
                     (i % print_rate) == 0,
                     lambda c: (
                         # call host_callback then return unchanged carry
-                        jax.debug.callback(log_updates, iter_updates)
+                        jax.debug.callback(self._log_denoise_progress, i, nmae_body[i],
+                                           first_iteration, max_iters)
                     ),
                     lambda c: c,
                     None
@@ -343,32 +410,92 @@ class QGGMRFDenoiser(TomographyModel):
 
             return local_flat_image, local_flat_error_image, nmae_hist, alpha_hist, num_iters_loop
 
-        self.logger.info('Starting VCD iterations')
-        if verbose >= 2:
-            output = io.StringIO()
-            mj.get_memory_stats(file=output)
-            self.logger.debug(output.getvalue())
-            self.logger.debug('--------')
+        flat_image, _flat_error_image, nmae_update, alpha_values, num_iters = (
+            run_denoising_loop(flat_image, flat_error_image))
+        return flat_image, nmae_update, alpha_values, num_iters
 
-        # Do the iterations
-        (flat_image, flat_error_image,  # full length = max_iters (unused slots stay 0)
-         nmae_update, alpha_values, num_iters) = run_denoising_loop(flat_image, flat_error_image)
+    def _denoise_sharded(self, flat_image, flat_error_image, partition, fm_constant,
+                         qggmrf_params, image_shape, max_iters, stop_thresh, first_iteration):
+        """Run the denoising sweep across devices on the (already slice-sharded) flat arrays.
 
-        fm_rmse = None
-        recon_params = (fm_rmse, nmae_update[0:num_iters], alpha_values[0:num_iters])
-        stop_threshold_change_pct = [100 * float(val) for val in recon_params[1]]
-        alpha_values = [float(val) for val in recon_params[2]]
+        Mirrors vcd_recon's sharded path: a Python outer loop stages the qGGMRF halos once per
+        pass (host-side), and an eager per-subset updater computes the halo-aware prior and the
+        identity-forward line search.  Because the forward model is the identity there is only the
+        recon mesh -- every reduction (prior and line-search scalars) lands there, so ``alpha``
+        needs no cross-mesh reconciliation.  Returns (flat_image, nmae_history, alpha_history,
+        num_iters), the histories at actual length (the exit slices to num_iters).
+        """
+        eps = jnp.finfo(jnp.float32).eps
+        max_alpha = 1.5
 
-        prior_loss = None
-        recon_param_values = [int(num_iters), granularity, partition_sequence, fm_rmse, prior_loss,
-                              regularization_params, stop_threshold_change_pct, alpha_values]
-        recon_params = mj.ReconParams(*tuple(recon_param_values))._asdict()
+        def sharded_subset(cur_image, cur_error_full, subset, staged_halos):
+            """One VCD update over a subset of pixels: combine the qGGMRF prior with the identity
+            forward model, take the optimal step, and update the image and residual in place."""
+            # Replicate the subset indices across the recon mesh so the pixel-axis gather/scatter
+            # is local to each slice-shard (a single device is the trivial 1-shard case).
+            recon_indices = jax.device_put(
+                subset, jax.sharding.NamedSharding(self.recon_placement.mesh,
+                                                   jax.sharding.PartitionSpec()))
+            # qGGMRF prior gradient/Hessian at this subset's pixels, with halo exchange for the
+            # inter-slice term; pass the plain subset, like vcd_recon.
+            prior_grad, prior_hess = self._qggmrf_prior_sharded(
+                cur_image, subset, qggmrf_params, staged_halos=staged_halos)
+            # Forward-model gradient/Hessian.  The forward model is the identity, so the gradient is
+            # just -fm_constant * residual and the Hessian is all 1s (no projection).
+            cur_error = cur_error_full[recon_indices]
+            forward_grad = - fm_constant * cur_error
+            forward_hess = 1
+            # Newton update direction in the recon domain (combined forward + prior).
+            delta = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
+            # Prior terms of the line search: delta^T grad and an upper bound on delta^T H delta.
+            prior_linear = jnp.sum(prior_grad * delta)
+            prior_quadratic_approx = jnp.sum(prior_hess * delta ** 2)
+            # Forward terms of the line search.  Identity forward model: the "sinogram" delta is
+            # delta itself.  All four scalars reduce over the recon mesh, so alpha is computed there
+            # directly (no cross-mesh reconciliation).
+            forward_linear = fm_constant * jnp.tensordot(cur_error, delta, axes=2)
+            forward_quadratic = fm_constant * jnp.tensordot(delta, delta, axes=2)
+            # Optimal step size for this subset, clamped to (eps, max_alpha) for stability.
+            alpha = (forward_linear - prior_linear) / (forward_quadratic + prior_quadratic_approx + eps)
+            alpha = jnp.clip(alpha, eps, max_alpha)
+            # Apply the step with update_recon (a donated, in-place scatter-add, so XLA reuses the
+            # slice-sharded buffers): add the step to the image, and add its negative to the
+            # residual (for the subset's unique indices, set(cur_error - alpha*delta) is exactly
+            # adding -alpha*delta).
+            scaled_delta = alpha * delta
+            cur_image = mj.update_recon(cur_image, recon_indices, scaled_delta)
+            cur_error_full = mj.update_recon(cur_error_full, recon_indices, -scaled_delta)
+            # L1 norm of this subset's update, accumulated into the NMAE stop metric.
+            ell1 = jnp.sum(jnp.abs(scaled_delta))
+            return cur_image, cur_error_full, ell1, alpha
 
-        notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
-        denoiser_dict = self.get_recon_dict(recon_params, notes=notes)
-        denoised_image = self.reshape_recon(flat_image)
+        num_subsets = int(partition.shape[0])
+        print_rate = 5
+        nmae_hist, alpha_hist = [], []
+        num_iters = 0
+        # Outer optimization loop: each iteration is one pass over all subsets of the partition,
+        # stopping at max_iters or once the per-iteration change (NMAE) falls below the threshold.
+        for it in range(max_iters):
+            # Stage the qGGMRF boundary halos ONCE for this pass (host-side) and reuse across subsets.
+            staged_halos = self._stage_halos(flat_image)
+            # Sweep every subset, accumulating this pass's update L1 and step sizes.
+            ell1_accum, alpha_accum = 0.0, 0.0
+            for s in range(num_subsets):
+                flat_image, flat_error_image, ell1_sub, alpha_sub = sharded_subset(
+                    flat_image, flat_error_image, partition[s], staged_halos)
+                ell1_accum = ell1_accum + ell1_sub
+                alpha_accum = alpha_accum + alpha_sub
+            # Per-iteration stats: NMAE = ||update||_1 / ||image||_1 (the stop metric) and mean step.
+            nmae = float(ell1_accum / jnp.sum(jnp.abs(flat_image)))
+            nmae_hist.append(nmae)
+            alpha_hist.append(float(alpha_accum / num_subsets))
+            num_iters += 1
+            if (it % print_rate) == 0:
+                self._log_denoise_progress(it, nmae, first_iteration, max_iters)
+            if nmae < stop_thresh:   # converged: change this pass is below the stop threshold
+                break
 
-        return denoised_image, denoiser_dict
+        return flat_image, jnp.asarray(nmae_hist), jnp.asarray(alpha_hist), num_iters
 
 
 def vcd_subset_denoiser(flat_image, flat_error_image, pixel_indices,
@@ -447,6 +574,11 @@ def median_filter3d(x, max_block_gb=4.0, return_min_max=False) -> Union[jnp.ndar
     * Within each block the filter is computed by rolling the data in all 26
       neighbour directions, stacking the 27 volumes, and taking
       :func:`jnp.median` along the new axis.
+    * This is a whole-volume operation and is **not** sharding-aware.  The built-in d0-blocking
+      already bounds single-device memory, so a large volume can be filtered on one device.  If ``x``
+      is distributed across multiple devices (e.g. a recon returned with ``output_sharded=True``),
+      gather it to a single device first; otherwise JAX partitions the sharded-axis stencil with
+      cross-device communication (a warning is issued in that case).
 
     Examples
     --------
@@ -460,6 +592,15 @@ def median_filter3d(x, max_block_gb=4.0, return_min_max=False) -> Union[jnp.ndar
            ...
            dtype=float32)
     """
+    # Not sharding-aware: a multi-device input would have its 3x3x3 stencil partitioned by XLA
+    # (cross-device communication, possibly slow).  Warn so the user can gather it to one device.
+    shards = getattr(x, 'addressable_shards', None)
+    if shards is not None and len(shards) > 1:
+        warnings.warn(
+            'median_filter3d received an array sharded across {} devices; it is a whole-volume '
+            'operation, so JAX will partition the 3x3x3 stencil across devices (cross-device '
+            'communication).  For predictable performance gather it to one device first, e.g. '
+            'np.asarray(x) or jax.device_put(x, jax.devices()[0]).'.format(len(shards)))
     d0, d1, d2 = x.shape
     x_gb = x.size * 4 / (1024**3)
     num_blocks = np.ceil(27 * x_gb / max_block_gb).astype(int)

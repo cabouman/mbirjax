@@ -1,0 +1,323 @@
+import os
+import tempfile
+import unittest
+import warnings
+import numpy as np
+import jax.numpy as jnp
+import scipy
+import mbirjax as mj
+
+
+class TestVCD(unittest.TestCase):
+    """
+    Unit tests for verifying the reconstruction accuracy of the VCD algorithm in MBIRJAX.
+    """
+
+    def setUp(self):
+        """Set up before each test method."""
+        np.random.seed(0)  # Set a seed to avoid variations due to partition creation.
+        # Choose the geometry type
+        self.geometry_types = mj._utils._geometry_types_for_tests
+        # nrmse/max_diff/pct_95 gate CONVERGED quality (used for the full-convergence
+        # geometries); sanity_nrmse gates the 3-iteration sanity recon for the rest,
+        # calibrated at ~1.6x the MEASURED 3-iteration nrmse (2026-06-11: aniso_parallel
+        # 0.206, aniso_cone 0.469, helical 0.298, translation 0.399, aniso_translation
+        # 0.498; the trivial zero-recon level is nrmse == 1, so every gate keeps real
+        # headroom below "did nothing").
+        self.parallel_tolerances = {'nrmse': 0.11, 'max_diff': 0.33, 'pct_95': 0.04, 'sanity_nrmse': 0.33}
+        self.anisotropic_parallel_tolerances = {'nrmse': 0.20, 'max_diff': 0.45, 'pct_95': 0.08, 'sanity_nrmse': 0.33}
+        self.cone_tolerances = {'nrmse': 0.15, 'max_diff': 0.5, 'pct_95': 0.04, 'sanity_nrmse': 0.40}
+        self.anisotropic_cone_tolerances = {'nrmse': 0.49, 'max_diff': 1.0, 'pct_95': 0.21, 'sanity_nrmse': 0.75}
+        self.helical_cone_tolerances = dict(self.cone_tolerances, sanity_nrmse=0.48)
+        self.translation_tolerances = {'nrmse': 0.6, 'max_diff': 0.75, 'pct_95': 0.13, 'sanity_nrmse': 0.64}
+        self.anisotropic_translation_tolerances = {'nrmse': 0.6, 'max_diff': 1.0, 'pct_95': 0.13, 'sanity_nrmse': 0.80}
+        self.all_tolerances = [self.parallel_tolerances, self.anisotropic_parallel_tolerances, self.cone_tolerances,
+                               self.anisotropic_cone_tolerances, self.helical_cone_tolerances, self.translation_tolerances, self.anisotropic_translation_tolerances]
+        if len(self.geometry_types) != len(self.all_tolerances):
+            raise IndexError('The list of geometry types does not match the list of test tolerances for the geometry types.')
+        self.tolerances_by_geometry = dict(zip(self.geometry_types, self.all_tolerances))
+
+        # Set parameters
+        self.num_views = 64
+        self.num_det_rows = 40
+        self.num_det_channels = 128
+        self.sharpness = 0.0
+        
+        # These can be adjusted to scale voxel aspect ratios for the anisotropic cases
+        self.voxel_row_aspect = 1.9
+        self.voxel_slice_aspect = 2.9 # Only for cone beam and translation
+
+        # These can be adjusted to describe the geometry in the cone beam case.
+        # np.Inf is an allowable value, in which case this is essentially parallel beam
+        self.source_detector_dist = 4 * self.num_det_channels
+        self.source_iso_dist = self.source_detector_dist / 2
+        
+        # These can be adjusted to describe the geometry in the helical cone beam case.
+        self.helical_pitch = 0.5
+        self.helical_z_range = 80.0
+        self.helical_z_center = 40.0
+
+        # Initialize sinogram
+        self.sinogram_shape = (self.num_views, self.num_det_rows, self.num_det_channels)
+        self.angles = None
+        self.helical_z_shifts = None
+        self.translation_vectors = None
+
+    def tearDown(self):
+        """Clean up after each test method."""
+        pass
+
+    def set_view_params(self, geometry_type):
+        if geometry_type == 'cone':
+            detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
+        elif geometry_type == 'anisotropic_cone':
+            detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
+        elif geometry_type == 'helical_cone':
+            detector_cone_angle = 2 * np.arctan2(self.num_det_channels / 2, self.source_detector_dist)
+            
+            magnification = self.source_detector_dist / self.source_iso_dist
+            det_height_iso = self.num_det_rows / magnification
+            z_per_rot = self.helical_pitch * det_height_iso
+            dz_per_view = z_per_rot / self.num_views
+            view_offsets = jnp.arange(self.num_views) - (self.num_views - 1) / 2
+            self.helical_z_shifts = self.helical_z_center + dz_per_view * view_offsets
+        else:
+            detector_cone_angle = 0
+        start_angle = -(np.pi + detector_cone_angle) * (1 / 2)
+        end_angle = (np.pi + detector_cone_angle) * (1 / 2)
+        self.angles = jnp.linspace(start_angle, end_angle, self.num_views, endpoint=False)
+
+        num_x_translations = 7
+        num_z_translations = 7
+        x_spacing = 22
+        z_spacing = 22
+
+        # Generate translation vectors
+        translation_vectors = mj.gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
+        self.translation_vectors = translation_vectors
+
+    def get_model(self, geometry_type):
+        if (geometry_type == 'cone') | (geometry_type == 'anisotropic_cone'):
+            ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles,
+                                             source_detector_dist=self.source_detector_dist,
+                                             source_iso_dist=self.source_iso_dist)
+        elif geometry_type == 'helical_cone':
+            ct_model = mj.ConeBeamModel(self.sinogram_shape, self.angles, helical_z_shifts=self.helical_z_shifts,
+                                             source_detector_dist=self.source_detector_dist,
+                                             source_iso_dist=self.source_iso_dist)
+        elif (geometry_type == 'parallel') | (geometry_type == 'anisotropic_parallel'):
+            ct_model = mj.ParallelBeamModel(self.sinogram_shape, self.angles)
+        elif (geometry_type == 'translation') | (geometry_type == 'anisotropic_translation'):
+            ct_model = mj.TranslationModel(self.sinogram_shape, self.translation_vectors,
+                                                source_detector_dist=self.source_detector_dist,
+                                                source_iso_dist=self.source_iso_dist)
+        else:
+            raise ValueError('Invalid geometry type.  Expected cone or parallel, got {}'.format(geometry_type))
+
+        return ct_model
+
+    # Geometries gated at FULL convergence (the canonical "physics converges" check):
+    # parallel (the beta/sharding geometry) and cone (the production workhorse).  The
+    # VCD loop machinery is geometry-INDEPENDENT, so converging it once per beam family
+    # is sufficient; per-geometry KERNEL correctness is gated sharply (and cheaply) by
+    # the adjoint identity in test_projectors.  The remaining geometries run a
+    # 3-iteration SANITY recon ("nothing major changed"): the error must drop well below
+    # the trivial zero-recon level (nrmse == 1), against per-geometry 'sanity_nrmse'
+    # gates calibrated at ~1.6x the measured 3-iteration values (2026-06-11).
+    FULL_CONVERGENCE_GEOMETRIES = ('parallel', 'cone')
+    SANITY_ITERATIONS = 3
+
+    # One test method PER GEOMETRY is generated below (test_vcd_parallel, test_vcd_cone,
+    # ...) instead of a single test looping subTests: pytest can then report, select
+    # (-k cone), and distribute (pytest-xdist) the geometries individually -- the
+    # single-loop form pinned one ~45 s monolith to a single xdist worker.
+
+    def verify_vcd(self, geometry_type, tolerances, sanity_only=False):
+        """
+        Verify the vcd reconstruction for a simple phantom: against the converged-quality
+        tolerances (sanity_only=False), or as a quick low-iteration sanity check against
+        the geometry's 'sanity_nrmse' gate (sanity_only=True).
+        """
+        self.set_view_params(geometry_type)
+        ct_model = self.get_model(geometry_type)
+
+        # Generate 3D Shepp Logan phantom
+        print('  Creating phantom')
+        if geometry_type in ('translation', 'anisotropic_translation'):
+            recon_shape = ct_model.get_params('recon_shape')
+            words = ["Purdue", "Presents", "Translation", "Tomography"]
+            phantom = mj.gen_translation_phantom(recon_shape=recon_shape, option='text', text=words)
+        else:
+            recon_shape = ct_model.get_params('recon_shape')
+            phantom_shape = recon_shape
+            embed_slice_start = 0
+            embed_slice_stop = recon_shape[2]
+            if geometry_type == 'helical_cone':
+                embed_slice_start, embed_slice_stop = mj.get_helical_half_rotation_slice_range(
+                    ct_model,
+                    self.helical_pitch,
+                    self.helical_z_shifts
+                )
+                phantom_shape = (
+                    recon_shape[0],
+                    recon_shape[1],
+                    embed_slice_stop - embed_slice_start,
+                )
+            phantom_core = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
+            if geometry_type == 'helical_cone':
+                phantom = jnp.zeros(recon_shape)
+                phantom = phantom.at[:, :, embed_slice_start:embed_slice_stop].set(phantom_core)
+            else:
+                phantom = phantom_core
+
+        # Generate synthetic sinogram data
+        print('  Creating sinogram')
+        sinogram = ct_model.forward_project(phantom)
+
+        # Set reconstruction parameter values
+        ct_model.set_params(verbose=0)
+        if geometry_type == 'anisotropic_cone':
+            ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
+            ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
+            ct_model.auto_set_recon_geometry()
+        if geometry_type == 'anisotropic_parallel':
+            ct_model.set_params(voxel_row_aspect=self.voxel_row_aspect)
+            ct_model.auto_set_recon_geometry()
+        if geometry_type == 'anisotropic_translation':
+            # For TCT, keep voxel_row_aspect at the automatically computed default.
+            # Reconstruction quality is sensitive to row pitch, so only vary voxel_slice_aspect here.
+            ct_model.set_params(voxel_slice_aspect=self.voxel_slice_aspect)
+            ct_model.auto_set_recon_geometry()
+
+        # ##########################
+        # Perform VCD reconstruction
+        print('  Starting recon')
+        np.random.seed(0)  # the partition sequence is drawn from the global RNG
+        if sanity_only:
+            recon, recon_dict = ct_model.recon(sinogram, max_iterations=self.SANITY_ITERATIONS,
+                                               stop_threshold_change_pct=0.0)
+        else:
+            recon, recon_dict = ct_model.recon(sinogram)
+        # recon is a host NumPy array (output_sharded defaults to False, which gathers to the host),
+        # so there is nothing to block on -- the gather already forced and synced the computation.
+
+        # if anisotropic, rescale the recon to the phantom shape
+        if (geometry_type == 'anisotropic_cone') | (geometry_type == 'anisotropic_parallel') | (geometry_type == 'anisotropic_translation'):
+            phantom_temp = scipy.ndimage.zoom(phantom, zoom=(np.shape(recon)[0] / np.shape(phantom)[0],
+                                                             np.shape(recon)[1] / np.shape(phantom)[1],
+                                                             np.shape(recon)[2] / np.shape(phantom)[2]))
+            phantom = scipy.ndimage.zoom(phantom_temp, zoom=(np.shape(phantom)[0] / np.shape(phantom_temp)[0],
+                                                             np.shape(phantom)[1] / np.shape(phantom_temp)[1],
+                                                             np.shape(phantom)[2] / np.shape(phantom_temp)[2]))
+            recon = scipy.ndimage.zoom(recon, zoom=(np.shape(phantom)[0] / np.shape(recon)[0],
+                                                    np.shape(phantom)[1] / np.shape(recon)[1],
+                                                    np.shape(phantom)[2] / np.shape(recon)[2]))
+
+        max_diff = np.amax(np.abs(phantom  - recon))
+        nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
+        pct_95 = np.percentile(np.abs(recon - phantom), 95)
+        print('  nrmse = {:.3f}'.format(nrmse))
+        print('  max_diff = {:.3f}'.format(max_diff))
+        print('  pct_95 = {:.3f}'.format(pct_95))
+
+        if sanity_only:
+            # "Nothing major changed": a few iterations must pull the error well below
+            # the trivial zero-recon level (nrmse == 1) and produce finite values.
+            self.assertTrue(np.all(np.isfinite(recon)))
+            self.assertLess(nrmse, tolerances['sanity_nrmse'])
+        else:
+            self.assertTrue(max_diff < tolerances['max_diff'] and
+                            nrmse < tolerances['nrmse'] and
+                            pct_95 < tolerances['pct_95'])
+
+        print('  Testing hdf5 save and load')
+        notes = "Testing save/load"
+        with tempfile.NamedTemporaryFile('w') as file:
+            filepath = file.name
+            ct_model.save_recon_hdf5(filepath, recon, recon_dict)
+            loaded_recon, loaded_recon_dict = mj.TomographyModel.load_recon_hdf5(str(filepath))
+            loaded_notes = loaded_recon_dict['notes']
+
+            assert np.allclose(recon, loaded_recon)
+            assert recon_dict['notes'] == loaded_notes
+
+
+    # Iteration count for the split-vs-unsplit comparison, and the gate on their
+    # relative difference.  split_sino_recon's added value over recon() is the
+    # SPLIT+STITCH; comparing the two MODES at the same modest iteration count tests
+    # exactly that (a stitching error shows up from iteration 1), without paying for
+    # convergence (gated separately on the full-convergence geometries above).  The
+    # gate covers the documented seam approximation + the halves' different partition
+    # draws, calibrated at ~2x the measured value (2026-06-11).
+    SPLIT_SINO_ITERATIONS = 4
+    SPLIT_VS_FULL_NRMSE = 0.10   # measured 0.0487 (2026-06-11); gate at ~2x
+
+    def test_split_sino(self):
+        geometry_type = 'cone'
+        self.set_view_params(geometry_type)
+        ct_model = self.get_model(geometry_type)
+        ct_model.set_params(verbose=0)
+
+        # Generate synthetic sinogram data
+        phantom_shape = ct_model.get_params('recon_shape')
+        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
+        sinogram = ct_model.forward_project(phantom)
+
+        # ##########################
+        # Mode-vs-mode: the stitched half-sino recon against the unsplit recon at the
+        # same iteration count (each seeded: the partition sequence is drawn from the
+        # global RNG).
+        print('  Starting unsplit recon')
+        np.random.seed(0)
+        recon_full, _ = ct_model.recon(sinogram, max_iterations=self.SPLIT_SINO_ITERATIONS,
+                                       stop_threshold_change_pct=0.0)
+        recon_full = np.asarray(recon_full)
+        print('  Starting split recon')
+        np.random.seed(0)
+        ct_model.set_params(verbose=1)  # INFO level, so the half logs have content to verify
+        with tempfile.TemporaryDirectory() as log_dir:
+            logfile_path = os.path.join(log_dir, 'split.log')
+            recon, recon_dict = ct_model.split_sino_recon(sinogram,
+                                                          max_iterations=self.SPLIT_SINO_ITERATIONS,
+                                                          stop_threshold_change_pct=0.0,
+                                                          logfile_path=logfile_path,
+                                                          print_logs=False)
+            # The halves' logs must be merged into one file, temps removed.
+            with open(logfile_path, 'r') as f:
+                log_text = f.read()
+            self.assertIn('split_sino_recon: top half', log_text)
+            self.assertIn('split_sino_recon: bottom half', log_text)
+            self.assertEqual(log_text.count('MBIRJAX Version'), 2)
+            self.assertFalse(os.path.exists(logfile_path + '.top'))
+            self.assertFalse(os.path.exists(logfile_path + '.bot'))
+        ct_model.set_params(verbose=0)
+        recon = np.asarray(recon)
+
+        split_vs_full = np.linalg.norm(recon - recon_full) / np.linalg.norm(recon_full)
+        print('  split-vs-full nrmse = {:.4f}'.format(split_vs_full))
+        self.assertLess(split_vs_full, self.SPLIT_VS_FULL_NRMSE)
+        # Loose vs-phantom sanity ("nothing major changed" for the whole pipeline).
+        nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
+        print('  nrmse vs phantom = {:.3f}'.format(nrmse))
+        self.assertTrue(np.all(np.isfinite(recon)))
+        self.assertLess(nrmse, self.cone_tolerances['sanity_nrmse'])
+
+
+def _add_per_geometry_vcd_tests():
+    """Generate one test_vcd_<geometry> method per geometry (see the note in TestVCD)."""
+    for geometry_type in mj._utils._geometry_types_for_tests:
+        def test(self, geometry_type=geometry_type):
+            print("Testing vcd with", geometry_type)
+            sanity_only = geometry_type not in self.FULL_CONVERGENCE_GEOMETRIES
+            self.verify_vcd(geometry_type, self.tolerances_by_geometry[geometry_type],
+                            sanity_only=sanity_only)
+        test.__name__ = 'test_vcd_' + geometry_type
+        test.__doc__ = 'VCD reconstruction check for the {} geometry.'.format(geometry_type)
+        setattr(TestVCD, test.__name__, test)
+
+
+_add_per_geometry_vcd_tests()
+
+
+if __name__ == '__main__':
+    unittest.main()

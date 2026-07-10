@@ -1,12 +1,14 @@
-import jax.numpy as jnp
 import mbirjax as mj
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import time
+import gc
 
 # 1. Setup Parameters (Rectangle Phantom)
 sinogram_shape = (18, 100, 200)
 azimuths = jnp.linspace(0, jnp.pi, sinogram_shape[0], endpoint=False)
-elevation = jnp.ones_like(azimuths)*jnp.deg2rad(25)
+elevation_degrees = 25
+elevation = jnp.ones_like(azimuths)*jnp.deg2rad(elevation_degrees)
 # Input angles as (num_views,2)
 angles_zero = jnp.column_stack([azimuths, jnp.zeros_like(azimuths)])
 angles_tilt = jnp.column_stack([azimuths, elevation])
@@ -35,7 +37,7 @@ sino_ma_zero = model_ma_zero.forward_project(phantom)
 print('Multi-Axis (Elevation 0) Forward Projection Time: %.2f seconds' % (time.time()-time_start))
 time_start=time.time()
 sino_ma_tilt = model_ma_tilt.forward_project(phantom)
-print('Multi-Axis (Elevation 20°) Forward Projection Time: %.2f seconds' % (time.time()-time_start))
+print(f'Multi-Axis (Elevation {elevation_degrees}°) Forward Projection Time: {(time.time()-time_start):.2f} seconds')
 
 # 5. Validation Check
 max_diff = jnp.max(jnp.abs(sino_pb - sino_ma_zero))
@@ -43,6 +45,8 @@ print(f"Max Difference vs Standard (Elevation 0): {max_diff:.2e}")
 # 6. Plotting sino views
 vmin=jnp.min(jnp.array([sino_pb, sino_ma_zero, sino_ma_tilt]))
 vmax=jnp.max(jnp.array([sino_pb, sino_ma_zero, sino_ma_tilt]))
+mj.slice_viewer(sino_pb, sino_ma_zero, sino_ma_tilt, slice_axis=0,
+                title=f'Left: parallel beam, Middle: elevation=0, Right: elevation={elevation_degrees}°')
 plt.subplots(1,3,figsize=(15,5))
 plt.subplot(1,3,1)
 plt.imshow(sino_pb[3, :, :], vmin=vmin, vmax=vmax, cmap='gray', aspect='auto')
@@ -52,8 +56,14 @@ plt.imshow(sino_ma_zero[3, :, :], vmin=vmin, vmax=vmax, cmap='gray', aspect='aut
 plt.title(f'MultiAxisParallelModel Sinogram View \n (Azimuth,Elevation)=({jnp.rad2deg(azimuths[3]):.1f}°,0°)')
 plt.subplot(1,3,3)
 plt.imshow(sino_ma_tilt[3, :, :], vmin=vmin, vmax=vmax, cmap='gray', aspect='auto')
-plt.title(f'MultiAxisParallelModel Sinogram View \n (Azimuth,Elevation)=({jnp.rad2deg(azimuths[3]):.1f}°,20°)')
+plt.title(f'MultiAxisParallelModel Sinogram View \n (Azimuth,Elevation)=({jnp.rad2deg(azimuths[3]):.1f}°,{elevation_degrees}°)')
 plt.show()
+# Close the raw-matplotlib figures and finalize their TkAgg toolbar images on the MAIN thread now.
+# Otherwise a later automatic GC (e.g. during the recon below) runs the tkinter PhotoImage finalizers
+# off the main thread and prints "Exception ignored in Image.__del__: ... main thread is not in main
+# loop".  (slice_viewer does the same cleanup internally; this is for the bare plt.* figures above.)
+plt.close('all')
+gc.collect()
 
 time_start=time.time()
 recon_pb=model_pb.direct_recon(sino_pb)
@@ -71,17 +81,17 @@ ma_zero_error=jnp.linalg.norm(recon_ma_zero-phantom)/jnp.linalg.norm(phantom)
 ma_tilt_error=jnp.linalg.norm(recon_ma_tilt-phantom)/jnp.linalg.norm(phantom)
 print(f"Parallel Beam Direct Recon NRMSE: {pb_error:.2e}")
 print(f"Multi-Axis (Elevation 0) Direct Recon NRMSE: {ma_zero_error:.2e}")
-print(f"Multi-Axis (Elevation 20°) Direct Recon NRMSE: {ma_tilt_error:.2e}")
+print(f"Multi-Axis (Elevation {elevation_degrees}°) Direct Recon NRMSE: {ma_tilt_error:.2e}")
 # Check Reconstruction Differences
 max_diff_recon_zero = jnp.max(jnp.abs(recon_pb - recon_ma_zero))
 max_diff_recon_tilt = jnp.max(jnp.abs(recon_pb - recon_ma_tilt))
 print(f"Max Direct Reconstruction Difference vs Standard (Elevation 0): {max_diff_recon_zero:.2e}")
-print(f"Max Direct Reconstruction Difference vs Standard (Elevation 20°): {max_diff_recon_tilt:.2e}")
+print(f"Max Direct Reconstruction Difference vs Standard (Elevation {elevation_degrees}°): {max_diff_recon_tilt:.2e}")
 
 # Display Direct Reconstructions
 
 mj.slice_viewer(recon_pb, recon_ma_zero, title='FBP Reconstruction: ParallelBeamModel vs MultiAxisParallelModel with elevation=0', slice_axis=2, slice_label='Slice')
-mj.slice_viewer(recon_pb, recon_ma_tilt, title='FBP Reconstruction: ParallelBeamModel vs MultiAxisParallelModel with elevation=20', slice_axis=2, slice_label='Slice')
+mj.slice_viewer(recon_pb, recon_ma_tilt, title=f'FBP Reconstruction: ParallelBeamModel vs MultiAxisParallelModel with elevation={elevation_degrees}', slice_axis=2, slice_label='Slice')
 
 time_start=time.time()
 recon_pb,_=model_pb.recon(sino_pb)
@@ -91,7 +101,7 @@ recon_ma_zero,_=model_ma_zero.recon(sino_ma_zero)
 print('Multi-Axis (Elevation 0) Reconstruction Time: %.2f seconds' % (time.time()-time_start))
 time_start=time.time()
 recon_ma_tilt,_=model_ma_tilt.recon(sino_ma_tilt)
-print('Multi-Axis (Elevation 20°) Reconstruction Time: %.2f seconds' % (time.time()-time_start))
+print(f'Multi-Axis (Elevation {elevation_degrees}°) Reconstruction Time: %.2f seconds' % (time.time()-time_start))
 
 # Check error
 pb_error=jnp.linalg.norm(recon_pb-phantom)/jnp.linalg.norm(phantom)
@@ -105,8 +115,8 @@ print(f"Multi-Axis (Azimuth 0) Recon NRMSE: {ma_tilt_error:.2e}")
 max_diff_recon_zero = jnp.max(jnp.abs(recon_pb - recon_ma_zero))
 max_diff_recon_tilt = jnp.max(jnp.abs(recon_pb - recon_ma_tilt))
 print(f"Max Reconstruction Difference vs Standard (Elevation 0): {max_diff_recon_zero:.2e}")
-print(f"Max Reconstruction Difference vs Standard (Elevation 20°): {max_diff_recon_tilt:.2e}")
+print(f"Max Reconstruction Difference vs Standard (Elevation {elevation_degrees}°): {max_diff_recon_tilt:.2e}")
 
 # Display MBIR Reconstructions
 mj.slice_viewer(recon_pb, recon_ma_zero, title='MBIR Reconstruction: ParallelBeamModel vs MultiAxisParallelModel with elevation=0', slice_axis=2, slice_label='Slice')
-mj.slice_viewer(recon_pb, recon_ma_tilt, title='MBIR Reconstruction: ParallelBeamModel vs MultiAxisParallelModel with elevation=20', slice_axis=2, slice_label='Slice')
+mj.slice_viewer(recon_pb, recon_ma_tilt, title=f'MBIR Reconstruction: ParallelBeamModel vs MultiAxisParallelModel with elevation={elevation_degrees}', slice_axis=2, slice_label='Slice')

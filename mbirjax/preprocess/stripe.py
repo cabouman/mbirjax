@@ -1,6 +1,8 @@
 import jax
 import jax.numpy as jnp
 
+from mbirjax._device_setup import cpu_devices
+
 
 def generate_column_index_matrix(num_rows, num_cols):
     """
@@ -290,9 +292,10 @@ def remove_all_stripe(sino, snr=3, large_filter_size=61, small_filter_size=21):
     """
     from concurrent.futures import ThreadPoolExecutor
     index_matrix = generate_column_index_matrix(sino.shape[2], sino.shape[0])
-    index_matrix_cpu = jax.device_put(index_matrix, device=jax.devices("cpu")[0])
+    cpu0 = cpu_devices()[0]
+    index_matrix_cpu = jax.device_put(index_matrix, device=cpu0)
 
-    sino_cpu = jax.device_put(sino, device=jax.devices("cpu")[0])
+    sino_cpu = jax.device_put(sino, device=cpu0)
 
     result = jnp.zeros_like(sino)
 

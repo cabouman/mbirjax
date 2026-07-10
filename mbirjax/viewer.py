@@ -1,5 +1,6 @@
 import os
 import warnings
+import gc
 import matplotlib
 import easygui
 
@@ -92,7 +93,7 @@ class SliceViewer:
 
     def __init__(self, *datasets, data_dicts=None, title='', vmin=None, vmax=None, slice_label=None,
                  slice_axis=None, cmap='gray', show_instructions=True):
-        self.datasets = datasets
+        self.datasets = [np.asarray(dataset) for dataset in datasets]  # Convert to numpy arrays to avoid problems with sharded arrays
         self.n_volumes = len(datasets)
         self.title = title
         self.vmin = vmin
@@ -1028,12 +1029,17 @@ class SliceViewer:
             self.fig.canvas.draw_idle()
 
     def show(self):
-        """Display the viewer window and block execution until the window is closed."""
-        fignum = self.fig.number
+        """Display the viewer window and block execution until the window is closed.
+
+        Close this figure BY OBJECT after the window closes, so its TkAgg widgets are torn down
+        deterministically.  (Closing by number re-created a blank phantom figure when the window-close
+        event had already removed the real one from matplotlib's registry, leaving the real figure's
+        toolbar widgets un-closed.)  slice_viewer then drops the viewer and runs gc on the main thread,
+        so the toolbar PhotoImages are finalized here rather than later by a background-thread GC --
+        the source of "main thread is not in main loop".
+        """
         plt.show()
-        # Open and close the figure to make sure it closes properly.
-        plt.figure(fignum)
-        plt.close(fignum)
+        plt.close(self.fig)
 
 
 def _choose_array_name(array_names, shapes, file_path):
@@ -1093,3 +1099,13 @@ def slice_viewer(*datasets, data_dicts=None, title='', vmin=None, vmax=None, sli
     viewer = SliceViewer(*datasets, data_dicts=data_dicts, title=title, vmin=vmin, vmax=vmax,
                          slice_label=slice_label,  slice_axis=slice_axis, cmap=cmap,
                          show_instructions=show_instructions)
+    # The viewer blocks until its window closes.  Matplotlib's TkAgg backend leaves orphaned tkinter
+    # objects (toolbar icons/variables) that plt.close does not fully release; collect them now, on
+    # the main thread, so a later automatic GC -- e.g. during a sharded recon, whose reference-cycle
+    # arrays trigger gen-2 collection -- does not finalize them with no Tk mainloop running and print
+    # "main thread is not in main loop".  (Interim; a viewer overhaul is planned.)
+
+    # Apply del before gc.collect so the viewer↔Tk reference cycle is unreachable and gets finalized here,
+    # on the main thread, not by a later GC mid-recon.
+    del viewer  # Note that this requires that viewer not be referenced outside this function.
+    gc.collect()

@@ -12,15 +12,21 @@ ROW_FILTER_BATCH = 1024
 
 
 @jax.jit
-def apply_row_filter(block, filter_arr):
+def apply_row_filter(block, filter_arr, row_weight=None):
     """Apply a per-row 1-D filter to every detector row of a sinogram block.
 
     Geometry-agnostic: ``block`` is (views, rows, channels) and ``filter_arr`` is
     the 1-D recon filter (length 2*channels - 1 from generate_direct_recon_filter,
     already scaled by the caller).  Each detector row is convolved with the filter
     ('valid' mode, so the output length stays == channels).  This is the shared
-    FBP/FDK filter kernel for every geometry (parallel beam now; cone beam and the
+    FBP/FDK filter kernel for every geometry (parallel beam + cone beam now; the
     rest as they migrate).
+
+    Optional ``row_weight`` supplies the FDK cosine pre-weighting: a view-INDEPENDENT
+    (rows, channels) map that multiplies each detector row BEFORE convolution.  It is
+    applied inside the windowed scan (a bounded gather per window), so the peak stays
+    at the same input+output floor -- no full-sinogram out-of-place copy.  ``None``
+    (the default) is pure FBP, leaving the parallel-beam path unchanged.
 
     Implementation — a ``lax.scan`` over overlapping B-row windows that writes each
     window straight into a preallocated output:
@@ -42,6 +48,9 @@ def apply_row_filter(block, filter_arr):
     Args:
         block (jax array):      Shape (views, rows, channels), contiguous.
         filter_arr (jax array): Shape (2*channels - 1,), the (pre-scaled) filter.
+        row_weight (jax array or None): Optional (rows, channels) per-detector-row
+            weight (FDK cosine pre-weighting), broadcast over views, applied to each
+            row before filtering.  None (default) = no pre-weighting (FBP).
 
     Returns:
         jax array of shape (views, rows, channels).
@@ -71,6 +80,13 @@ def apply_row_filter(block, filter_arr):
         # padding copy and no concat, so the only full-size arrays are `rows` (a
         # view of `block`) and `out`.
         window = jax.lax.dynamic_slice(rows, (start, 0), (batch, n_channels))
+        if row_weight is not None:
+            # FDK cosine pre-weight: multiply each row of this window by its detector
+            # row's weight before convolving.  The flattened row start+k belongs to
+            # detector row (start + k) % n_rows (views are stacked along the flattened
+            # axis), so gather just this window's weights -- bounded (batch, c), no copy.
+            row_ids = (start + jnp.arange(batch)) % n_rows
+            window = window * row_weight[row_ids]
         filtered = jax.vmap(_convolve_row)(window)               # (batch, c_out)
         return jax.lax.dynamic_update_slice(out, filtered, (start, 0)), None
 
@@ -90,7 +106,7 @@ def generate_direct_recon_filter(num_channels, filter_name="ramp"):
         filter_name (string, optional): Name of the filter to be generated. Defaults to "ramp."
 
     Returns:
-        filter (jnp): The computed filter (filter.size = 2*num_channels + 1).
+        filter (jnp): The computed filter (filter.size = 2*num_channels - 1).
     """
 
     # If you want to add a new filter, place its name into supported_filters, and ...

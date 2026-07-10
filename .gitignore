@@ -22,6 +22,8 @@ experiments/hsnt/input_data/*
 experiments/hsnt/processed_data/
 experiments/hsnt/processed_data/*
 
+experiments/translation/purdue_BGA_data
+experiments/translation/purdue_BGA_data/*
 experiments/translation/output/*
 
 experiments/fit_bh_curve/demo_data/*
@@ -48,13 +50,12 @@ tests_data_dependent/data/*
 *.zip
 *.xrm
 *.txrm
-.npy
-.csv
-.docx
-.xlsx
-.pptx
-.ppt
-.npz
+*.npy
+*.csv
+*.docx
+*.xlsx
+*.ppt
+*.npz
 
 
 # Byte-compiled / optimized / DLL files

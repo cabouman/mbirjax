@@ -25,21 +25,25 @@ import mbirjax as mj
 """**Set the geometry parameters**"""
 
 # Choose the geometry type
-model_type = 'cone'  # 'cone' or 'parallel'
+model_type = 'parallel'  # 'cone' or 'parallel'
 object_type = 'shepp-logan'  # 'shepp-logan' or 'cube'
 
 # Set parameters for the problem size - you can vary these, but if you make num_det_rows very small relative to
 # channels, then the generated phantom may not have an interior.
-num_views = 64
-num_det_rows = 40
-num_det_channels = 128
+num_views = 60
+num_det_rows = 64
+num_det_channels = 90
+
+# If target_max_attenuation=None, then each phantom voxel is in the range [0, 1].
+# Set to a float to get a sinogram roughly in the range [0, target_max_attenuation]
+target_max_attenuation = None  # 6.0
 
 # Generate simulated data
 # In a real application you would not have the phantom, but we include it here for later display purposes
 phantom, sinogram, params = mj.generate_demo_data(object_type=object_type, model_type=model_type,
                                                   num_views=num_views, num_det_rows=num_det_rows,
-                                                  num_det_channels=num_det_channels)
-phantom = np.array(phantom)
+                                                  num_det_channels=num_det_channels,
+                                                  target_max_attenuation=target_max_attenuation)
 angles = params['angles']
 
 # View the sinogram
@@ -58,8 +62,9 @@ else:
     ct_model = mj.ParallelBeamModel(sinogram.shape, angles)
 
 # Generate weights array - for an initial reconstruction, use weights = None, then modify if needed to reduce the effect of possibly noisy sinogram entries.
-weights = None
-# weights = mj.gen_weights(sinogram / sinogram.max(), weight_type='transmission_root')
+sino_scaling = sinogram.max() if target_max_attenuation is None else 1.0
+weights = mj.gen_weights(sinogram / sino_scaling, weight_type='transmission_root')
+# weights = None
 
 # Set reconstruction parameter values
 # Sharpness is a float, typically in the range (-1, 2).  The default value is 1.0.
@@ -100,9 +105,6 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 recon_dict['notes'] += 'NRMSE between recon and phantom = {}'.format(nrmse)
 recon_dict['notes'] += 'Maximum pixel difference between phantom and recon = {}'.format(max_diff)
 recon_dict['notes'] += '95% of recon pixels are within {} of phantom'.format(pct_95)
-
-mj.get_memory_stats()
-print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.\nRight click an image to see options.'

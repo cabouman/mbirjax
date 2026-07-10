@@ -82,7 +82,7 @@ def _make_model(n_views, n_rows, n_channels, n_devices=1):
     devs = _pick_devices(n_devices)
     if devs is None:
         return None
-    model.configure_sharding(devs)
+    model.configure_devices(devs)
     return model
 
 
@@ -242,7 +242,7 @@ def main():
 
     # Pre-compute flat recon for the sparse_forward_project benchmark.
     # pixel_indices selects all in-ROR voxels; flat_recon_np is (num_pixels, n_slices).
-    _all_indices = mbirjax.gen_full_indices(recon_shape, use_ror_mask=_ref_model.use_ror_mask)
+    _all_indices = mbirjax.gen_full_indices(recon_shape, use_ror_mask=_ref_model.get_params('use_ror_mask'))
     _all_indices_np = np.asarray(_all_indices)
     _flat_recon_np = np.asarray(
         _ref_model.get_voxels_at_indices(jnp.array(recon_np), jnp.array(_all_indices_np)))
@@ -286,22 +286,22 @@ def main():
             raw = inputs_np[input_key]
             if isinstance(raw, tuple):
                 data_np, aux_np = raw
-                if model.mesh is not None:
+                if model.recon_placement is not None:
                     spec = [None] * data_np.ndim
                     spec[shard_axis] = 'slices'
                     sharding = jax.sharding.NamedSharding(
-                        model.mesh, jax.sharding.PartitionSpec(*spec))
+                        model.recon_placement.mesh, jax.sharding.PartitionSpec(*spec))
                     data_jax = jax.device_put(data_np, sharding)
                 else:
                     data_jax = jnp.array(data_np)
                 jax.block_until_ready(data_jax)
                 inp = (data_jax, jnp.array(aux_np))
             else:
-                if model.mesh is not None and shard_axis is not None:
+                if model.recon_placement is not None and shard_axis is not None:
                     spec = [None] * raw.ndim
                     spec[shard_axis] = 'slices'
                     sharding = jax.sharding.NamedSharding(
-                        model.mesh, jax.sharding.PartitionSpec(*spec))
+                        model.recon_placement.mesh, jax.sharding.PartitionSpec(*spec))
                     inp = jax.device_put(raw, sharding)
                 else:
                     inp = jnp.array(raw)

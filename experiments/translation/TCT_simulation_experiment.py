@@ -44,7 +44,7 @@ def main():
                                                                          source_iso_dist, delta_det_row,
                                                                          delta_det_channel, sino_shape,
                                                                          translation_vectors)
-    tct_model.set_params(delta_recon_row=delta_recon_row)
+    tct_model.set_params(voxel_row_aspect=delta_recon_row)
     tct_model.set_params(recon_shape=(num_recon_rows,)+recon_shape[1:])
     tct_model.set_params(positivity_flag=True)
     tct_model.set_params(partition_sequence=5*[0,] + 100*[1, 3,])
@@ -53,11 +53,11 @@ def main():
     # Print model parameters and display translation array
     translation_vectors = translation_params['translation_vectors']
     tct_model.print_params()
-    delta_voxel, delta_recon_row = tct_model.get_params(['delta_voxel', 'delta_recon_row'])
+    delta_voxel, voxel_row_aspect = tct_model.get_params(['delta_voxel', 'voxel_row_aspect'])
     translation_vectors_display = translation_vectors.copy()
     translation_vectors_display[:, 0] /= delta_voxel
     translation_vectors_display[:, 2] /= delta_voxel
-    translation_vectors_display[:, 1] /= delta_recon_row
+    translation_vectors_display[:, 1] /= voxel_row_aspect
     mj.display_translation_vectors(translation_vectors_display, recon_shape)
 
     # View sinogram
@@ -65,7 +65,7 @@ def main():
 
     # Perform MBIR reconstruction
     direct_recon, direct_dict = tct_model.recon(sinogram, max_iterations=0)
-    mbir_recon, mbir_dict = tct_model.recon(sinogram, max_iterations=200, stop_threshold_change_pct=0.1)
+    mbir_recon, mbir_dict = tct_model.recon(sinogram, max_iterations=30, stop_threshold_change_pct=0.1)
 
     # Save reconstruction results
     os.makedirs(output_path, exist_ok=True)

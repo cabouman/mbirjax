@@ -7,6 +7,7 @@ import jax
 import matplotlib.pyplot as plt
 import numpy as np
 import jax.numpy as jnp
+from jax import lax
 from PIL import ImageFont, Image, ImageDraw
 from jax import numpy as jnp
 
@@ -95,6 +96,28 @@ def save_volume_as_gif(volume, filename, vmin=0, vmax=1):
     imageio.mimsave(filename, images, fps=5)  # 5 frames per second
 
 
+def _write_hdf5_streaming(file_path, array_name, out_shape, dtype, produce_slab, attributes_dict=None):
+    """Create an HDF5 dataset of out_shape/dtype and fill it slab-by-slab along axis 0.
+
+    produce_slab(i0, i1) returns the contiguous slab written to dset[i0:i1].  Only one slab is
+    held at a time, so a large or strided source is never fully copied.
+    """
+    mj.makedirs(file_path)
+    with h5py.File(file_path, 'w') as f:
+        dset = f.create_dataset(array_name, shape=out_shape, dtype=dtype)
+        if len(out_shape) == 0:
+            dset[...] = produce_slab(0, 0)
+        else:
+            row_bytes = np.dtype(dtype).itemsize * int(np.prod(out_shape[1:], dtype=np.int64))
+            slab = max(1, (1 << 30) // max(row_bytes, 1))   # ~1 GiB per write
+            for i in range(0, out_shape[0], slab):
+                dset[i:i + slab] = produce_slab(i, min(i + slab, out_shape[0]))
+        if isinstance(attributes_dict, dict):
+            attributes_dict = mj.TomographyModel.convert_subdicts_to_strings(attributes_dict)
+            for key, value in attributes_dict.items():
+                dset.attrs[key] = value
+
+
 def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
     """
     Save a NumPy or JAX array to an HDF5 file, optionally including metadata as attributes.
@@ -124,21 +147,11 @@ def save_data_hdf5(file_path, array, array_name='array', attributes_dict=None):
         >>> file_path = './output/test_part_038.yaml'
         >>> mj.save_data_hdf5(file_path, recon, recon_info)
     """
-    # Ensure output directory exists
-    mj.makedirs(file_path)
+    # Stream the array to disk slab-by-slab (no full contiguous copy, even for a strided view).
+    def produce_slab(i0, i1):
+        return np.asarray(array) if array.ndim == 0 else np.ascontiguousarray(array[i0:i1])
 
-    # Open HDF5 file for writing
-    with h5py.File(file_path, 'w') as f:
-        # Save reconstruction array
-        arr = np.array(array)
-        volume_data = f.create_dataset(array_name, data=arr)
-
-        # Save reconstruction parameters as attributes
-        if isinstance(attributes_dict, dict):
-            # Convert subdicts to strings
-            attributes_dict = mj.TomographyModel.convert_subdicts_to_strings(attributes_dict)
-            for key, value in attributes_dict.items():
-                volume_data.attrs[key] = value
+    _write_hdf5_streaming(file_path, array_name, array.shape, array.dtype, produce_slab, attributes_dict)
 
 
 def display_translation_vectors(translation_vectors, recon_shape):
@@ -340,6 +353,27 @@ def makedirs(filepath):
             os.makedirs(save_dir, exist_ok=True)
         except Exception as e:
             raise Exception(f"Could not create save directory '{save_dir}': {e}")
+
+
+def merge_log_files(merged_path, labeled_paths):
+    """Merge temp log files into one file, each under a section header, and remove the temps.
+
+    Missing temps are skipped; if none exist, no file is written.
+
+    Args:
+        merged_path (str): Path of the merged output file.
+        labeled_paths (iterable): (label, path) pairs in the order they should appear.
+    """
+    labeled_paths = [(label, path) for label, path in labeled_paths
+                     if path is not None and os.path.exists(path)]
+    if not labeled_paths:
+        return
+    with open(merged_path, 'w') as merged:
+        for label, path in labeled_paths:
+            merged.write('======== {} ========\n'.format(label))
+            with open(path, 'r') as f:
+                merged.write(f.read())
+            os.remove(path)
 
 
 def download_and_extract(download_url, save_dir):
@@ -554,10 +588,9 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
     """
     Export a 3D reconstruction volume to an HDF5 file with optional post-processing.
 
-    This function processes the input recon volume in batches to avoid GPU memory issues, transposes it
-    to right-hand coordinates (slice, col, row), optionally applies a cylindrical mask to remove
-    peripheral and top/bottom slices (referred to as `flash`), and writes the volume and optional
-    metadata to an HDF5 file.
+    This function works with either numpy or jax arrays or sharded jax arrays.
+    The function also transposes the reconstruction to right-hand coordinates (slice, col, row),
+    and writes the reconstruction and optional metadata to an HDF5 file.
 
     Args:
         file_path (str): Full path to the output HDF5 file. Parent directories will be created if they do not exist.
@@ -575,16 +608,28 @@ def export_recon_hdf5(file_path, recon, recon_dict=None, remove_flash=False, rad
         >>> export_recon_hdf5("output/recon_volume.h5", recon, recon_dict={"scan_id": "sample1"})
     """
 
-
-    # Move recon to CPU
+    # Move the input to the host (NumPy) first so numpy/jax/sharded all collapse to one host case.
     recon = jax.device_get(recon)
 
-    if remove_flash:
-        recon = mj.preprocess.apply_cylindrical_mask(recon, radial_margin, top_margin, bottom_margin)
+    if not remove_flash:
+        # Transposed view; save_data_hdf5 streams it slab-by-slab, so no full copy is made.
+        save_data_hdf5(file_path, np.transpose(recon, (2, 1, 0)), 'recon', recon_dict)
+        return
 
-    recon = jnp.transpose(recon, (2, 1, 0))
+    # remove_flash: mask + transpose + write one slab at a time, so no full masked volume is built.
+    # Slabbing along the slice axis keeps full (rows, cols), so apply_cylindrical_mask gives the
+    # identical circular mask per slab; we just map the global top/bottom margins to each slab.
+    num_rows, num_cols, num_slices = recon.shape
 
-    save_data_hdf5(file_path, recon, 'recon', recon_dict)
+    def produce_slab(s0, s1):
+        ds = s1 - s0
+        local_top = min(max(top_margin - s0, 0), ds)                       # global top slices in this slab
+        local_bottom = min(max(s1 - (num_slices - bottom_margin), 0), ds)  # global bottom slices in this slab
+        block = mj.preprocess.apply_cylindrical_mask(recon[:, :, s0:s1], radial_margin, local_top, local_bottom)
+        return np.ascontiguousarray(np.transpose(block, (2, 1, 0)))        # (ds, C, R)
+
+    _write_hdf5_streaming(file_path, 'recon', (num_slices, num_cols, num_rows), recon.dtype,
+                          produce_slab, recon_dict)
 
 
 def import_recon_hdf5(file_path):
@@ -592,8 +637,8 @@ def import_recon_hdf5(file_path):
     Import a 3D reconstruction volume from an HDF5 file.
 
     This function loads a reconstruction volume and associated metadata from an HDF5 file,
-    and reorders the volume axes from (slice, row, col) to (row, col, slice) to match
-    MBIRJAX conventions.
+    and reorders the volume axes from the file's (slice, col, row) layout to (row, col, slice)
+    to match MBIRJAX conventions, so a volume written by export_recon_hdf5 is recovered unchanged.
 
     Args:
         file_path (str): Path to the HDF5 file containing the reconstruction volume.
@@ -611,7 +656,6 @@ def import_recon_hdf5(file_path):
     """
     recon, recon_dict = load_data_hdf5(file_path=file_path)
 
-    recon = recon[::-1, :, :]
     recon = np.transpose(recon, axes=(2, 1, 0))
 
     return recon, recon_dict
@@ -666,32 +710,92 @@ def generate_3d_shepp_logan_reference(phantom_shape):
     return image.transpose((1, 0, 2))
 
 
-def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
+def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, devices=None, max_block_gb=4.0,
+                                              target_max_attenuation=None):
     """
     Generates a 3D Shepp-Logan phantom with specified dimensions.
 
+    The phantom is a reference object, so it is always returned as a host NumPy array: the build is
+    distributed across ``devices`` (slice-sharded, in parallel) so a large phantom is never
+    materialized whole on a single device, then it is gathered to the host and the device arrays are
+    freed.
+
     Args:
         phantom_shape (tuple): Phantom shape in (rows, columns, slices).
-        device (jax device): Device on which to place the output phantom.
+        devices (sequence of jax devices, optional): Devices to build the phantom across.  Defaults to
+            None, which uses all available devices (the GPUs when a GPU backend is present, else the
+            CPU devices) -- the same set a reconstruction would shard over.  With more than one device
+            the phantom is built **slice-sharded** (each device builds its own band of slices, no
+            inter-device communication); with a single device it is built row-blocked to bound peak
+            memory.  Either way the result is gathered to the host.
+        max_block_gb (float, optional): Rough upper bound (GB) on the temporary memory used by the
+            single-device (row-blocked) build.  Defaults to 4.0.  Ignored for a multi-device build
+            (each device's slice band is already small).
+        target_max_attenuation (float, optional): If given, scale the phantom so that the peak line
+            integral through it (its forward projection) is roughly this value, **independent of the
+            array shape**.  Without it, the sinogram grows linearly with the array size (a ray
+            crosses more voxels), which is unrealistic -- real -log-attenuation sinograms sit around
+            0 to 6-8.  The scale is analytic (from the main ellipsoid's extent along the longest
+            axis) and ASSUMES ``delta_voxel ~= 1``, since the phantom cannot see the projector's
+            voxel spacing (the sinogram scales linearly with ``delta_voxel``).  Default None leaves
+            the phantom unscaled (the historical behavior).
 
     Returns:
-        ndarray: A 3D numpy array of shape phantom_shape representing the voxel intensities of the phantom.
+        numpy.ndarray: A 3D host array of shape ``phantom_shape`` with the voxel intensities of the
+        phantom.
 
     Note:
-        This function uses a memory-efficient approach to generating large phantoms.
+        The phantom is independent across voxels, so the multi-device build splits slices and the
+        single-device build blocks rows -- neither needs inter-device communication.
     """
-    # Get space for the result and set up the grids for add_ellipsoid
-    with jax.default_device(device):
-        phantom = jnp.zeros(phantom_shape, device=device)
-    N, M, P = phantom_shape
-    x_locations = jnp.linspace(-1, 1, N)
-    y_locations = jnp.linspace(-1, 1, M)
-    z_locations = jnp.linspace(-1, 1, P)
-    x_grid, y_grid = jnp.meshgrid(x_locations, y_locations, indexing='ij')
-    i_grid, j_grid = jnp.meshgrid(jnp.arange(N), jnp.arange(M), indexing='ij')
-    grids = (x_grid, y_grid, i_grid, j_grid)
+    scale = 1.0 if target_max_attenuation is None \
+        else _shepp_logan_attenuation_scale(phantom_shape, target_max_attenuation)
+    if devices is None:
+        devices = jax.devices()        # all available devices (GPUs if a GPU backend is present, else CPU)
+    if len(devices) > 1:
+        phantom = _generate_3d_shepp_logan_sharded(phantom_shape, devices, scale)  # slice-sharded (device form)
+    else:
+        with jax.default_device(devices[0]):
+            phantom = _generate_3d_shepp_logan_blocked(phantom_shape, max_block_gb, scale)
+    # The phantom is a reference: gather to the host, drop any device-form slice padding (the sharded
+    # build pads the slice axis up to the device count), free the device array(s), and return NumPy.
+    n_rows, n_cols, n_slices = phantom_shape
+    host = np.asarray(phantom)[:n_rows, :n_cols, :n_slices]
+    if isinstance(phantom, jax.Array):
+        phantom.delete()
+    return host
 
-    # Main ellipsoid
+
+# Semi-axes (rows, cols, slices) of the MAIN Shepp-Logan ellipsoid -- the largest structure, which
+# dominates the longest line integral.  Must match the first ellipsoid in _add_shepp_logan_ellipsoids.
+_MAIN_ELLIPSOID_SEMI_AXES = (0.69, 0.92, 0.9)
+
+
+def _shepp_logan_attenuation_scale(phantom_shape, target_max_attenuation):
+    """Intensity scale so the peak forward projection of the phantom is ~``target_max_attenuation``.
+
+    The longest line integral runs along the array axis with the largest ``semi_axis_k * shape_k``: a
+    ray through the center of the main ellipsoid crosses ~ ``semi_axis_k * shape_k`` voxels (the
+    ellipsoid spans ``[-semi, semi]`` of the normalized ``[-1, 1]`` axis, i.e. ``semi`` of the
+    ``shape_k`` half-axis voxels on each side).  With intensity 1 and ``delta_voxel = 1`` the peak
+    sinogram value is ~ that voxel count, so scaling the phantom by
+    ``target / max_k(semi_k * shape_k)`` puts the peak near ``target_max_attenuation``.  ASSUMES
+    ``delta_voxel ~= 1`` (the phantom cannot see the projector's voxel spacing; the sinogram scales
+    linearly with ``delta_voxel``).
+    """
+    longest_path_voxels = max(s * n for s, n in zip(_MAIN_ELLIPSOID_SEMI_AXES, phantom_shape))
+    interior_intensity = 0.28  # The approximate average intensity along the center of the main ellipse
+    return (target_max_attenuation / longest_path_voxels) / interior_intensity
+
+
+def _add_shepp_logan_ellipsoids(phantom, grids, z_locations):
+    """Add the nine standard low-dynamic-range Shepp-Logan ellipsoids to ``phantom``.
+
+    ``phantom`` is ``(rows, cols, num_slices)`` and ``z_locations`` holds the z coordinate of each of
+    its slices -- so this works on a full volume or on a contiguous band of slices (the sharded
+    build passes one band per device).  Shared by the single-device and sharded paths so the
+    ellipsoid definitions live in one place.
+    """
     phantom = add_ellipsoid(phantom, grids, z_locations, 0, 0, 0, 0.69, 0.92, 0.9, intensity=1)
     # Smaller ellipsoids and other structures
     phantom = add_ellipsoid(phantom, grids, z_locations, 0, 0.0184, 0, 0.6624, 0.874, 0.88, intensity=-0.8)
@@ -702,8 +806,107 @@ def generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=None):
     phantom = add_ellipsoid(phantom, grids, z_locations, 0, -0.1, 0, 0.046, 0.046, 0.046, intensity=0.1)
     phantom = add_ellipsoid(phantom, grids, z_locations, -0.08, -0.605, 0, 0.046, 0.023, 0.02, angle=0, intensity=0.1)
     phantom = add_ellipsoid(phantom, grids, z_locations, 0, -0.605, 0, 0.023, 0.023, 0.02, angle=0, intensity=0.1)
-
     return phantom
+
+
+def _generate_3d_shepp_logan_blocked(phantom_shape, max_block_gb, scale=1.0):
+    """Single-device Shepp-Logan build, blocked over ROWS with ``lax.map`` to bound peak memory.
+
+    Every voxel of the phantom is independent, so the rows are split into fixed-size blocks and
+    built one at a time: ``lax.map`` keeps only the current block's transients live (XLA scans the
+    blocks) and the per-block results are concatenated.  Without this, the per-slice ``vmap`` inside
+    each of the nine ``add_ellipsoid`` calls materializes several full-volume transients at once,
+    which can exceed device memory at large sizes (e.g. 2048^3).  Bit-identical to the unblocked
+    build (the per-voxel formula is unchanged; only the loop structure differs).  ``scale`` (default
+    1.0) multiplies the result -- the optional attenuation rescaling.
+    """
+    N, M, P = phantom_shape
+    # Block over ROWS (axis 0), not slices: lax.map stacks its results on a new LEADING axis, so
+    # blocking the leading axis lets the blocks reassemble by a cheap contiguous reshape (concatenate
+    # over axis 0).  Blocking slices would instead need a full-volume transpose to move the block axis
+    # back to axis 2, which would defeat the memory bound.  Every voxel is independent, so the axis is
+    # free and the result is identical to the slice-sharded build -- the sharded path blocks slices
+    # only because that is the recon-by-slice device layout, a constraint this memory blocking lacks.
+    # Choose a row-block count so one block's transients stay near max_block_gb.  A block holds a few
+    # (block_rows, M, P) arrays at once (the ellipsoid comparison + the running sum), so budget ~4x.
+    bytes_per_full = N * M * P * 4
+    num_blocks = max(1, int(np.ceil(4 * bytes_per_full / (max_block_gb * 1024 ** 3))))
+    block_rows = -(-N // num_blocks)          # ceil(N / num_blocks): rows per block
+    n_blocks = -(-N // block_rows)            # ceil(N / block_rows): number of blocks
+    padded_N = n_blocks * block_rows          # pad rows up to a whole number of fixed-size blocks
+
+    # In-plane grids (rows x cols), padded on the row axis so every block is the same fixed size; the
+    # pad rows are cropped off the final result.  z coordinates are shared across all blocks.
+    x_grid, y_grid = jnp.meshgrid(jnp.linspace(-1, 1, N), jnp.linspace(-1, 1, M), indexing='ij')
+    x_grid = jnp.pad(x_grid, ((0, padded_N - N), (0, 0)), mode='edge')
+    y_grid = jnp.pad(y_grid, ((0, padded_N - N), (0, 0)), mode='edge')
+    z_locations = jnp.linspace(-1, 1, P)
+
+    def build_row_block(i):
+        # Build the phantom for one fixed-size band of rows [i*block_rows : (i+1)*block_rows).
+        r0 = i * block_rows
+        xb = lax.dynamic_slice(x_grid, (r0, 0), (block_rows, M))
+        yb = lax.dynamic_slice(y_grid, (r0, 0), (block_rows, M))
+        grids = (xb, yb, None, None)          # add_ellipsoid uses only the x/y grids
+        block = _add_shepp_logan_ellipsoids(jnp.zeros((block_rows, M, P)), grids, z_locations)
+        return block if scale == 1.0 else block * scale       # scale per block -> no full-volume transient
+
+    blocks = lax.map(build_row_block, jnp.arange(n_blocks))   # (n_blocks, block_rows, M, P)
+    phantom = jnp.concatenate(blocks, axis=0)[:N]             # (N, M, P): merge blocks, crop padded rows
+    return phantom
+
+
+def _generate_3d_shepp_logan_sharded(phantom_shape, devices, scale=1.0):
+    """Build the Shepp-Logan phantom slice-sharded across ``devices``.
+
+    The phantom is embarrassingly parallel along slices -- each z-slice depends only on the shared
+    in-plane grid and its own z coordinate -- so every device builds its own contiguous band of
+    slices entirely on-device: no halos, no cross-device communication, and the full volume never
+    exists on one device.  The result is a slice-sharded ``jax.Array`` padded to the device form
+    (the tail slices are zero, exactly like a sharded recon), and matches the single-device phantom
+    on the real slices.  ``scale`` (default 1.0) multiplies each shard -- the optional attenuation
+    rescaling (the zero padding stays zero).
+    """
+    import mbirjax._sharding as mjs
+    N, M, P = phantom_shape
+    # Shard the phantom on the recon shard axis (the slice axis -- last axis for a (rows, cols,
+    # slices) volume), so it matches how a model shards a recon.  The slice axis is split into one
+    # contiguous band per device, and when P does not divide len(devices) it is padded up to the
+    # next multiple (placement.padded_size), with the extra slices zero-filled and inert.
+    placement = mjs.Placement(devices, axis=mj.TomographyModel.recon_shard_axis(), real_size=P)
+
+    # Build one shard per device.  We just LOOP -- no ThreadPoolExecutor -- because each piece is
+    # pure JAX: the `with jax.default_device(dev)` block DISPATCHES that device's build and returns
+    # immediately (JAX dispatch is asynchronous), so the devices compute concurrently and
+    # assemble_sharded joins them.  A thread pool is only needed when a per-device step BLOCKS (a
+    # host transfer, block_until_ready, or reading addressable_shards) and would otherwise serialize
+    # the loop -- which this fully independent build never does.
+    pieces = []
+    for dev, (start, end), n_real in placement.padded_shard_ranges():
+        block = end - start                       # this device's band length on the padded slice axis
+        with jax.default_device(dev):
+            parts = []
+            if n_real > 0:
+                # This device owns real slices [start, start + n_real).  Rebuild the shared in-plane
+                # grids locally (cheap, (N, M)) so they live on this device, then build just this
+                # band's slices using the same z coordinates as the single-device phantom.
+                x_grid, y_grid = jnp.meshgrid(jnp.linspace(-1, 1, N), jnp.linspace(-1, 1, M), indexing='ij')
+                i_grid, j_grid = jnp.meshgrid(jnp.arange(N), jnp.arange(M), indexing='ij')
+                grids = (x_grid, y_grid, i_grid, j_grid)
+                z_band = jnp.linspace(-1, 1, P)[start:start + n_real]
+                parts.append(_add_shepp_logan_ellipsoids(jnp.zeros((N, M, n_real)), grids, z_band))
+            if block - n_real > 0:
+                # Device-form zero padding at the end of the slice axis (kept inert downstream).
+                parts.append(jnp.zeros((N, M, block - n_real)))
+            # A shard is the real band, the zero pad, or -- on the one boundary device that straddles
+            # real/padding -- both joined along the slice axis.
+            piece = parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=2)
+            if scale != 1.0:
+                piece = piece * scale          # zero padding stays zero
+        pieces.append(piece)
+
+    # Wrap the per-device shards (each already resident on its device) as one slice-sharded array.
+    return mjs.assemble_sharded(pieces, (N, M, placement.padded_size), placement.shard_structure(3))
 
 
 def gen_translation_phantom(recon_shape, option, text, fill_rate=0.05, font_size=20, text_row_indices=None,
@@ -1052,8 +1255,10 @@ def generate_demo_data(
     helical_z_center: float = 0.0,
     use_curved_detector: bool = False,
     voxel_row_aspect: float = 1.0,
-    voxel_slice_aspect: float = 1.0
-) -> (np.ndarray, np.ndarray):
+    voxel_slice_aspect: float = 1.0,
+    target_max_attenuation: float | None = None,
+    devices: list | tuple | None = None,
+) -> tuple:
     """
     Create a simple object and a sinogram for demonstration purposes.
 
@@ -1061,15 +1266,17 @@ def generate_demo_data(
     parameters to create a simulated sinogram.  The object type 'shepp-logan' gives a simplified version of the
     classic Shepp-Logan test phantom, and type 'cube' gives a simple cube object.
 
-    The output sinogram is a 3D numpy array with shape (num_views, num_det_rows, num_det_channels).  Each 2D array
-    sinogram[view_index] is a simulated image from the detector, with num_det_rows indicating the vertical size
-    and num_det_channels representing the horizontal size.
+    The phantom and the sinogram are built distributed across the model's devices (in parallel) so a
+    large problem is never materialized whole on one device, then gathered to the host: both are
+    returned on the host.  The output sinogram has shape (num_views, num_det_rows,
+    num_det_channels); each 2D array sinogram[view_index] is a simulated image from the detector, with
+    num_det_rows indicating the vertical size and num_det_channels the horizontal size.
 
     Args:
         object_type (str, optional): One of 'shepp-logan' or 'cube'.  Defaults to 'shepp-logan'.
         model_type (str, optional): One of 'parallel', 'cone', or 'translation'.  Defaults to 'cone'.
         num_views (int, optional):  Number of views in the output sinogram.  Defaults to 64. Ignored when model_type is 'translation'
-        num_det_rows (int, optional): Number of rows (vertical) in the output sinogram.  Defaults to 40.
+        num_det_rows (int, optional): Number of rows (vertical) in the output sinogram.  Defaults to 96.
         num_det_channels (int, optional): Number of channels (horizontal) in the output sinogram.  Defaults to 128.
         num_x_translations (int, optional): Number of horizontal translations for translation mode.  Defaults to 7.
         num_z_translations (int, optional): Number of vertical translations for translation mode.  Defaults to 7.
@@ -1084,12 +1291,23 @@ def generate_demo_data(
         helical_z_range (float, optional): Total axial travel over the scan in ALU for helical mode.
         helical_z_center (float, optional): Midpoint of axial travel over the scan in ALU for helical mode.
         use_curved_detector (bool, optional): (cone beam geometry parameter)
+        voxel_row_aspect (float, optional): Aspect ratio for recon rows relative to columns.  Defaults to 1.0.
+        voxel_slice_aspect (float, optional): Aspect ratio for recon slices relative to rows.  Defaults to 1.0.
+        target_max_attenuation (float, optional): Target max sinogram attenuation for Shepp-Logan phantom.  Defaults to None, for which each voxel is in the range [0, 1].  May not be accurate if any detector or voxel dimensions are not 1.
+        devices (sequence of jax devices, optional): Devices to distribute the generation across.
+            Defaults to None, which uses the model's automatic selection (all available GPUs, else the
+            CPU devices).  The phantom and sinogram are built across these devices in parallel and then
+            gathered to the host -- this only affects where the work runs, not the result.
 
     Returns:
         tuple: (object, sinogram, params)
-            - object (np.ndarray): a volume with shape (num_det_channels, num_det_channels, num_det_rows)
-            - sinogram (np.ndarray): a sinogram with shape (num_views, num_det_rows, num_det_channels)
-            - params (dict): a dict containing 'angles' and, if model_type is 'cone', then also 'source_detector_dist' and 'source_iso_dist'
+            - object: the phantom volume, shape recon_shape = (num_rows, num_cols, num_slices).
+            - sinogram: shape (num_views, num_det_rows, num_det_channels).
+            - params (dict): contains 'angles' and, for 'cone', also 'source_detector_dist' and 'source_iso_dist'.
+
+        sinogram is always a host NumPy array (what ``recon`` prefers -- it shards it across
+        devices itself), and the arrays in ``params`` are NumPy as well.  object is host NumPy
+        for 'shepp-logan' but a JAX array for 'cube'.
     """
     # Coerce types to Enum
     object_type = ObjectType(object_type)
@@ -1101,6 +1319,7 @@ def generate_demo_data(
     # Initialize model
 
     if model_type == ModelType.PARALLEL:
+        start_angle = 0
         sinogram_shape = (num_views, num_det_rows, num_det_channels)
         angles = jnp.linspace(start_angle, end_angle, num_views, endpoint=False)
         ct_model_for_generation = mj.ParallelBeamModel(sinogram_shape, angles)
@@ -1185,7 +1404,7 @@ def generate_demo_data(
                 'voxel_slice_aspect': voxel_slice_aspect
             }
     elif model_type == ModelType.TRANSLATION:
-        source_iso_dist = np.min(num_det_rows, num_det_channels) / 2
+        source_iso_dist = min(num_det_rows, num_det_channels) / 2
         source_detector_dist = source_iso_dist
         translation_vectors = gen_translation_vectors(num_x_translations, num_z_translations, x_spacing, z_spacing)
         num_views = translation_vectors.shape[0]
@@ -1196,10 +1415,19 @@ def generate_demo_data(
     else:
         raise ValueError(f'Invalid model type. Expected one of {[m.value for m in ModelType]}, got {model_type}')
 
-    # Generate phantom
+    # Pin the generation model to the requested devices so the phantom, the forward projection, and
+    # the returned sinogram all share one layout.  (Without this the model auto-selects devices, so a
+    # device subset would reshard the phantom and return the sinogram on the auto devices instead.)
+    # None leaves the automatic selection in place.
+    if devices is not None:
+        ct_model_for_generation.configure_devices(devices)
+
+    # Generate the phantom on the MODEL's devices (slice-sharded across all of them when multi-device,
+    # so a large phantom is never built whole on one device).  generate_3d_shepp_logan_low_dynamic_range
+    # gathers it to the host and returns NumPy; gen_cube_phantom returns a JAX array.
     print('Creating phantom')
     recon_shape = ct_model_for_generation.get_params('recon_shape')
-    device = ct_model_for_generation.main_device
+    model_devices = ct_model_for_generation.shard_devices   # None -> the generator uses all available
     phantom_shape = recon_shape
     embed_slice_start = 0
     embed_slice_stop = recon_shape[2]
@@ -1215,22 +1443,34 @@ def generate_demo_data(
             embed_slice_stop - embed_slice_start,
         )
     if object_type == ObjectType.SHEPP_LOGAN:
-        phantom_core = generate_3d_shepp_logan_low_dynamic_range(phantom_shape, device=device)
+        phantom_core = generate_3d_shepp_logan_low_dynamic_range(
+            phantom_shape, devices=model_devices, target_max_attenuation=target_max_attenuation)
     elif object_type == ObjectType.CUBE:
-        phantom_core = gen_cube_phantom(phantom_shape, device=device)
+        phantom_core = gen_cube_phantom(phantom_shape)
     else:
         raise ValueError(f'Invalid object type. Expected one of {[o.value for o in ObjectType]}, got {object_type}')
     if model_type == ModelType.CONE and use_helical:
-        phantom = jnp.zeros(recon_shape, device=device)
-        phantom = phantom.at[:, :, embed_slice_start:embed_slice_stop].set(phantom_core)
+        # Embed the partial-slice phantom into the full recon volume (host arrays throughout --
+        # phantom_core is already host NumPy).
+        phantom = np.zeros(recon_shape, dtype=np.float32)
+        phantom[:, :, embed_slice_start:embed_slice_stop] = phantom_core
     else:
         phantom = phantom_core
-    
-    # Generate synthetic sinogram data
-    print('Creating sinogram')
-    sinogram = ct_model_for_generation.forward_project(phantom)
-    sinogram = np.asarray(sinogram)
 
+    # Forward project across the model's devices, then gather the sinogram to the host.  Keep the
+    # sinogram SHARDED out of forward_project (output_sharded=True) so the whole sinogram is never
+    # routed through a single device (which OOMs at large sizes -- e.g. a 32 GiB 2048^3 sinogram on one
+    # GPU), then gather it on a separate line.  _gather_sinogram is _gather_to_host (assemble on the
+    # host shard-by-shard) PLUS a crop of any inert view/detector-row padding back to the real shape --
+    # bare _gather_to_host would keep that padding.  recon prefers a host sinogram (it shards it itself)
+    # and the shepp-logan phantom is already host (the cube phantom stays a JAX array); the params
+    # arrays are NumPy too; nothing large is left resident on a device.
+    print('Creating sinogram')
+    sinogram_sharded = ct_model_for_generation.forward_project(phantom, output_sharded=True)
+    sinogram = ct_model_for_generation._gather_sinogram(sinogram_sharded)
+    params = {k: (np.asarray(v) if isinstance(v, jax.Array) else v) for k, v in params.items()}
+
+    del ct_model_for_generation
     return phantom, sinogram, params
 
 
@@ -1288,7 +1528,7 @@ def gen_cube_phantom(recon_shape, device=None):
     return jnp.array(phantom, device=device)
 
 
-def stitch_arrays(array_list, overlap, axis=2):
+def stitch_arrays(array_list, overlap, axis=2, ramp_overlap=None):
     """
     Concatenate JAX arrays along one axis while linearly blending a fixed overlap
     between adjacent arrays.
@@ -1300,13 +1540,17 @@ def stitch_arrays(array_list, overlap, axis=2):
     All non‑`axis` dimensions must match across inputs.
 
     Args:
-        array_list (list[jax.Array]): Sequence of 2+ JAX arrays to stitch.
-        overlap (int): Number of elements to blend between each adjacent pair.
+        array_list (list of ndarray or jax.Array): Sequence of 2+ arrays to stitch.  The result is
+            built on the inputs' own array module, so host (NumPy) inputs stitch on the host (no gather
+            to a single device) and jax inputs stitch on-device.
+        overlap (int): Number of elements overlapped between arrays.
             Must be `>= 1` and not exceed the length of any input along `axis`.
         axis (int, optional): Axis along which to stitch. Defaults to 2.
+        ramp_overlap (int, optional): Target number of blended (0 < w < 1) elements. Defaults to None.
 
     Returns:
-        jax.Array: Stitched array. Its shape equals the input shape with the
+        ndarray or jax.Array: Stitched array, on the inputs' own array module (host NumPy in -> host
+        out, jax in -> on-device out). Its shape equals the input shape with the
         length along `axis` equal to:
 
             sum(len_k) - (len(array_list) - 1) * overlap_length
@@ -1340,34 +1584,49 @@ def stitch_arrays(array_list, overlap, axis=2):
             if np.amin(lengths) < overlap:
                 raise ValueError('Each array must have length at least overlap in the dimension specified by axis.')
 
-    # Create a piecewise linear weight array:
-    # 0 for first 25%, linear ramp 0→1 over middle 50%, 1 for final 25%.
-    t = jnp.linspace(0, 1, overlap)
-    weights = jnp.clip((t - 0.25) / 0.5, 0.0, 1.0)
+    # Create weights for blending two arrays
+    # ramp_overlap is the target number of blended (0 < w < 1) pixels
+    # However, if ramp_overlap and overlap have different parities, then ramp_overlap is decremented to match parity.
+    if ramp_overlap is None:
+        ramp_overlap = overlap // 2  # default: ramp over ~half the overlap
+    ramp_overlap = min(ramp_overlap, overlap)
+    ramp_overlap -= (overlap - ramp_overlap) % 2  # match overlap's parity -> symmetric plateaus
+    ramp_overlap = max(ramp_overlap, overlap % 2)  # floor at 0 (even overlap) or 1 (odd overlap)
+    flat_pad = (overlap - ramp_overlap) // 2  # equal plateau on each side
+    # Build the blend weights and assemble on the inputs' OWN array module so the result stays where the
+    # inputs live: host (NumPy) arrays stitch on the HOST (no gather to a single device), device/jax
+    # arrays stitch on-device.  split_sino_recon relies on this -- it passes host halves, so the full
+    # volume is never reassembled on one GPU (which would defeat the half-at-a-time memory saving and
+    # OOM for a recon too large to fit whole).  float32 weights avoid upcasting a float32 recon to f64.
+    xp = jnp if any(isinstance(a, jax.Array) for a in array_list) else np
+    ramp = (xp.arange(ramp_overlap, dtype=xp.float32) + 1) / (ramp_overlap + 1)  # strictly between 0 and 1
+    weights = xp.concatenate([xp.zeros(flat_pad, dtype=xp.float32), ramp, xp.ones(flat_pad, dtype=xp.float32)])
+
+    # Broadcast weights to match array dimensions
     weights_shape = np.ones(array_list[0].ndim, dtype=int)
     weights_shape[0] = len(weights)
     weights = weights.reshape(weights_shape)
 
     # Start with the first array in the list
-    stitched = jnp.swapaxes(array_list[0], 0, axis)
+    stitched = xp.swapaxes(array_list[0], 0, axis)
 
     # Iterate through each subsequent array in the list
     for next_array in array_list[1:]:
         # Extract the overlap from the current end of the stitched array and the beginning of the next array
         overlap_current = stitched[-overlap:]
-        next_array = jnp.swapaxes(next_array, 0, axis)
+        next_array = xp.swapaxes(next_array, 0, axis)
         overlap_next = next_array[:overlap]
 
         # Weighted average for the overlapping part
         weighted_overlap = (1 - weights) * overlap_current + weights * overlap_next
 
         # Replace the overlap in the stitched array
-        stitched = jnp.concatenate([stitched[:-overlap], weighted_overlap], axis=0)
+        stitched = xp.concatenate([stitched[:-overlap], weighted_overlap], axis=0)
 
         # Append the non-overlapping remainder of the next array
-        stitched = jnp.concatenate([stitched, next_array[overlap:]], axis=0)
+        stitched = xp.concatenate([stitched, next_array[overlap:]], axis=0)
 
-    return jnp.swapaxes(stitched, 0, axis)
+    return xp.swapaxes(stitched, 0, axis)
 
 
 def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=None, source_iso_dist=None, helical_z_shifts=None):
@@ -1380,7 +1639,7 @@ def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=Non
         angles (ndarray of float): 1D vector of projection angles in radians
         source_detector_dist (float or None, optional): Distance in ALU from source to detector.  Defaults to None for geometries that don't need this.
         source_iso_dist (float or None, optional): Distance in ALU from source to iso.  Defaults to None for geometries that don't need this.
-        helical_z_shifts (ndarray or jax array, optional):
+        helical_z_shifts (numpy or jax array, optional):
             Per-view axial shifts (ALU), same length as angles.
             Required when use_helical=True.
 

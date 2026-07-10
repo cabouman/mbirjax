@@ -91,6 +91,7 @@ class TemplateModel(TomographyModel):
         # geometry_param_values.append(self.get_psf_radius())
         # geometry_param_names += ['magnification']
         # geometry_param_values.append(self.get_magnifiction())
+        # For anisotropic voxels, also include 'voxel_row_aspect' and 'voxel_slice_aspect'.
 
         # Then create a namedtuple to access parameters by name in a way that can be jit-compiled.
         GeometryParams = namedtuple('GeometryParams', geometry_param_names)
@@ -165,6 +166,6 @@ class TemplateModel(TomographyModel):
         num_pixels = pixel_indices.shape[0]
         voxel_values_cylinder = jnp.zeros((num_pixels, num_recon_slices))
 
-        # TODO:  Provide code to implement forward projection
+        # TODO:  Provide code to implement back projection
 
         return voxel_values_cylinder

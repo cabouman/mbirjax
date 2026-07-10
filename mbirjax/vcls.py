@@ -1,3 +1,4 @@
+import copy
 import os
 import random
 import tempfile
@@ -5,8 +6,77 @@ import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 import mbirjax as mj
+import jax
 import jax.numpy as jnp
 import tqdm
+
+
+@jax.jit
+def _normalize_by_norm(x, eps):
+    """``x / (||x|| + eps)``, jitted so the norm's square/sum and the divide fuse into one executable
+    (eagerly, each op dispatches separately and materializes its own full-size temporary)."""
+    return x / (jnp.linalg.norm(x) + eps)
+
+
+@jax.jit
+def _normalize_and_project(x, ref, eps):
+    """Normalized ``x`` and its full contraction with ``ref``, in one fused executable -- used once
+    per view in :func:`compute_view_basis_functions` (see :func:`_normalize_by_norm`)."""
+    x_normalized = x / (jnp.linalg.norm(x) + eps)
+    return x_normalized, jnp.tensordot(x_normalized, ref)
+
+
+def _make_single_view_sibling(ct_model):
+    """A SINGLE-view sibling of ``ct_model``: same class, same geometry and recon
+    parameters, but ``sinogram_shape`` with one view.
+
+    Per-view back projection is then expressed as the natural operation "back project
+    one view at these view parameters" -- ``set_view_parameters`` per view (a cheap,
+    no-recompile value update) + ``sparse_back_project`` of the one view.  Working one
+    view at a time at its own parameters avoids selecting a SUBSET of the full model's
+    views, which would break the sharded equal view-shard.
+
+    Construction: build the right class with valid required arguments, then overwrite
+    the ENTIRE parameter store with a copy of ``ct_model``'s (so no geometry setting
+    can silently drift), then shrink to one view (a single recompile) and re-pin the
+    recon shape.  The per-view constructor arguments are recovered from
+    ``view_params_component_names`` (the columns of the view-parameter array, e.g.
+    cone's ``['angles', 'helical_z_shifts']``), which match the constructor argument
+    names for every current geometry.  Pinned to a single device: the per-view work is
+    tiny, and this keeps an auto-sharded full model's multi-device layout out of it.
+    """
+    cls = type(ct_model)
+    view_params_name = ct_model.get_params('view_params_name')
+    full_view_params = np.asarray(ct_model.get_params(view_params_name))
+    view_params_2d = full_view_params.reshape(full_view_params.shape[0], -1)
+    sino_shape = tuple(ct_model.get_params('sinogram_shape'))
+    try:
+        components = list(ct_model.get_params('view_params_component_names') or [])
+    except NameError:
+        components = []
+
+    required = {}
+    for name in cls.get_required_param_names():
+        if name == 'sinogram_shape':
+            required[name] = (1,) + sino_shape[1:]
+        elif name in components:
+            required[name] = jnp.asarray(view_params_2d[0:1, components.index(name)])
+        elif name == view_params_name:
+            # e.g. parallel beam: the stored view-parameter array IS the ctor arg ('angles').
+            required[name] = jnp.asarray(full_view_params[0:1])
+        else:
+            required[name] = ct_model.get_params(name)
+    sibling = cls(**required)
+
+    # Faithful copy of EVERY parameter value, then one recompile back at the 1-view
+    # shape (the wholesale copy reintroduced the full shapes) with the first view's
+    # parameters; finally re-pin the recon shape to the full model's.
+    sibling.params = copy.deepcopy(ct_model.params)
+    sibling.set_params(no_warning=True, sinogram_shape=(1,) + sino_shape[1:],
+                       **{view_params_name: jnp.asarray(full_view_params[0:1])})
+    sibling.set_params(no_warning=True, recon_shape=ct_model.get_params('recon_shape'))
+    sibling.configure_devices(1)
+    return sibling
 
 
 def subsample_R_gamma(R, gamma, selected_indices):
@@ -81,7 +151,13 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         (10,)
     """
     num_views = ct_model.get_params('sinogram_shape')[0]
-    angle_candidates = np.asarray(ct_model.get_params('view_params_array'))[:, 0]
+    # Geometry-general: look the view-parameter array up by the model's own name for it
+    # ('angles' for parallel beam, 'view_params_array' for cone, ...); the candidate
+    # angle per view is the first component.  (The previous hardcoded
+    # 'view_params_array' lookup worked only for cone.)
+    view_params_name = ct_model.get_params('view_params_name')
+    view_params = np.asarray(ct_model.get_params(view_params_name))
+    angle_candidates = view_params.reshape(view_params.shape[0], -1)[:, 0]
     recon_shape = ct_model.get_params('recon_shape')
     if recon_shape != reference_object.shape:
         raise ValueError("The recon shape from ct_model and reference_object.shape must match.\n Got ct_model recon_shape = {}, reference_shape = {}.".format(recon_shape, reference_object.shape))
@@ -154,9 +230,7 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
     mask = mj.get_2d_ror_mask(ref_object[:, :, 0].shape)
     sparse_indices, row_col_indices = get_2d_subsampling_indices(mask, r_1, seed=seed)
     ref_object_flat = ref_object.reshape(ref_object.shape[0] * ref_object.shape[1], ref_object.shape[2])
-    sparse_ref_object = jnp.asarray(ref_object_flat[sparse_indices, :])
-    norm_sparse_ref = jnp.linalg.norm(sparse_ref_object)
-    sparse_ref_object /= (norm_sparse_ref + eps)
+    sparse_ref_object = _normalize_by_norm(jnp.asarray(ref_object_flat[sparse_indices, :]), eps)
 
     # Get number of views and angles
     num_views = ct_model.get_params('sinogram_shape')[0]
@@ -164,23 +238,32 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
     print('Creating recon bases')
 
     # Filter the sinogram in a single call
-    filtered_sinogram = ct_model.direct_filter(ref_sino, view_batch_size=None)
+    filtered_sinogram = ct_model.direct_filter(ref_sino)
     del ref_sino  # Free up space in case the sino is large
 
-    # Compute recon bases individually for each view
+    # Compute recon bases individually for each view, on a ONE-view sibling model:
+    # "back project this view at its own view parameters" via set_view_parameters (a
+    # cheap value update of the jitted projectors' runtime input -- no recompile per
+    # view), rather than selecting a subset of the full model's views.
+    single_view_model = _make_single_view_sibling(ct_model)
+    view_params_name = ct_model.get_params('view_params_name')
+    full_view_params = np.asarray(ct_model.get_params(view_params_name))
+
     gamma = np.zeros((num_views, 1))
     for i in tqdm.trange(num_views, desc='Computing and storing view basis functions'):
         view_sino = filtered_sinogram[i:i + 1]
-        recon_i = ct_model.sparse_back_project(view_sino, sparse_indices, view_indices=jnp.array([i]))
+        single_view_model.set_view_parameters(jnp.asarray(full_view_params[i:i + 1]))
+        recon_i = single_view_model.sparse_back_project(view_sino, sparse_indices)
 
-        norm_i = jnp.linalg.norm(recon_i) + eps
-        recon_i /= (norm_i + eps)
+        # One fused normalize + contraction per view.  (This also collapses a historical double-eps:
+        # the eager code added eps to the norm and again in the divide -- a ~1e-12 difference.)
+        recon_i, gamma_i = _normalize_and_project(recon_i, sparse_ref_object, eps)
 
         # Save view basis function
         with open(os.path.join(data_store_dir, f'view_basis_function{i}.npy'), 'wb') as f:
             np.save(f, recon_i)
 
-        gamma[i, 0] = jnp.tensordot(recon_i, sparse_ref_object)
+        gamma[i, 0] = gamma_i
     return gamma
 
 

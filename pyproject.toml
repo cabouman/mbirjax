@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbirjax"
-version = "0.6.17.1"
+version = "0.7.0"
 description = "High-performance tomographic reconstruction"
 keywords = ["tomography", "tomographic reconstruction", "computed tomography"]
 readme = "README.rst"
@@ -18,10 +18,20 @@ classifiers = [
     "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent"
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
-    "jax",
-    "jaxlib",
+    # jax/jaxlib 0.10.2 carries an XLA codegen regression that runs GPU forward projection (and so
+    # vcd) 3-9x slower than 0.10.1 — CPU and the back projector are unaffected.  Exclude that one
+    # release; newer good versions still install.  Re-test each new jax with
+    # mbirjax_metrics/tooling/scaling_tests/measure_one_cell.py and extend this exclusion if it also
+    # regresses (the nightly emails when a new jax ships).  See mbirjax/.claude/lessons.md.
+    # The >=0.10 FLOOR is load-bearing: jax and jaxlib must be version-matched, but a bare `!=0.10.2`
+    # let `pip install -e .` leave a stale ancient jax (0.4.21) against a current jaxlib (0.10.1) -- an
+    # incompatible skew that pip does NOT flag (jax checks the pairing only at runtime).  The floor
+    # forces jax up to the 0.10 line; jax's own metadata then pulls a matching jaxlib.  Keep the two
+    # bounds identical, and bump the floor (not an upper cap) as the supported baseline advances.
+    "jax>=0.10,!=0.10.2",
+    "jaxlib>=0.10,!=0.10.2",
     "matplotlib",
     "numpy",
     "scipy",
@@ -42,9 +52,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cuda12 = ["jax[cuda12]"]
-cuda13 = ["jax[cuda13]"]
-test = ["pytest"]
+cuda12 = ["jax[cuda12]!=0.10.2"]   # see the 0.10.2 exclusion note on the core jax dependency above
+cuda13 = ["jax[cuda13]!=0.10.2"]
+test = ["pytest", "pytest-xdist"]
 docs = [
      "sphinx",
      "sphinxcontrib-bibtex",
@@ -54,7 +64,10 @@ docs = [
 ]
 
 [tool.setuptools.packages]
-find = {}
+# Restrict discovery to the mbirjax package: the TOML form of `find` defaults to
+# namespaces = true, which would sweep __init__.py-less top-level dirs (demo, docs,
+# dev_scripts, tests, ...) into the wheel and pollute users' site-packages.
+find = {include = ["mbirjax*"]}
 
 [project.urls]
 homepage = "https://mbirjax.readthedocs.io"
