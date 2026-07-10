@@ -221,10 +221,14 @@ class TomographyModel(ParameterHandler):
         Resolves ``devices`` to a concrete device list and PINS it: a later ``set_params`` (which
         re-runs ``set_devices``) keeps these devices rather than re-auto-selecting.
 
-          * ``None``  -- automatic: the same choice ``use_gpu='automatic'`` makes by default --
-            shard across all available GPUs (or, with no GPU, all available CPU devices), trimmed
-            by ``_auto_device_count`` so the last shard is never entirely padding.  A single
+          * ``None``  -- automatic (the default construction behavior): shard across all
+            available GPUs (or, with no GPU, all available CPU devices), trimmed by
+            ``_auto_device_count`` so the last shard is never entirely padding.  A single
             available device gives a trivial 1-device layout.
+          * ``'cpu'`` / ``'gpu'`` -- all devices of that platform, trimmed as for automatic.
+            ``configure_devices('cpu')`` forces CPU-only operation (this replaces the
+            deprecated ``set_params(use_gpu='none')``); ``'gpu'`` raises when no GPU backend
+            is available.
           * ``int n`` -- use the first ``n`` devices of the default platform (GPUs if any, else CPUs);
             ``configure_devices(1)`` is the way to force single-device operation.
           * ``sequence of ints`` -- use those indices into the default device list (``jax.devices()``).
@@ -238,7 +242,7 @@ class TomographyModel(ParameterHandler):
         recompile, so device selection is order-independent with respect to shape changes.
 
         Args:
-            devices (None, int, or sequence of ints / jax devices): see above.
+            devices (None, str, int, or sequence of ints / jax devices): see above.
 
         Returns:
             Nothing; builds recon_placement / sino_placement and the empirical device-to-device
@@ -252,6 +256,20 @@ class TomographyModel(ParameterHandler):
 
         (``None`` is handled by configure_devices via ``_auto_device_pool``.)
         """
+        if isinstance(devices, str):
+            platform = devices.lower()
+            if platform == 'cpu':
+                pool = list(cpu_devices())
+            elif platform == 'gpu':
+                pool = list(gpu_devices())
+                if not pool:
+                    raise ValueError("configure_devices('gpu') was requested but no GPU backend "
+                                     "is available.")
+            else:
+                raise ValueError("configure_devices platform string must be 'cpu' or 'gpu'; "
+                                 "got {!r}.".format(devices))
+            # Trim exactly as automatic selection does (never a fully-padded last shard).
+            return pool[:self._auto_device_count(len(pool))]
         if isinstance(devices, (int, np.integer)):
             return default_devices()[:int(devices)]
         devices = list(devices)
@@ -937,9 +955,8 @@ class TomographyModel(ParameterHandler):
         Determine whether to run the reconstruction entirely on the GPU (when one is available) or
         entirely on the CPU, and set the corresponding devices.
 
-        This determination can be overridden by using ct_model.set_params(use_gpu=string), where string is
-        'automatic' (use the gpu when available) or 'none' (cpu only).  ('full' is a deprecated synonym
-        of 'automatic'.)
+        Device selection is controlled by :meth:`configure_devices` (``'cpu'`` forces CPU-only;
+        the deprecated ``set_params(use_gpu=...)`` is honored by forwarding there).
 
         Returns:
             Nothing, but instance variables are set to appropriate values.
@@ -952,13 +969,15 @@ class TomographyModel(ParameterHandler):
         gpus = gpu_devices()   # () when there is no GPU backend
         if not gpus and use_gpu not in ['automatic', 'none']:
             warnings.warn("'use_gpu' is set to {} but no gpu is available. Proceeding on cpu. "
-                          "Use set_params(use_gpu='automatic') to avoid this warning.".format(use_gpu))
+                          "(use_gpu is deprecated; devices are controlled by "
+                          "configure_devices.)".format(use_gpu))
 
         # A pinned configuration (configure_devices) keeps its devices across recompiles; otherwise
         # auto-select (_auto_device_pool: shard across all GPUs or all CPU devices, a single device
         # giving a trivial 1-device layout).  Either way _set_device_layout rebuilds the placements
         # and re-derives the pad metadata from the current shapes, so the layout tracks a
-        # 'full' <-> 'none' flip or a sinogram_shape change.
+        # sinogram_shape change.  (A use_gpu flip does NOT flow through here on a pinned layout;
+        # the deprecated parameter is honored by set_params forwarding to configure_devices.)
         cur_devices = self.recon_placement.devices if self._sharding_configured else self._auto_device_pool()
         self._set_device_layout(cur_devices, pinned=self._sharding_configured)
         return
@@ -2016,21 +2035,10 @@ class TomographyModel(ParameterHandler):
         views to slices [g0:g1).  This is why the caller must sum the results
         across view-owners (see ``mbirjax._sharding.sum_band_to_owner()``).
 
-        For each view-owner, the **detector-row axis** of its view-shard is cropped
-        to rows [g0:g1) (all views and all channels kept) and the projector is run;
-        the kernel sizes its output-slice axis from the number of input rows, so it
-        returns exactly slices [g0:g1).  The view-owners run in parallel, one thread
-        each (reusing ``pool``).
-
-        NOTE -- this row-crop is **parallel-beam-specific**: it works only because
-        detector row r back-projects to slice r alone (the projection mixes
-        channels, never rows).  Divergent geometries (cone / translation /
-        multiaxis) draw a slice from a *range* of rows and so cannot crop rows.  The
-        planned geometry-neutral replacement passes the full view plus a slice band
-        ``(g0 dynamic, L static)`` and lets each geometry map the band to the rows
-        it needs -- all local, since a view-owner holds every row for its own views.
-        See the "geometry-neutral slice-band projector interface" design note in
-        sharding_implementation_plan_v2.md.
+        For each view-owner, ``_back_project_view_shard_to_band`` maps its view-shard to
+        slices [g0:g1) (geometry-neutral banded kernel by default; ``ParallelBeamModel``
+        overrides it with a detector-row crop).  The view-owners run in parallel, one
+        thread each (reusing ``pool``).
 
         Args:
             shard_info (dict): device -> (local view-shard data, its GLOBAL view
@@ -2058,8 +2066,8 @@ class TomographyModel(ParameterHandler):
 
         Default (geometry-neutral) behavior: run the geometry's BANDED back kernel on the FULL
         view, producing slices [g0, g1) directly -- correct when a slice is drawn from a RANGE of
-        detector rows (so the rows cannot be cropped).  This is the general case; cone uses it as
-        is, as will translation/multiaxis once ported.  ``ParallelBeamModel`` OVERRIDES it with a
+        detector rows (so the rows cannot be cropped).  This is the general case; cone, translation,
+        and multiaxis use it as is.  ``ParallelBeamModel`` OVERRIDES it with a
         cheaper detector-row crop (its row r back-projects to slice r alone), a specialization that
         avoids processing the full detector rows.
 
@@ -2255,19 +2263,42 @@ class TomographyModel(ParameterHandler):
             no_compile (bool, optional): If True, suppresses projector recompilation after updates. Defaults to False.
             **kwargs: Arbitrary keyword arguments specifying parameter names and values to update.
 
-        Returns:
-            bool: True if projector recompilation is required and not suppressed by `no_compile`,
-            otherwise False.
-
         Example:
             >>> import mbirjax as mj
             >>> ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
             >>> ct_model.set_params(recon_shape=(128, 128, 128), sharpness=0.7)
+
+        Note:
+            ``use_gpu`` is DEPRECATED: device selection is an execution-environment choice, not
+            a model parameter (a persisted value silently follows a saved model to a different
+            machine).  Use :meth:`configure_devices` instead -- ``configure_devices('cpu')``
+            for CPU-only, ``configure_devices(None)`` for automatic.  During the deprecation
+            window the request is HONORED by forwarding to configure_devices, so it now also
+            takes effect over a previous device pin (it was formerly ignored, silently, once
+            configure_devices had been called).
         """
+        use_gpu = kwargs.get('use_gpu')
+        if use_gpu is not None and not no_warning:
+            warnings.warn(
+                "use_gpu is deprecated and will be removed: use configure_devices('cpu') for "
+                "CPU-only operation, configure_devices(None) for automatic, or pass explicit "
+                "devices.  The request is honored for now by forwarding to configure_devices.",
+                DeprecationWarning, stacklevel=2)
         recompile_flag = super().set_params(no_warning=no_warning, no_compile=no_compile, **kwargs)
         if recompile_flag:
             self.set_devices()
             self.create_projectors()
+        if use_gpu is not None and not no_compile:
+            # Deprecation window: honor the request by forwarding to the real control surface.
+            # 'none' pins the CPU pool; 'automatic'/'full' restores automatic tracking.  Either
+            # way the LATEST instruction wins -- including over a previous configure_devices pin.
+            if use_gpu == 'none':
+                self.configure_devices('cpu')
+            else:
+                self._sharding_configured = False
+                self.set_devices()
+            self.create_projectors()   # the platform may have changed: refresh the static
+                                       # kernel-algorithm flags baked from the tile policy
 
     def verify_valid_params(self):
         """
@@ -2449,8 +2480,8 @@ class TomographyModel(ParameterHandler):
 
     @staticmethod
     def subsample_views(array, max_views_to_use=20, num_real_views=None):
-        """Return an evenly-spaced subsample of at most ``max_views_to_use`` views (axis 0) as a host
-        NumPy array.
+        """Return an evenly-spaced subsample of approximately ``max_views_to_use`` views (axis 0) as a
+        host NumPy array.
 
         Statistical sinogram estimates -- the support indicator (:meth:`_get_sino_indicator`), the RMS /
         typical value, the auto-crop width, the auto-regularization stats -- do not need every view, so
@@ -2466,7 +2497,7 @@ class TomographyModel(ParameterHandler):
 
         Args:
             array (ndarray or jax array): array batched along axis 0 (views).
-            max_views_to_use (int, optional): cap on the number of views retained. Defaults to 20.
+            max_views_to_use (int, optional): approximate number of views to retain. Defaults to 20.
             num_real_views (int or None, optional): if set, sample only ``array[:num_real_views]``.
 
         Returns:
@@ -2687,7 +2718,7 @@ class TomographyModel(ParameterHandler):
             return filtered_sinogram                     # keep the device form
         return self._gather_sinogram(filtered_sinogram)  # default: numpy output
 
-    def initialize_recon(self, sinogram, weights=None, init_recon=None, max_iterations=25, first_iteration=0,
+    def initialize_recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, first_iteration=0,
                          compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True):
         """
         Do the device management and parameter initialization needed for recon and prox_map.
@@ -2777,7 +2808,7 @@ class TomographyModel(ParameterHandler):
             log_oom_guidance(self.logger, on_gpu=on_gpu)
         raise e
 
-    def recon(self, sinogram, weights=None, init_recon=None, max_iterations=25, stop_threshold_change_pct=0.2, first_iteration=0,
+    def recon(self, sinogram, weights=None, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2, first_iteration=0,
               compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True, output_sharded=False):
         """
         Perform MBIR reconstruction using the Multi-Granular Vector Coordinate Descent algorithm.
@@ -2883,24 +2914,32 @@ class TomographyModel(ParameterHandler):
                 init_recon, and the pair is TRUSTED as consistent (init_error_sinogram ==
                 sinogram - A @ init_recon for the SAME sinogram and geometry) -- verifying would
                 cost the forward projection this argument exists to avoid.  The device-form array
-                returned via return_checkpoint satisfies this by construction.  Defaults to None.
+                returned via return_checkpoint satisfies this by construction.  CONSUMED by the
+                run: the VCD loop donates this buffer for its in-place error-sinogram updates,
+                deleting the caller-visible array (see return_checkpoint below).  Defaults to None.
             fm_hessian (jax array, optional): Precomputed forward-model Hessian diagonal (as
                 returned via return_checkpoint, or compute_hessian_diagonal(weights=weights,
                 output_sharded=True) flattened to (num_pixels, num_slices)).  Must correspond to
-                the SAME weights and geometry.  When None (default), it is computed internally.
+                the SAME weights and geometry.  Read-only in the loop (not consumed, unlike the
+                error sinogram).  When None (default), it is computed internally.
             return_checkpoint (bool, optional): If True, additionally return the resume state --
                 a dict {'error_sinogram': <device form>, 'fm_hessian': <device form>} suitable for
                 the two arguments above -- so a chunked/checkpointed run can continue with no
                 re-initialization cost.  Zero-copy: the dict references the loop's own device
-                arrays.  Defaults to False.
+                arrays.  Consequently a checkpoint is SINGLE-USE: resuming donates its
+                error-sinogram buffer into the loop, deleting it -- resume again from the
+                checkpoint the RESUMED call returns, or persist before resuming (e.g.
+                ``np.asarray(checkpoint['error_sinogram'])``) if you need to keep one.  A
+                consumed checkpoint is detected at resume entry and raises with this guidance.
+                Defaults to False.
         Returns:
             (recon, recon_stats): tuple of 3D reconstruction and a tuple containing arrays of per-iteration stats.
             With return_checkpoint=True: (recon, recon_stats, checkpoint).
-            recon_stats = (fm_rmse, pm_rmse, nrms_update), where fm is forward model, pm is prior model, and
-            nrms_update is ||recon(i+1) - recon(i)||_2 / ||recon(i+1)||_2.
+            recon_stats = (fm_rmse, pm_loss, nmae_update, alpha_values), where fm is forward model, pm is prior model,
+            and nmae_update is ||recon(i+1) - recon(i)||_1 / ||recon(i+1)||_1.
 
         Note:
-            To maximize GPU memory, each of sinogram, weights, init_recon, and prox_input should be on the CPU for large recons.
+            For repeated recons on a large sinogram, see prepare_sino_for_devices.
         """
         # Ensure that everything has the right shape and is on the main device
         self.verify_valid_params()
@@ -2933,11 +2972,17 @@ class TomographyModel(ParameterHandler):
         # already resident on these devices may be returned by to_sino as a no-copy reshard that
         # SHARES the caller's buffers (or unchanged, e.g. prepare_sino_for_devices) -- deleting
         # that would invalidate the caller's array, so leave it.
-        if isinstance(sinogram, jax.Array):
+        if init_error_sinogram is not None:
+            # RESUME path: the sinogram is never placed here (the error sinogram replaces its
+            # only use), so there are no fresh buffers of ours to free -- and `sinogram` still
+            # IS the caller's array, which must not be deleted.
+            own_sinogram = False
+        elif isinstance(sinogram, jax.Array):
             own_sinogram = set(sinogram.devices()).isdisjoint(self.sino_placement.devices)
         else:
             own_sinogram = True   # numpy/host input -> to_sino copies to device buffers we own
-        sinogram = to_sino(sinogram)
+        if init_error_sinogram is None:  # We need the sinogram only to compute the error_sinogram
+            sinogram = to_sino(sinogram)
 
         scale_recon_to_sinogram = True if init_recon is None else False
         if init_error_sinogram is not None and init_recon is None:
@@ -2972,6 +3017,21 @@ class TomographyModel(ParameterHandler):
             # RESUME path: the caller supplies error_sinogram = sinogram - A @ init_recon
             # (a trusted, consistent pair -- typically the return_checkpoint output of a
             # previous call), skipping the initializing forward projection.
+            #
+            # A checkpoint is SINGLE-USE: the VCD loop updates the error sinogram through a
+            # DONATING jit (update_error_sinogram -- donation is what keeps multi-device memory
+            # flat), and donation deletes the caller-visible buffer.  Since return_checkpoint's
+            # dict holds a zero-copy reference to that buffer, the first resumed subset consumes
+            # the checkpoint.  Detect a second use here and fail with guidance instead of the
+            # opaque "Array has been deleted" the donated update would raise mid-loop.
+            if getattr(init_error_sinogram, 'is_deleted', lambda: False)():
+                raise ValueError(
+                    'init_error_sinogram has already been consumed: resuming donates the error '
+                    'sinogram buffer into the VCD loop, so a checkpoint is SINGLE-USE.  To '
+                    'resume again, use the checkpoint returned by the resumed call '
+                    '(return_checkpoint=True); to keep a checkpoint across a resume, persist it '
+                    'first (e.g. np.asarray(checkpoint["error_sinogram"])) and pass the '
+                    'persisted copy.')
             self.logger.info('Resuming from a supplied error sinogram')
             error_sinogram = init_error_sinogram
         else:
@@ -3156,7 +3216,9 @@ class TomographyModel(ParameterHandler):
         if return_checkpoint:
             # Zero-copy resume state: references to the loop's own device-form arrays.  Feed
             # these back as init_error_sinogram / fm_hessian (with init_recon = the returned
-            # recon) to continue with no re-initialization cost.
+            # recon) to continue with no re-initialization cost.  SINGLE-USE: resuming donates
+            # the error-sinogram buffer into the next loop (deleting it); the resume entry
+            # detects a consumed checkpoint and raises with guidance.
             return recon_3d, losses, {'error_sinogram': error_sinogram, 'fm_hessian': fm_hessian}
         return recon_3d, losses
 
@@ -3218,7 +3280,7 @@ class TomographyModel(ParameterHandler):
             prox_input (jax array): optional input for proximal map with same shape as reconstruction.
 
         Returns:
-            (callable) vcd_subset_updater(error_sinogram, flat_recon, pixel_indices) that updates the recon.
+            (callable) vcd_subset_updater(flat_recon, error_sinogram, pixel_indices, staged_halos=None) that updates the recon.
         """
 
         positivity_flag = self.get_params('positivity_flag')
@@ -3413,7 +3475,6 @@ class TomographyModel(ParameterHandler):
         Compute forward model terms used in line-search updates:
         ``forward_linear = fm_constant * jnp.sum(weighted_error_sinogram * delta_sinogram)`` and
         ``forward_quadratic = fm_constant * jnp.sum(delta_sinogram * delta_sinogram * weights)``.
-        This supports batching to a worker, with only two floats returned per batch.
 
         The two scalars are left wherever the reductions produced them (the sino mesh in the
         sharded path); the caller reconciles them onto the recon mesh.
@@ -3467,9 +3528,20 @@ class TomographyModel(ParameterHandler):
         if weights is None:
             weights = 1
             avg_weight = 1
+        elif jnp.ndim(weights) == 0:
+            # CONSTANT (scalar) weights -- what vcd_recon passes for the default all-ones case.
+            # The average weight over the real elements is the scalar itself, independent of the
+            # element count.  Without this branch a scalar fell through to the padded-array
+            # branch below, where jnp.sum(scalar) is the scalar (not count * scalar), making
+            # avg_weight ~ 1/num_real_elements and inflating the REPORTED loss by
+            # ~sqrt(num_real_elements) on padded runs (recon values were unaffected).
+            avg_weight = weights
         elif num_real_elements is None:
             avg_weight = jnp.average(weights)
         else:
+            # Weights ARRAY in the padded device form: the padded entries are identically zero,
+            # so summing and dividing by the REAL count gives exactly the average over the real
+            # elements.
             avg_weight = jnp.sum(weights) / float(num_real_elements)
         if normalize:
             weighted_sq_sum = jnp.sum(error_sinogram * error_sinogram * weights)

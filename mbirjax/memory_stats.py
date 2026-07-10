@@ -15,7 +15,7 @@ def _nbytes(a):
 def memory_report(label="", device=None, top_n=15):
     """Print current + peak device bytes and the largest live jax arrays.
 
-    Call at a phase boundary or from the debugger.  Returns peak MB.  On CPU
+    Call at a phase boundary or from the debugger.  Returns (peak, current) in MB.  On CPU
     `memory_stats()` may be empty (cur/peak show 0) but the live-array inventory
     still works.
     """

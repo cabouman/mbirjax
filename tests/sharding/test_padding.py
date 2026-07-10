@@ -268,6 +268,39 @@ class TestPaddedVcdRecon(unittest.TestCase):
         if not ran_multi:
             self.skipTest("no usable device count > 1")
 
+    def test_fm_rmse_independent_of_padding(self):
+        """The REPORTED forward-model loss (fm_rmse) must match the single-device value on a
+        padded run with DEFAULT weights.
+
+        Regression test for the scalar-weights normalization bug: vcd_recon represents default
+        weights as the Python scalar 1, which fell into get_forward_model_loss's padded
+        weights-ARRAY branch, where jnp.sum(scalar) is the scalar (not element_count * scalar)
+        -- making avg_weight ~ 1/num_real_elements and inflating the reported loss by
+        ~sqrt(num_real_elements) whenever padding was active.  The recon values were
+        unaffected, so only a loss assertion catches a regression here."""
+        devs = preferred_devices(2)
+        if devs is None:
+            self.skipTest("need >= 2 devices")
+        sino = _random_sino(_make_model())
+
+        def fm_rmse(model):
+            np.random.seed(0)   # fix partitions + subset order so the runs are comparable
+            if model.shard_devices is not None:
+                model._vcd_halo_per_subset = True
+            model.set_params(verbose=0)
+            _, recon_dict = model.recon(sino, max_iterations=self.MAX_ITERS,
+                                        stop_threshold_change_pct=0.0, print_logs=False)
+            return np.asarray(recon_dict['recon_params']['fm_rmse'])
+
+        ref = fm_rmse(_make_model())          # single device: 7 views, unpadded
+        model = _make_model()
+        model.configure_devices(devs)         # 7 views on 2+ devices: view axis padded
+        out = fm_rmse(model)
+        # Same per-iteration values up to float reordering; the bug was a ~20x blowup at this
+        # sinogram size (sqrt of 7*8*32 elements), so the tolerance discriminates decisively.
+        np.testing.assert_allclose(out, ref, rtol=1e-3,
+                                   err_msg="padded-run fm_rmse diverged from single-device")
+
     def test_recon_matches_nonconst_weights(self):
         """Non-constant weights: the zero-padded weights tail must keep the padded
         views out of the weighted error, the line search, and the Hessian."""

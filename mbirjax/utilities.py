@@ -355,6 +355,27 @@ def makedirs(filepath):
             raise Exception(f"Could not create save directory '{save_dir}': {e}")
 
 
+def merge_log_files(merged_path, labeled_paths):
+    """Merge temp log files into one file, each under a section header, and remove the temps.
+
+    Missing temps are skipped; if none exist, no file is written.
+
+    Args:
+        merged_path (str): Path of the merged output file.
+        labeled_paths (iterable): (label, path) pairs in the order they should appear.
+    """
+    labeled_paths = [(label, path) for label, path in labeled_paths
+                     if path is not None and os.path.exists(path)]
+    if not labeled_paths:
+        return
+    with open(merged_path, 'w') as merged:
+        for label, path in labeled_paths:
+            merged.write('======== {} ========\n'.format(label))
+            with open(path, 'r') as f:
+                merged.write(f.read())
+            os.remove(path)
+
+
 def download_and_extract(download_url, save_dir):
     """
     Download or copy a file from a URL or local file path. If the file is a tarball (.tar, .tar.gz, etc.), extract it
@@ -616,8 +637,8 @@ def import_recon_hdf5(file_path):
     Import a 3D reconstruction volume from an HDF5 file.
 
     This function loads a reconstruction volume and associated metadata from an HDF5 file,
-    and reorders the volume axes from (slice, row, col) to (row, col, slice) to match
-    MBIRJAX conventions.
+    and reorders the volume axes from the file's (slice, col, row) layout to (row, col, slice)
+    to match MBIRJAX conventions, so a volume written by export_recon_hdf5 is recovered unchanged.
 
     Args:
         file_path (str): Path to the HDF5 file containing the reconstruction volume.
@@ -635,7 +656,6 @@ def import_recon_hdf5(file_path):
     """
     recon, recon_dict = load_data_hdf5(file_path=file_path)
 
-    recon = recon[::-1, :, :]
     recon = np.transpose(recon, axes=(2, 1, 0))
 
     return recon, recon_dict
@@ -1248,7 +1268,7 @@ def generate_demo_data(
 
     The phantom and the sinogram are built distributed across the model's devices (in parallel) so a
     large problem is never materialized whole on one device, then gathered to the host: both are
-    returned as host NumPy arrays.  The output sinogram has shape (num_views, num_det_rows,
+    returned on the host.  The output sinogram has shape (num_views, num_det_rows,
     num_det_channels); each 2D array sinogram[view_index] is a simulated image from the detector, with
     num_det_rows indicating the vertical size and num_det_channels the horizontal size.
 
@@ -1256,7 +1276,7 @@ def generate_demo_data(
         object_type (str, optional): One of 'shepp-logan' or 'cube'.  Defaults to 'shepp-logan'.
         model_type (str, optional): One of 'parallel', 'cone', or 'translation'.  Defaults to 'cone'.
         num_views (int, optional):  Number of views in the output sinogram.  Defaults to 64. Ignored when model_type is 'translation'
-        num_det_rows (int, optional): Number of rows (vertical) in the output sinogram.  Defaults to 40.
+        num_det_rows (int, optional): Number of rows (vertical) in the output sinogram.  Defaults to 96.
         num_det_channels (int, optional): Number of channels (horizontal) in the output sinogram.  Defaults to 128.
         num_x_translations (int, optional): Number of horizontal translations for translation mode.  Defaults to 7.
         num_z_translations (int, optional): Number of vertical translations for translation mode.  Defaults to 7.
@@ -1277,7 +1297,7 @@ def generate_demo_data(
         devices (sequence of jax devices, optional): Devices to distribute the generation across.
             Defaults to None, which uses the model's automatic selection (all available GPUs, else the
             CPU devices).  The phantom and sinogram are built across these devices in parallel and then
-            gathered to the host -- this only affects where the work runs, not the (always NumPy) result.
+            gathered to the host -- this only affects where the work runs, not the result.
 
     Returns:
         tuple: (object, sinogram, params)
@@ -1285,9 +1305,9 @@ def generate_demo_data(
             - sinogram: shape (num_views, num_det_rows, num_det_channels).
             - params (dict): contains 'angles' and, for 'cone', also 'source_detector_dist' and 'source_iso_dist'.
 
-        object and sinogram are always host NumPy arrays (the phantom is a reference, and a NumPy
-        sinogram is what ``recon`` prefers -- it shards it across devices itself); the arrays in
-        ``params`` are NumPy as well.
+        sinogram is always a host NumPy array (what ``recon`` prefers -- it shards it across
+        devices itself), and the arrays in ``params`` are NumPy as well.  object is host NumPy
+        for 'shepp-logan' but a JAX array for 'cube'.
     """
     # Coerce types to Enum
     object_type = ObjectType(object_type)
@@ -1404,7 +1424,7 @@ def generate_demo_data(
 
     # Generate the phantom on the MODEL's devices (slice-sharded across all of them when multi-device,
     # so a large phantom is never built whole on one device).  generate_3d_shepp_logan_low_dynamic_range
-    # gathers it to the host and returns NumPy; gen_cube_phantom is host already.
+    # gathers it to the host and returns NumPy; gen_cube_phantom returns a JAX array.
     print('Creating phantom')
     recon_shape = ct_model_for_generation.get_params('recon_shape')
     model_devices = ct_model_for_generation.shard_devices   # None -> the generator uses all available
@@ -1443,8 +1463,8 @@ def generate_demo_data(
     # GPU), then gather it on a separate line.  _gather_sinogram is _gather_to_host (assemble on the
     # host shard-by-shard) PLUS a crop of any inert view/detector-row padding back to the real shape --
     # bare _gather_to_host would keep that padding.  recon prefers a host sinogram (it shards it itself)
-    # and the phantom is already host, so both are returned as NumPy (the params arrays too); nothing
-    # large is left resident on a device.
+    # and the shepp-logan phantom is already host (the cube phantom stays a JAX array); the params
+    # arrays are NumPy too; nothing large is left resident on a device.
     print('Creating sinogram')
     sinogram_sharded = ct_model_for_generation.forward_project(phantom, output_sharded=True)
     sinogram = ct_model_for_generation._gather_sinogram(sinogram_sharded)

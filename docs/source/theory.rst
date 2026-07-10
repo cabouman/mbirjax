@@ -73,7 +73,7 @@ where
 
     \rho ( \Delta ) = \frac{|\Delta |^p }{ p \sigma_x^p } \left( \frac{\left| \frac{\Delta }{ T \sigma_x } \right|^{q-p}}{1 + \left| \frac{\Delta }{ T \sigma_x } \right|^{q-p}} \right)
 
-where :math:`{\cal P}` represents a 8-point 2D neighborhood of pixel pairs in the :math:`(x,y)` plane and a 2-point neighborhood along the slice axis;
+where :math:`{\cal P}` represents a 4-point 2D neighborhood of pixel pairs in the :math:`(x,y)` plane and a 2-point neighborhood along the slice axis;
 :math:`\sigma_x` is the primary regularization parameter;
 :math:`b_{s,r}` controls the neighborhood weighting;
 :math:`p<q=2.0` are shape parameters;

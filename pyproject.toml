@@ -18,7 +18,7 @@ classifiers = [
     "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent"
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     # jax/jaxlib 0.10.2 carries an XLA codegen regression that runs GPU forward projection (and so
     # vcd) 3-9x slower than 0.10.1 — CPU and the back projector are unaffected.  Exclude that one
@@ -64,7 +64,10 @@ docs = [
 ]
 
 [tool.setuptools.packages]
-find = {}
+# Restrict discovery to the mbirjax package: the TOML form of `find` defaults to
+# namespaces = true, which would sweep __init__.py-less top-level dirs (demo, docs,
+# dev_scripts, tests, ...) into the wheel and pollute users' site-packages.
+find = {include = ["mbirjax*"]}
 
 [project.urls]
 homepage = "https://mbirjax.readthedocs.io"

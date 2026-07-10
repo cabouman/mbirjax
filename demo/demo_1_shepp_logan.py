@@ -37,7 +37,6 @@ num_det_channels = 90
 # If target_max_attenuation=None, then each phantom voxel is in the range [0, 1].
 # Set to a float to get a sinogram roughly in the range [0, target_max_attenuation]
 target_max_attenuation = None  # 6.0
-import jax
 
 # Generate simulated data
 # In a real application you would not have the phantom, but we include it here for later display purposes
@@ -90,7 +89,7 @@ time0 = time.time()
 # recon and recon_dict can be used together for viewing and saving to an hdf5 file.
 # Saving can be done either in code or through the viewer, and the hdf5 file can be loaded for viewing
 # or to recreate the model if desired.
-recon, recon_dict = ct_model.recon(sinogram, weights=weights, output_sharded=True)
+recon, recon_dict = ct_model.recon(sinogram, weights=weights)
 
 max_diff = np.amax(np.abs(phantom - recon))
 nrmse = np.linalg.norm(recon - phantom) / np.linalg.norm(phantom)
@@ -106,9 +105,6 @@ print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 recon_dict['notes'] += 'NRMSE between recon and phantom = {}'.format(nrmse)
 recon_dict['notes'] += 'Maximum pixel difference between phantom and recon = {}'.format(max_diff)
 recon_dict['notes'] += '95% of recon pixels are within {} of phantom'.format(pct_95)
-
-mj.get_memory_stats()
-print('Elapsed time for recon is {:.3f} seconds'.format(elapsed))
 
 # Display results
 title = 'Phantom (left) vs VCD Recon (right) \nUse the sliders to change the slice or adjust the intensity range.\nRight click an image to see options.'

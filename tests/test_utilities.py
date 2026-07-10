@@ -26,6 +26,36 @@ class TestUtilities(unittest.TestCase):
             warnings.warn('Run mbirjax._utils.update_param_literal() to update ParamNames in ParameterHandler')
         assert consistent
 
+    def test_merge_log_files(self):
+
+        print('Testing merge_log_files')
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            merged_path = os.path.join(tmp_dir, 'merged.log')
+            path_a = os.path.join(tmp_dir, 'a.log')
+            path_b = os.path.join(tmp_dir, 'b.log')
+            with open(path_a, 'w') as f:
+                f.write('content a\n')
+            with open(path_b, 'w') as f:
+                f.write('content b\n')
+
+            # Missing temps are skipped; existing ones appear in order under their headers, then are removed.
+            mj.merge_log_files(merged_path, [('first', path_a), ('missing', path_a + '.nope'), ('second', path_b)])
+            with open(merged_path, 'r') as f:
+                text = f.read()
+            self.assertEqual(text, '======== first ========\ncontent a\n'
+                                   '======== second ========\ncontent b\n')
+            self.assertNotIn('missing', text)
+            self.assertFalse(os.path.exists(path_a))
+            self.assertFalse(os.path.exists(path_b))
+
+            # No temps at all (including None paths): no output file is written.
+            merged_path_2 = os.path.join(tmp_dir, 'merged2.log')
+            mj.merge_log_files(merged_path_2, [('first', path_a), ('none', None)])
+            self.assertFalse(os.path.exists(merged_path_2))
+
     def test_concatenate_function_in_batches(self):
 
         print('Testing concatenate_function_in_batches')
@@ -151,6 +181,18 @@ class TestExportReconHostResidence(unittest.TestCase):
             loaded, _ = mj.import_recon_hdf5(path)
             self.assertIsInstance(loaded, np.ndarray)      # host array back
             self.assertEqual(loaded.shape, recon.shape)    # round-trips to (row, col, slice)
+
+    def test_export_import_roundtrip_values(self):
+        # No flash mask, so the round-trip must be EXACT: catches any re-introduced
+        # axis flip or transpose mismatch between export and import (the import-side
+        # slice-axis reversal removed in e80f4d0 would fail this test).
+        import os, tempfile
+        recon = np.random.RandomState(3).rand(12, 10, 6).astype(np.float32)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'recon.h5')
+            mj.export_recon_hdf5(path, recon, recon_dict=None)
+            loaded, _ = mj.import_recon_hdf5(path)
+            np.testing.assert_array_equal(loaded, recon)
 
 
 if __name__ == '__main__':

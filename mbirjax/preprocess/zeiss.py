@@ -288,7 +288,7 @@ def load_scans_and_params(dataset_dir, subsample_view_factor, verbose=1):
         print(f"Source to iso distance: {source_iso_dist} [{source_iso_dist_unit}]")
         print(f"Iso to detector distance: {iso_det_dist} [{iso_det_dist_unit}]")
         print(f"Detector pixel pitch: {det_pixel_pitch:.3f} [{delta_det_row_unit}]")
-        print(f"Source to iso distance: {iso_pixel_pitch} [{iso_pixel_pitch_unit}]")
+        print(f"Pixel pitch at iso: {iso_pixel_pitch} [{iso_pixel_pitch_unit}]")
         print(f"Optical magnification: {opt_mag}")
         print(f"Number of views: {num_views}")
         print(f"Detector size: (num_det_rows, num_det_channels) = ({num_det_rows}, {num_det_channels})")
@@ -566,6 +566,10 @@ def read_xrm_dir(dir_path):
     metadata['y_positions'] = [y0]
     metadata['z_positions'] = [z0]
     metadata['thetas'] = [angle0]
+    # Per-view alignment shifts: accumulated like the positions (metadata starts as a copy of
+    # the FIRST file's dict, whose shift entries cover only that file).
+    metadata['x_shifts'] = [md0['x_shifts'][0]]
+    metadata['y_shifts'] = [md0['y_shifts'][0]]
 
     # Load the remaining files and stack them together
     for i, p in enumerate(files[1:], start=1):
@@ -575,6 +579,8 @@ def read_xrm_dir(dir_path):
         metadata['y_positions'].append(md['y_positions'][0])
         metadata['z_positions'].append(md['z_positions'][0])
         metadata['thetas'].append(md['thetas'][0])
+        metadata['x_shifts'].append(md['x_shifts'][0])
+        metadata['y_shifts'].append(md['y_shifts'][0])
 
     _log_imported_data(str(dir_path), arr)
 
@@ -610,7 +616,7 @@ def read_metadata(ole):
         'num_views': number_of_images,
         'num_reference': number_of_reference,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
-        'det_pixel_pitch': _read_ole_value(ole, 'DetAssemblyInfo/OpticalMagnification', '<f'),
+        'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
         'iso_det_dist': _read_ole_value(ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
         'source_iso_dist': _read_ole_value(ole,'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
         'thetas': _read_ole_arr(
@@ -932,20 +938,19 @@ def correct_sino_shifts(sino, zeiss_params, downsample_factor, subsample_view_fa
         corrected_sino (numpy array or jax array): 3D sinogram data after alignment
     """
     # Get sinogram view offset
-    # TODO: Currrently I assume that the view offset has units of pixels
-    #   I test it and think that this assumption is correct
-    sino_x_offset = zeiss_params["x_shifts"][::subsample_view_factor]
-    sino_y_offset = zeiss_params["y_shifts"][::subsample_view_factor]
-
-    sino_x_offset /= downsample_factor[1]
-    sino_y_offset /= downsample_factor[0]
+    # OUT-OF-PLACE scaling: the slice of a numpy array is a VIEW, so an in-place /= here would
+    # silently rescale the caller's zeiss_params (and a second call would double-divide).
+    sino_x_offset = np.asarray(zeiss_params["x_shifts"][::subsample_view_factor],
+                               dtype=np.float64) / downsample_factor[1]
+    sino_y_offset = np.asarray(zeiss_params["y_shifts"][::subsample_view_factor],
+                               dtype=np.float64) / downsample_factor[0]
 
     ### Pad the sinogram to handle boundaries
-    # Set pad size as the largest shift in pixels across views
-    max_x_offset = np.max(sino_x_offset) - np.min(sino_x_offset)
-    max_y_offset = np.max(sino_y_offset) - np.min(sino_y_offset)
-
-    pad_size = int(np.ceil(np.maximum(max_x_offset, max_y_offset)))
+    # The translation below applies each view's ABSOLUTE offset, so the padding must cover the
+    # largest absolute shift (padding by the across-view RANGE under-pads whenever the shifts
+    # share a common offset, corrupting the boundary region).
+    pad_size = int(np.ceil(np.maximum(np.max(np.abs(sino_x_offset)),
+                                      np.max(np.abs(sino_y_offset)))))
 
     if pad_size > 0:
         sino_pad = np.pad(sino, ((0, 0), (pad_size, pad_size), (pad_size, pad_size)), mode='edge')

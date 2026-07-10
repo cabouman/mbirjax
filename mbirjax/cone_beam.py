@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 from collections import namedtuple
+import os
 import warnings
 from typing import Literal, Union, overload, Any
 
@@ -1129,11 +1130,7 @@ class ConeBeamModel(TomographyModel):
         """
         This function reduces memory usage for cone beam MBIR reconstruction by approximately a factor of 2
         by splitting the detector rows into two overlapping halves, reconstructing each half separately,
-        and stitching the reconstructions together.  The sinogram is split on the host and each half's
-        recon shards its own half onto the devices, so the full sinogram is never resident on the devices
-        at once.  Inputs are therefore processed on the host: a device/sharded ``sino`` or ``weights`` is
-        gathered to the host once (and is never mutated in place), and the returned reconstruction is a
-        host (NumPy) array.
+        and stitching the reconstructions together.
 
         The function can be called with the same arguments as TomographyModel.recon(), and it should return a
         reconstruction which is approximately equal to the reconstruction returned by TomographyModel.recon().
@@ -1147,7 +1144,8 @@ class ConeBeamModel(TomographyModel):
             stop_threshold_change_pct (float, optional): Same as in the recon method.
             first_iteration (int, optional): Same as in the TomographyModel.recon() method.
             compute_prior_loss (bool, optional): Same as in the TomographyModel.recon() method.
-            logfile_path (str, optional): Same as in the TomographyModel.recon() method.
+            logfile_path (str, optional): Same as in the TomographyModel.recon() method.  The two
+                halves' logs are merged into this single file, each under a section header.
             print_logs (bool, optional): Same as in the TomographyModel.recon() method.
 
         Returns:
@@ -1156,9 +1154,9 @@ class ConeBeamModel(TomographyModel):
                 - Dictionary of metadata containing recon and model parameters for each half.
 
         Raises:
-            ValueError: If inputs are missing or shapes are inconsistent.
+            ValueError: If inputs are missing or shapes are inconsistent, if half_overlap < 2,
+                or if the geometry has nonzero helical z-shifts.
             AssertionError: If array dimensions are invalid.
-            TypeError: If half_overlap is not an integer.
 
         Example:
             >>> import jax.numpy as jnp
@@ -1281,7 +1279,7 @@ class ConeBeamModel(TomographyModel):
         full_det_center = (full_num_rows - 1) / 2.0
 
         # Sine filter (float32) applied to the overlap rows of each half's weights to reduce boundary
-        # artifacts.  Note that 0 weight is used deliberately on the most extreme view to reduce ringing.
+        # artifacts.  Note that 0 weight is used deliberately on the most extreme row to reduce ringing.
         num_filter_pts = half_overlap_sino
         sine_filter_inputs = (np.pi / 2) * np.linspace(0, 1, num_filter_pts, endpoint=False)
         sine_filter = np.sin(sine_filter_inputs).astype(np.float32)
@@ -1290,7 +1288,7 @@ class ConeBeamModel(TomographyModel):
         # auto_regularize_flag=False so they do not re-derive from their partial sinograms.
         self.auto_set_regularization_params(sino)
 
-        def _recon_one_half(lo, hi, recon_shape, recon_slice_offset, taper_top):
+        def _recon_one_half(lo, hi, recon_shape, recon_slice_offset, taper_top, half_logfile_path):
             """Reconstruct one detector-row half on the host; return (host_recon, recon_dict).
 
             Builds the half's model, sinogram slice, and weights, runs recon, and gathers the result to
@@ -1337,7 +1335,7 @@ class ConeBeamModel(TomographyModel):
                                                  stop_threshold_change_pct=stop_threshold_change_pct,
                                                  first_iteration=first_iteration,
                                                  compute_prior_loss=compute_prior_loss,
-                                                 logfile_path=logfile_path, print_logs=print_logs)
+                                                 logfile_path=half_logfile_path, print_logs=print_logs)
             # recon() already returns a host NumPy array (its output_sharded=False gather), so the
             # half is on the host here -- no device_get needed.
             return recon_half, recon_dict
@@ -1345,10 +1343,24 @@ class ConeBeamModel(TomographyModel):
         # -------- Reconstruct the halves ONE AT A TIME (the top half is built, recon'd, gathered to the
         # host, and freed before the bottom half is built), so only one half's sino/weights/model and one
         # half's device recon are resident at any moment. --------
-        recon_top_half, recon_top_dict = _recon_one_half(top_lo, top_hi, top_recon_shape,
-                                                         top_recon_slice_offset, taper_top=True)
-        recon_bot_half, recon_bot_dict = _recon_one_half(bot_lo, bot_hi, bot_recon_shape,
-                                                         bot_recon_slice_offset, taper_top=False)
+        # Each half logs to its own temp file; the two are merged into logfile_path afterward
+        # (in finally, so any half logs written before a failure are preserved).
+        if logfile_path:
+            log_path = os.path.expanduser(logfile_path)
+            half_log_paths = (log_path + '.top', log_path + '.bot')
+        else:
+            log_path, half_log_paths = None, (None, None)
+        try:
+            recon_top_half, recon_top_dict = _recon_one_half(top_lo, top_hi, top_recon_shape,
+                                                             top_recon_slice_offset, taper_top=True,
+                                                             half_logfile_path=half_log_paths[0])
+            recon_bot_half, recon_bot_dict = _recon_one_half(bot_lo, bot_hi, bot_recon_shape,
+                                                             bot_recon_slice_offset, taper_top=False,
+                                                             half_logfile_path=half_log_paths[1])
+        finally:
+            if log_path:
+                mj.merge_log_files(log_path, zip(('split_sino_recon: top half', 'split_sino_recon: bottom half'),
+                                                 half_log_paths))
 
         # -------- Stitch together top and bottom reconstructions --------
         # Both halves were device_get'd to the host above, so stitch_arrays (host-preserving) assembles

@@ -3,7 +3,7 @@ Tests for sharded MULTIAXIS-PARALLEL projection.
 
 MultiAxisParallelModel shards the recon by **slice** and the sinogram by **view**, like cone
 beam and translation, using the same geometry-neutral placement path (it adds no projector/
-driver overrides beyond _supports_sharding=True):
+driver overrides):
 
   * BACK is a reduce-scatter on the BANDED back kernel -- with a nonzero elevation a slice is
     drawn from a RANGE of detector rows, so rows cannot be cropped; each view-owner banded-back-
@@ -11,7 +11,7 @@ driver overrides beyond _supports_sharding=True):
   * FORWARD GATHERS the full slice cylinder onto each view-owner (per pixel-batch, to bound
     memory) and runs the MONOLITHIC forward (decision C); it does not band the forward.
 
-Once ``_supports_sharding()`` is True, even the single-device case runs on the placement path
+Even the single-device case runs on the placement path
 (a trivial 1-device mesh), so the per-geometry multiaxis gates in tests/geometries already
 exercise the n_dev=1 path.  These tests add the MULTI-DEVICE gate: the sharded path must match
 the single-device path to float noise, for both an isotropic and an anisotropic

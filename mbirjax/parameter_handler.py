@@ -60,12 +60,12 @@ class ParameterHandler:
     def setup_logger(self, *, logfile_path: str = "~/.mbirjax/logs/recon.log", print_logs: bool = True):
         """
         Initialize self.logger and self.log_buffer.
+        The logging level comes from the model's 'verbose' parameter (0 -> WARNING, 1 -> INFO, 2+ -> DEBUG).
 
         Args:
             logfile_path: Path to the log file ('~' is expanded to the user's home, so the
                 default lands in the per-user mbirjax directory rather than littering the
                 current working directory). If None or empty, file logging is skipped.
-            verbosity: 0 -> WARNING, 1 -> INFO, 2+ -> DEBUG
             print_logs: If True, emit logs to console.
 
         Raises:
@@ -158,7 +158,6 @@ class ParameterHandler:
                 recompile_flag = entry.recompile_flag
                 print("{} = {}, recompile_flag = {}".format(key, param_val, recompile_flag))
         print("----")
-        self.set_params(use_gpu=self.get_params('use_gpu'))
 
     @staticmethod
     def convert_arrays_to_strings(cur_params):

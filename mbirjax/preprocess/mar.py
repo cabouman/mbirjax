@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import functools
+import os
 import mbirjax as mj
 import mbirjax.preprocess as mjp
 from . import pipeline
@@ -85,12 +86,11 @@ def BH_correction(sino, alpha, batch_size=64, devices=None):
     Apply a polynomial beam hardening correction to a sinogram.
 
     This function applies a polynomial correction to each view of the sinogram
-    by evaluating powers of the sinogram values and weighting them by the coefficients in `alpha`,
-    while also including the original linear term (the sinogram itself).
+    by evaluating powers of the sinogram values and weighting them by the coefficients in `alpha`.
 
     The corrected sinogram is computed as:
 
-        corrected_sino = sino + alpha[0] * sino**2 + alpha[1] * sino**3 + ...
+        corrected_sino = alpha[0] * sino + alpha[1] * sino**2 + alpha[2] * sino**3 + ...
 
     It processes the sinogram in batches of views for memory efficiency.
 
@@ -99,8 +99,10 @@ def BH_correction(sino, alpha, batch_size=64, devices=None):
             Input sinogram to correct.
         alpha (list or array of floats):
             Coefficients for the polynomial correction. The k-th term corresponds to sino^(k+1).
-        batch_size (int, optional, default=16):
+        batch_size (int, optional, default=64):
             Number of views to process in a single batch.
+        devices (sequence of jax devices, optional):
+            Devices to spread the view batches over. Defaults to None (single device).
 
     Returns:
         corrected_sino: jnp.ndarray of shape (views, rows, cols)
@@ -682,7 +684,6 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
 
     # Estimate beam hardening model parameters theta
     theta = _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta, num_constraint_update_iter, view_mask=view_mask)
-    # print(f'theta = {theta}')
 
     # Compute the corrected plastic sinogram
     plastic_sino_corrected = _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list,
@@ -699,8 +700,9 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
     return ct_model._gather_sinogram(corrected_sino)
 
 
-def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constraint_update_iter=10, stop_threshold_change_pct=0.5,
-                        num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, verbose=0, output_sharded=False):
+def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constraint_update_iter=10, stop_threshold_change_pct=0.2,
+                        num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, verbose=0, output_sharded=False,
+                        max_iterations=15, logfile_path='~/.mbirjax/logs/recon.log'):
     """
     Perform iterative metal artifact reduction using plastic-metal beam hardening correction.  If num_metal is 0,
     then this performs a standard MBIR recon.
@@ -715,18 +717,21 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
         num_BH_iterations (int, optional): Number of correction-reconstruction iterations. Defaults to 3.
         num_constraint_update_iter (int, optional): Number of iterations for updating constraints.
             At each iteration, the most violated constraints are activated and the quadratic program is re-solved via OSQP.
-        stop_threshold_change_pct (float, optional): Relative change threshold (%) for early stopping in MBIR. Defaults to 0.5.
+        stop_threshold_change_pct (float, optional): Relative change threshold (%) for early stopping in MBIR. Defaults to 0.2.
         num_metal (int, optional): Number of metal materials to segment and correct for. Defaults to 1.
         order (int, optional): Maximum total degree of the beam hardening correction polynomial. Defaults to 3.
         alpha (float, optional): Degree-dependent scaling factor for regularization weights. Higher values penalize
             higher-order terms more strongly. Defaults to 1.
         beta (float, optional): Regularization strength for ridge regression. Defaults to 0.002.
-        gamma (float, optional): Stabilization factor used in plastic correction. Multiplies the median of `s_p`
+        gamma (float, optional): Stabilization factor used in plastic correction. Multiplies the mean of `s_p`
             to set a positive floor in the denominator, preventing division by near-zero or negative values. Defaults to 0.1.
         verbose (int, optional): Verbosity level for printing intermediate information. Defaults to 0.
         output_sharded (bool, optional): Choose the form of the returned reconstruction.  If False
             (default), return an ordinary host NumPy array.  If True, leave it distributed
             (slice-sharded) across the model's devices for a following on-device step.
+        max_iterations (int, optional): Maximum MBIR iterations per reconstruction pass. Defaults to 15.
+        logfile_path (str, optional): Same as in the TomographyModel.recon() method.  The BH passes'
+            logs are merged into this single file, each under a section header.
 
     Returns:
          numpy or jax array: The final corrected reconstruction after iterative beam hardening
@@ -736,7 +741,7 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
         >>> recon = recon_plastic_metal(
         ...     ct_model, sino, weights,
         ...     num_BH_iterations=3,
-        ...     stop_threshold_change_pct=0.5,
+        ...     stop_threshold_change_pct=0.2,
         ...     num_metal=1,
         ...     order=3,
         ...     alpha=1,
@@ -766,7 +771,9 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
 
     # Do a regular recon if num_metal == 0
     if num_metal == 0:
-        recon, _ = recon_function(sino, weights=weights, stop_threshold_change_pct=stop_threshold_change_pct)
+        recon, _ = recon_function(sino, weights=weights, max_iterations=max_iterations,
+                                  stop_threshold_change_pct=stop_threshold_change_pct,
+                                  logfile_path=logfile_path)
         return to_output_form(recon)
 
     # Continue with beam hardening and segmentation
@@ -774,23 +781,38 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
         print("\n************ Perform initial FDK reconstruction  **************")
     recon = ct_model.direct_recon(sino, output_sharded=True)
 
-    for i in range(num_BH_iterations):
-        # Estimate Corrected Sinogram
-        if verbose >= 1:
-            print(f"\n************ Correct sino plastic metal {i + 1}  **************")
-        corrected_sinogram = correct_sino_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma, num_constraint_update_iter=num_constraint_update_iter)
+    # Each BH pass logs to its own temp file; merged into logfile_path afterward
+    # (in finally, so any pass logs written before a failure are preserved).
+    if logfile_path:
+        log_path = os.path.expanduser(logfile_path)
+        pass_log_paths = [log_path + '.pass{}'.format(i + 1) for i in range(num_BH_iterations)]
+    else:
+        log_path, pass_log_paths = None, [None] * num_BH_iterations
+    try:
+        for i in range(num_BH_iterations):
+            # Estimate Corrected Sinogram
+            if verbose >= 1:
+                print(f"\n************ Correct sino plastic metal {i + 1}  **************")
+            corrected_sinogram = correct_sino_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma, num_constraint_update_iter=num_constraint_update_iter)
 
-        # Reconstruct Corrected Sinogram
-        if verbose >= 1:
-            print(f"\n************ Perform MBIR reconstruction {i + 1} **************")
-        recon, _ = recon_function(corrected_sinogram, weights=weights, init_recon=recon, stop_threshold_change_pct=stop_threshold_change_pct)
+            # Reconstruct Corrected Sinogram
+            if verbose >= 1:
+                print(f"\n************ Perform MBIR reconstruction {i + 1} **************")
+            recon, _ = recon_function(corrected_sinogram, weights=weights, init_recon=recon,
+                                      max_iterations=max_iterations,
+                                      stop_threshold_change_pct=stop_threshold_change_pct,
+                                      logfile_path=pass_log_paths[i])
 
-        if verbose >= 2:
-            print(f"\n************ BH Iteration {i + 1}: Display plastic and metal mask **************")
-            plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal)
-            labels = ['Plastic Mask'] + [f'Metal {j + 1} Mask' for j in range(len(metal_masks))]
-            mj.slice_viewer(plastic_mask, *metal_masks, vmin=0, vmax=1.0,
-                            slice_label=labels,
-                            title=f'Iteration {i + 1}: Comparison of Plastic and Metal Masks')
+            if verbose >= 2:
+                print(f"\n************ BH Iteration {i + 1}: Display plastic and metal mask **************")
+                plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal)
+                labels = ['Plastic Mask'] + [f'Metal {j + 1} Mask' for j in range(len(metal_masks))]
+                mj.slice_viewer(plastic_mask, *metal_masks, vmin=0, vmax=1.0,
+                                slice_label=labels,
+                                title=f'Iteration {i + 1}: Comparison of Plastic and Metal Masks')
+    finally:
+        if log_path:
+            labels = ['recon_plastic_metal: BH pass {}'.format(i + 1) for i in range(num_BH_iterations)]
+            mj.merge_log_files(log_path, zip(labels, pass_log_paths))
 
     return to_output_form(recon)

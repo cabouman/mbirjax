@@ -48,8 +48,8 @@ def compute_sino_transmission(obj_scan, blank_scan, dark_scan, defective_pixel_a
             A 3D dark scan of shape (num_dark_scans, num_det_rows, num_det_channels). 
             If `num_dark_scans > 1`, a pixel-wise mean will be computed.
         defective_pixel_array (ndarray, optional): 
-            An array of defective pixel indices. Format can be either 
-            (view_idx, row_idx, channel_idx) or (row_idx, channel_idx), if shared across views.
+            An array of defective pixel indices, one (row_idx, channel_idx) pair per row;
+            these pixels are treated as defective in every view.
             If `None`, invalid pixels are inferred from `NaN` or `inf` values.
         batch_size (int): 
             Number of views to process in each GPU batch.

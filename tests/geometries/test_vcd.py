@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 import warnings
@@ -273,9 +274,23 @@ class TestVCD(unittest.TestCase):
         recon_full = np.asarray(recon_full)
         print('  Starting split recon')
         np.random.seed(0)
-        recon, recon_dict = ct_model.split_sino_recon(sinogram,
-                                                      max_iterations=self.SPLIT_SINO_ITERATIONS,
-                                                      stop_threshold_change_pct=0.0)
+        ct_model.set_params(verbose=1)  # INFO level, so the half logs have content to verify
+        with tempfile.TemporaryDirectory() as log_dir:
+            logfile_path = os.path.join(log_dir, 'split.log')
+            recon, recon_dict = ct_model.split_sino_recon(sinogram,
+                                                          max_iterations=self.SPLIT_SINO_ITERATIONS,
+                                                          stop_threshold_change_pct=0.0,
+                                                          logfile_path=logfile_path,
+                                                          print_logs=False)
+            # The halves' logs must be merged into one file, temps removed.
+            with open(logfile_path, 'r') as f:
+                log_text = f.read()
+            self.assertIn('split_sino_recon: top half', log_text)
+            self.assertIn('split_sino_recon: bottom half', log_text)
+            self.assertEqual(log_text.count('MBIRJAX Version'), 2)
+            self.assertFalse(os.path.exists(logfile_path + '.top'))
+            self.assertFalse(os.path.exists(logfile_path + '.bot'))
+        ct_model.set_params(verbose=0)
         recon = np.asarray(recon)
 
         split_vs_full = np.linalg.norm(recon - recon_full) / np.linalg.norm(recon_full)

@@ -80,8 +80,10 @@ else
   pip install -e ..
 fi
 
-pip install "..[test]"
-pip install "..[docs]"
+# -e here as well: a non-editable install of the same package would silently REPLACE
+# the editable install made above, freezing the env at install-time code.
+pip install -e "..[test]"
+pip install -e "..[docs]"
 source build_docs.sh
 
 red=`tput setaf 1`
