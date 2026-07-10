@@ -1,186 +1,201 @@
-# Current forward plan
+# Current forward plan — goals for the next release
 
-(Originally the post-sharding forward plan; renamed 2026-07-08 -- this is the EVOLVING
-running list of open work, at plans/current_plans.md.)
+(The EVOLVING running list of open work, at `plans/current_plans.md`.  Rewritten
+2026-07-10 to read forward-looking; completed campaigns live in their own findings docs,
+cited where their results guide the work below.  Roughly ordered by likely value.)
 
-**Created 2026-07-03; updated 2026-07-08** (after the projector-kernel campaign on
-`greg/kernel_investigation`).  Open items carried forward now that the core sharding
-(ParallelBeam + all geometries), the MAR/preprocessing sharding, and the large-problem memory
-work have shipped on `greg/shard_profiling`.  This is the running "what's left" list; detail
-lives in the source docs cited per item (`mar_refactor_plan.md`,
-`sharding_implementation_plan_v3.md` §4/§5/§6, `sinogram_sharding.md`).
-Roughly ordered by likely value; none is blocking.
+## Goals for the next release
+
+* **New padding** (§1) — per-end axial extension in `auto_set_recon_geometry`, the
+  split_sino_recon h_recon formula (+ alignment opt-in, taper retirement), lateral
+  truncation detect-and-warn.
+* **New default partition sequence** (§2) — image-quality experiments to justify
+  skipping the 1-subset case by default, plus the `max_iterations` raise; runs AFTER
+  the padding lands, since padding changes both convergence and the metrics.
+* **Possible further performance improvements** (§3) — the two quantified headroom
+  pools: VCD host dispatch, and GPU kernel memory-access patterns.
+* **MAR: cache H** (§4).
+* **Capture the projector-kernel design in the dev docs** — DONE 2026-07-10: new
+  "Projector kernel design" section in `docs/source/dev_sharding_overview.rst`
+  (review welcome); the measured record stays in
+  `plans/projector_kernels/fwd_back_findings.md`.
+* **Cleanup** (§6).
 
 ---
 
-## 0.5 Done on `greg/kernel_investigation` (2026-07-07/08) — the projector-kernel campaign
+## 1. Flash remediation: padding and the split seam
 
-Item 3's "forward-kernel internals (future project)" became a full campaign; record:
-`plans/projector_kernels/fwd_back_findings.md`.  In brief:
+**State:** investigation complete; remedies designed and ready for discussion →
+implementation → testing.  The synthesis with rationale, equations, implementation
+sketches, and pros/cons is `plans/flash_remediation/phase_2d_remedies.html` (published
+at `/depot/bouman/www/mbirjax/flash_remediation/`); the plan of record is
+`plans/flash_remediation/flash_remediation_plan.md`.
 
-- **TilePolicy** (`model.tiles`): every projector batching/banding knob + the kernel-algorithm
-  flags consolidated into one per-layout selection method, read late-bound.
-- **Sorted channel reduction** for the GPU forward horizontal fans (the scatter's colliding
-  atomic adds were ~the whole forward kernel cost).  Parallel/cone/multiaxis enable it;
-  TRANSLATION measured a 4.5–6.5× collision-cliff LOSS at its real detector shapes and keeps
-  the scatter — three guard constants in `projectors.py` encode the measured crossovers.
-- **Stacked back gather** (parallel only; measured a composition no-op behind the vertical
-  fans of the other three geometries — three separate confirmations).
-- **DRY fan kernels**: the trapezoid tap machinery lives once in `projectors.py`
-  (`horizontal_fan_project` / `horizontal_fan_back` / `vertical_fan_band_gather`).
-- **Concrete scatter centers** — the horizontal-fan rounding-bug fix (parallel's compiled
-  programs are round-free; the vertical fans' per-slice rounds are documented accepted risk:
-  `plans/bugs_and_artifacts/jax rounding bug/phase_d_design.md`).  En route: the
-  eager-gather lesson (one eager array op per wrapper call cost VCD +35%; `lessons.md` §3).
-- **Scoreboard (H100, 1024³ n=1, campaign start → end):** parallel forward 35.0 → 7.9 s,
-  parallel back 18.2 → 10.5 s, cone forward 41.5 → 18.8 s; multiaxis forward 1.2–1.4×;
-  VCD neutral; memory flat at capacity (cone 1024³ −3.2 GB).
-- **Docs consolidated** into top-level `plans/` (this file's new home; `plans/README.md`).
+**Forward, in implementation order:**
 
-**New opens from the campaign** (carried in §3 below): nightly memory-gate acks; the VCD
-host-dispatch-bound observation; optional refinements (sort-permutation caching, extending
-the collision guard to parallel/cone).
+1. **Cone-beam per-end axial extension in `auto_set_recon_geometry`** — E_top/E_bot from
+   the detector row edges (det_row_offset-aware; helical ends attach at z_max/z_min),
+   R from the recon grid; `scale_recon_shape` stays a pure scaler + warns on
+   uncompensated lateral growth.  Open implementation check: R = RoR-mask radius vs grid
+   half-diagonal (what does the projector actually update?).
+2. **split_sino_recon**: h_recon = ceil(h_sino·(1+R/SID)·ρ) + 2 with ρ =
+   δ_row/(mag·δ_slice) as the default; `align_split_grid` opt-in (sub-slice grid shift —
+   alignment is NOT reachable by index choice at ρ=1); retire the taper in the same
+   change (it fails at 8× downsampling — the shipped default visibly stripes there).
+3. **Lateral truncation detect-and-warn** via the `_get_sino_indicator` support mask
+   already computed in `auto_set_regularization_params` (support touching the edge
+   channels ⇒ truncated; free, no new threshold).  Deliberately NO auto-padding.
+4. **Re-baseline the regression dashboards** in the same change (default shapes grow and
+   values shift, for the better) + a release note.
+5. **Phase 3 validation on real scans** before the defaults ship: SiC (axial), z62
+   (radial), BGA (severe lateral, stretch).
+6. Later: the analogous per-end bounds for translation and multiaxis-parallel.
 
-## 0. Done during PR prep (2026-07-03)
+## 2. Partition sequence and iteration defaults
 
-- **MAR test coverage** (`tests/sharding/test_mar.py` — was zero): `_argmin_3d` vs flat argmin incl.
-  tie cases; corrected-sino 1-vs-3-device consistency with view AND slice padding (tol 1e-3 — the BH
-  constraint SELECTION is discretely sensitive to reduce-order noise); the forced-constraint path
-  (`tolerance=1e10` — where the flat-index bugs lived); the empty-plastic `ValueError` guard; the
-  `recon_plastic_metal` `output_sharded` contract (seeded partitions).
-- **`vcls.py` eager norms** (the last `jnp.linalg` survey stragglers): per-view normalize +
-  projection folded into jitted helpers (`_normalize_by_norm` / `_normalize_and_project`); also
-  collapsed a historical double-eps on the `recon_i` path (~1e-12).
+**State:** done at the batch level.  The prerelease keeps the old default sequence,
+with an easier knob for users to skip the 1-subset (granularity-1) case on large recons
+(the change is deliberately conservative).
 
-## 1. Size-adaptive memory knobs (biggest near-term win)
+**Forward (after §1 lands — the padding changes both convergence and the metrics,
+so the deciding experiments should run with it in place):** make skip-1 the default
+for the next release of main — gated on
+**image-quality comparison experiments** (old default vs the proposed sequences on
+representative objects; visual quality first).  The 2026-07-05 study
+(`plans/partition_sequence/partition_sequence_plan.md`, PROPOSED-defaults + metric-caveat
+sections) supplies the candidates and the durable guidance:
 
-The recon's peak on large multi-GPU problems is now set by a couple of hardwired batch/granularity
-constants that were tuned for small volumes.  Both should become **size-adaptive but hardware-independent**
-(a function of the *problem*, identical on any device count — else results would drift with hardware and
-break the cross-device correctness gating).
+- Candidate sequences: **`[7]`** (flat-128) or **`[4, 7]`** (a cheap coarse-start hedge).
+  A fine flat tail converges faster per iteration AND never uses a coarse granularity, so
+  the old granularity-1 memory spike disappears without any size-adaptive starting
+  policy — an adaptive coarse start stays an optional advanced knob only.
+- Raise **`max_iterations` from 15 into the ~25–50 range** (the 15-cap strangles the
+  0.2% stop on hard objects); the threshold stays 0.2.
+- Metric caveat to respect in the experiments: FoV-truncation flash inflates NRMSE and
+  the change-% stop (see §1) — compare on cropped/remediated metrics or visually.
 
-- **Adaptive `view_batch_size_for_vmap`.**  **LARGELY DONE via the TilePolicy (2026-07-07):**
-  the knob is now per-op (forward keeps a flat OOM-safe cap 128; back single-vmaps its
-  per-device shard, cap 512 sharded / 128 single-device), selected per device layout and read
-  late-bound (the stale-binding bug that motivated this item is fixed).  RESIDUAL (optional):
-  true size-adaptive scaling and divisor-of-shard sizing to avoid ragged tail batches —
-  revisit only if a measured case wants it.
-- **Size-only adaptive `partition_sequence` / starting granularity** (`sharding_implementation_plan_v3.md`
-  §5 P1-design).  The granularity-1 first VCD iteration updates the whole recon in one subset → the biggest
-  subset-domain arrays.  Deriving the coarsest starting granularity from voxel count (skip granularity 1 for
-  large problems) shrinks those.  **STUDIED 2026-07-05, findings pending team review** (full record:
-  `plans/partition_sequence/partition_sequence_plan.md`, PROPOSED-defaults + metric-caveat
-  sections): a fine flat tail (finer converges faster per iteration = VCD is coordinate descent; the
-  old `[0,2,4,6,7]` coarse ramp added ~0 convergence but a gran-1 memory spike + extra compiles)
-  SUBSUMES this memory item — it never uses a coarse granularity, so peak sits at the fixed-array
-  floor at every size, no adaptive START needed for the default.  Two proposed sequence options
-  (**`[7]`** flat-128, or **`[4, 7]`** as a cheap coarse-start hedge); plus raise **`max_iterations`
-  from 15 into the ~25–50 range** (the 15-cap was strangling the 0.2% stop on hard objects),
-  threshold stays 0.2.  An adaptive coarse start remains an OPTIONAL advanced knob.  Not yet
-  decided/implemented — team review, then Greg's call.
-- These two are the same class of policy (problem-size → memory knob); worth unifying under one place.
+Supporting experiment (drafted, not run): the real-data partition-sequence convergence
+study (`plans/experiments/partition_sequence/`), which also tests the
+monotone-non-decreasing granularity theory.
 
-## 2. Sinogram weight edge tapering to speed convergence and reduce flash
+## 3. Performance
 
-ConeBeamModel → split_sino_recon() uses a per-detector-row sine filter on sinogram weights to reduce ringing 
-artifacts associated with windowing with a rect in detector rows when splitting the full recon into 
-two pieces.  Also, observation indicates that objects that extend outside the field of view
-lead to slower convergence.  
-- Hence we should investigate whether a geometry-adaptive (and possibly data-adaptive) 
-filtering of sinogram edges (both in rows and channels) may speed convergence and/or reduce
-the 'flash' associated with objects partially outside the FoV.
+Two quantified headroom pools guide any future performance work (both from the
+2026-07 profiling/kernel campaigns; details in
+`plans/projector_kernels/fwd_back_findings.md` and `plans/` profiling docs):
 
-## 3. Projector / batching profiling and cleanup
+- **VCD is host-dispatch-bound at interactive sizes**: a 200³ VCD recon is ~95% host
+  time (~0.1 s of device kernels in a ~2 s recon).  The large-headroom item is reducing
+  per-subset dispatches / host syncs — e.g. jit a whole subset update or iteration (the
+  concrete-centers plumbing supports precomputed-per-partition centers if that jit
+  lands).  cProfile is the instrument, not kernel benches (`lessons.md` §3/§5).
+- **GPU kernel headroom is ~10×**: the forward sorted-reduce and back gather both sit
+  roughly 10× above compute-only bounds — compute is ~10% of kernel time — and ncu
+  attributes it to memory ACCESS PATTERNS, not HBM bandwidth.  Closing it is
+  custom-kernel territory; deferred, but the ceiling is known and large.
 
-- ~~Profile the existing projector performance~~ / ~~Forward-kernel internals (future
-  project)~~ — **DONE 2026-07-07/08 as the projector-kernel campaign** (§0.5 above; full
-  record `plans/projector_kernels/fwd_back_findings.md`).  Forward is no longer the dominant
-  projector cost (parallel fwd is now ~1.3× FASTER than back at 1024³ n=1); the residual
-  kernel headroom (forward sorted-reduce and back gather both sit ~10× above compute-only
-  bounds) is custom-kernel territory, deferred.
-- ~~Simplify the sparse-projector batching machinery~~ — **CLOSED 2026-07-04 with the code
-  UNCHANGED**: the full investigation (census, balanced-batching v2, windowed-read patch, band
-  pixel-width tuning — each measured and retired; record in
-  `plans/projector_batching/batching_refactor_design.md`) established the scan/map/vmap nest
-  is load-bearing piece-by-piece and the batch constants are effectively optimal.  Repeated hard
-  lesson: driver-level wins (band −10% at width 2016 on H100; 1.4–1.5× on CPU) did NOT survive the
-  full recon path on either platform — micro benchmarks of shape-dependent kernel effects don't
-  compose; the full path is the arbiter.  Durable constants for the adaptive-knob work: flat GPU
-  vmap-width knee; isolated-driver k ≈ 1.0 forward / 1.9 back.
-- **Opens from the campaign (2026-07-08):**
-  - **Nightly memory-gate acks** for the deliberate time-for-memory trades: parallel fwd
-    small cells (+27–58% rel, ≤0.65 GB), cone fwd 1024³ (+9.6/29/46% at n=1/2/4), mid-size
-    fwd cells (+~0.5 GB, materialized scatter centers + chunk concat), 513-class back +8%.
-    Also confirm `greg/kernel_investigation` is nightly-tracked (one legal fingerprint-flip
-    cycle at rounding ties when the centers change lands).
-  - **VCD is host-dispatch-bound at interactive sizes** (measured: 200³ VCD is ~95% host
-    time; device kernels are ~0.1 s of a ~2 s recon).  A future speed item with large
-    headroom: reduce per-subset dispatches / host syncs (e.g. jit a whole subset update or
-    iteration; the concrete-centers plumbing supports precomputed-per-partition centers if
-    that jit ever lands).  cProfile is the instrument (`lessons.md` §3/§5).
-  - **Optional refinements:** cached per-(view, pixel-batch) sort permutations for the
-    sorted reduce (possible now that centers are concrete); extend the collision-ratio
-    guard to parallel/cone if very wide detectors with modest pixel batches become real.
-  - **Residual rounding-bug risk:** the six vertical-fan per-slice round sites keep the
-    in-jit precondition (not materializable) — accepted + monitored
-    (`plans/bugs_and_artifacts/jax rounding bug/phase_d_design.md` §7).
-- **Minor opens:** `configure_devices`/`use_gpu` unification; forward pixel-batch default.
+Small optional refinements (do only if a measured case wants them): cached
+per-(view, pixel-batch) sort permutations for the sorted reduce; extend the
+collision-ratio guard to parallel/cone if very wide detectors with modest pixel batches
+become real; true size-adaptive `view_batch` scaling / divisor-of-shard sizing to avoid
+ragged tail batches.
 
-## 4. MAR Phase 3 — subsample / speed up the BH model fit
+Deferred unless a driving workload appears:
 
-From `mar_refactor_plan.md` Phase 3.  **This is now a SPEED-only item**: the fit's memory was solved by
-Phase 2 (the `HtH`/`Hty` inner products and constraint argmins run on the view-sharded sinograms), so
-the fit cannot OOM — subsampling would only reduce its time.  The OSQP beam-hardening fit is
-statistical, so it *could* run on a subsample — but a **uniform** view/stride subsample is wrong: the
-model is only identifiable from pixels spanning diverse **metal path length**, which are sparse in a
-mostly-plastic object.
-- Needs **metal-thresholded targeted subsampling** (stratify by estimated metal magnitude; keep high-metal
-  pixels + a plastic sample).
-- Cheap independent win to fold in: **cache each `H` column once** instead of the O(num_cols²) recompute.
-- **A/B the estimation in isolation first** (fitted `theta` + corrected recon, full vs subsample; sweep the
-  subsample size/strategy for the knee) before wiring into the loop.  Not byte-identical by design; gate on
-  the corrected recon within a documented tolerance.
+- **Sinogram-by-row sharding** (aligns the sino's sharded axis with recon slices → back
+  projection becomes mostly-local): prototyped and parked; benefit is
+  GPU-communication-only (`plans/sharding/sinogram_sharding.md`).
+- **Prox-map (PnP) prior under sharding.**
 
-## 5. Device-count / communication policy
+## 4. MAR: cache H
 
-- **Choose-N-vs-communication policy** (`sharding_implementation_plan_v3.md` §5): when does adding a device
-  pay vs. its comms cost?  Includes the **CPU-cluster auto-sharding policy** (real-cluster perf + a
-  virtual-vs-real-CPU topology rule).
-- **Auto device-count basis — recon-slices vs sino-views** (§6, OPEN).  `_auto_device_count` trims on the
-  recon-**slice** axis, but projection compute lives on the **view-owners**, so the slice axis is the wrong
-  proxy for "does this device do real work."  Revisit the basis (likely views, or both) as part of choose-N.
+Reframed 2026-07-10 (from `mar_refactor_plan.md` Phase 3, which is SPEED-only — the
+fit's memory was solved in Phase 2):
 
-## 6. Geometry fidelity
+- **The direction is caching**: compute each `H` column once instead of the
+  O(num_cols²) recompute — a cheap, self-contained win with no statistical questions.
+- **Subsampling is deprioritized**: uniform view/stride subsampling is wrong for this
+  fit (the model is identifiable only from pixels spanning diverse metal path length,
+  which are sparse in a mostly-plastic object), and metal-thresholded stratification is
+  exactly the finicky-threshold pattern §1's remedies work deliberately avoided.  If it
+  is ever revisited: A/B the estimation in isolation first (fitted `theta` + corrected
+  recon, full vs subsample) and gate on the corrected recon within a documented
+  tolerance — not byte-identical by design.
 
-- **Multiaxis vertical-fan `1/cos(elevation)` path-length factor — OPEN** (§6).  Vertical fan uses
-  `scaling = 1.0`; for elevation ≠ 0 / non-unit slice aspect the absolute magnitude is self-consistent
-  (adjoint holds) but not anchored to a reference.  The right factor must be **derived from the multiaxis
-  path length** (the detector is ⟂ to the tilted ray — no cone-style incidence obliquity), not copied from
-  cone.  Take up as a separate change with a **physical-fidelity gate** (forward-project a known object vs an
-  analytic line integral).  Acceptable as-is for an MBIR initializer.
+## 5. Device-count policy — simple and robust
 
-## 7. Performance (deferred — only if it ever matters)
+Preference (2026-07-10): a simple, robust rule — even if suboptimal — over a tuned
+choose-N-vs-communication model; this area is potentially finicky for a modest payoff.
 
-- **B4.5 — band-kernel GPU cost** (§4).  The band (reduce-scatter) back kernel is ~2.25× slower than the
-  rolled-pixel kernel on GPU, and the two are platform-opposite (CPU likes band, GPU likes pixel).  Multi-
-  device back doesn't pay in *time* until ≥3 GPUs; VCD stays monotonic because the forward masks it.
-  Deferred (sharding is the capacity tool, not a back-time lever).  **Alternative axis:** shard the sinogram
-  by **detector row** instead of by view, aligning the sino's sharded axis with the recon's slice sharding →
-  back projection becomes mostly-local (a footprint halo) instead of a view-reduce.  Parked; full analysis in
-  `plans/sharding/sinogram_sharding.md`.
-- **Prox-map (PnP) prior under sharding** — revisit only if a plug-and-play-at-scale need appears (§5).
+- **Concrete first step:** fix the auto-device-count basis.  `_auto_device_count` trims
+  on the recon-SLICE axis, but projection compute lives on the VIEW-owners, so the slice
+  axis is the wrong proxy for "does this device do real work" — switch the basis to
+  views (or both).  Small, clearly right, and independent of any cost model.
+- The full choose-N policy (when does adding a device pay vs its comms cost, incl. the
+  CPU-cluster topology rule) stays deferred unless a real workload demands it
+  (`sharding_implementation_plan_v3.md` §5/§6).
 
-## 8. Robustness / cleanup
+## 6. Miscellaneous / cleanup
 
-- **Multi-GPU OOM that *hangs* → catchable error** (§5, STILL OPEN).  A GPU stuck in the BFC retry loop never
-  reaches the NCCL rendezvous → "Acquire clique" timeout, so no exception is raised and the OOM hint never
-  prints (the exact 2048³/8 cone case).  Converting the hang into a clean error is a bigger allocator/
-  collective-timeout change; left as a separate follow-on.
-- **Deferred docs-cleanup pass** (§5): the remaining unresolved Sphinx py-xrefs that silently render as
-  plain `<code>` (no warning).  Detect by building the HTML and grepping for `<code class="xref py …">` not
-  wrapped in `<a>`; fix per case (qualify / correct target / document the target / downgrade to literal).
-- **Suite tidiness** (§6): seed the remaining unseeded-`np.random` tests; a pre-merge
-  `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers.
-- **>2^31 audit sweep**: grep for remaining flat-index / count-unsafe ops on full-size arrays
-  (`argsort`, `searchsorted`, large `cumsum` indices, `nonzero`), applying `lessons.md` §4 (the
-  `argmin`/`np.prod`/histogram-count instances are fixed; this closes the class).
+- **Suite tidiness**: seed the remaining unseeded-`np.random` tests; a pre-merge
+  `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers; simplify 
+  tests and reduce time on tests.
+- **>2^31 audit sweep**: grep for remaining flat-index / count-unsafe ops on full-size
+  arrays (`argsort`, `searchsorted`, large `cumsum` indices, `nonzero`) per
+  `lessons.md` §4 — the known instances are fixed; this closes the class.
+- **Minor API opens**: `configure_devices`/`use_gpu` unification; the forward
+  pixel-batch default.
+- **Residual rounding-bug risk (monitor only)**: the six vertical-fan per-slice round
+  sites keep the in-jit precondition — accepted + monitored
+  (`plans/bugs_and_artifacts/jax rounding bug/phase_d_design.md` §7).
+
+## 7. Possible future direction: multi-resolution reconstruction (post-next-main)
+
+Coarse-to-fine MBIR: reconstruct at binned resolution(s), upsample as the init for the
+next-finer level.  Added 2026-07-10 (Greg); investigation-first, not for the next main.
+
+**Rationale.**  VCD is coordinate descent, so low-frequency corrections propagate slowly
+at fine resolution; a coarse level handles them at ~1/8 the voxels (and ~1/8 the sino if
+rows/channels bin).  The partition-sequence study's finding that the coarse-GRANULARITY
+ramp added ~nothing supports this framing: granularity coarsening changes the update
+grouping but still pays full-resolution cost per iteration — GRID coarsening is the
+principled low-frequency accelerator that ramp was groping at.
+
+**Where it pays (cost model):** large problems and cap-bound hard objects.  At small
+sizes VCD is ~95% host-dispatch-bound (§3), so coarse levels cost fixed per-iteration
+host overhead + a compile per shape, not 1/16 flops — don't expect interactive-size wins.
+
+**Null hypothesis to kill first:** coarse-MBIR init must beat FDK/FBP init (one cheap
+full-resolution call) on wall-clock-to-matched-quality.  Expected to win only under
+heavy noise / sparse views / truncation-corrupted FBP, or where the 0.2%-stop drags.
+
+**The matching problems (the real work) and what softens them:**
+- *Volumes:* offsets are in ALU, hence scale-invariant across levels (verified on Lilly:
+  −1.98 mm = −3.9 rows at 4× = −1.95 rows at 8×); the upsample must map voxel centers
+  PHYSICALLY (the `recon_ijk_to_xyz` chain) since `auto_set_recon_geometry`'s ceils
+  break exact shape nesting.  Init-only use makes residual sub-voxel phase error cheap
+  (a few iterations, not an artifact) — but do it right; see the 2c misalignment lesson.
+- *Parameters:* sharpness/snr_db are scale-free; `auto_set_sigma_y` already carries a
+  pixel-pitch^0.5 consistency factor — per-level auto-regularization may be most of the
+  answer.  Open question: qGGMRF edge-threshold scale consistency (test: coarse solution
+  ≈ downsampled fine solution?).
+- *Data per level:* bin the LOG sinogram linearly — provably consistent (it is exactly
+  the projection of an axially/laterally smoothed object; the flash-remediation round-3
+  result).  No per-level re-preprocessing.
+
+**Pilot (before any library code):** the Lilly 8× workhorse + one large synthetic; A/B
+wall-clock-to-matched-quality across {zero init, FDK init, 2-level, 3-level}, compiles
+counted honestly, metrics flash-cropped (§2 caveat).  The flash-remediation Lilly
+infrastructure (ds4/ds8 pipelines, converged references, seam/region metrics) is
+directly reusable.  If the pilot wins: implementation is a `split_sino_recon`-shaped
+driver (~100 lines — `copy_ct_model` per level, physical-coordinate upsample, per-level
+auto-regularization, loose stopping on coarse levels).
+
+---
+
+**Recently completed (records live elsewhere):** the projector-kernel campaign
+(design → `docs/source/dev_sharding_overview.rst` "Projector kernel design"; measured
+record → `plans/projector_kernels/fwd_back_findings.md`); the flash-remediation
+investigation Phases 1–2d (→ `plans/flash_remediation/`); multiaxis vertical-fan
+path-length factor (shipped); the sparse-projector batching investigation (closed with
+code unchanged → `plans/projector_batching/batching_refactor_design.md`).
