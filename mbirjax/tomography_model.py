@@ -988,7 +988,7 @@ class TomographyModel(ParameterHandler):
 
     def save_recon_hdf5(self, filepath, recon, recon_dict=None):
         """
-        Save the reconstruction array and optionally the recon_dict from :meth:`recon`.
+        Save the reconstruction array and optionally the recon_dict from :meth:`~mbirjax.TomographyModel.recon`.
 
         This method creates a file that contains a single dataset named 'recon', with the entries in recon_dict
         serialized to strings and saved as hdf5 dataset attributes.
@@ -1018,7 +1018,7 @@ class TomographyModel(ParameterHandler):
     @staticmethod
     def load_recon_hdf5(filepath, recreate_model=False):
         """
-        This function loads a numpy array stored in an HDF5 file created by :meth:`save_recon_hdf5`.
+        This function loads a numpy array stored in an HDF5 file created by :meth:`~mbirjax.TomographyModel.save_recon_hdf5`.
         It also loads any associated attribute dict and can use the model parameters in that dict to create a new model.
 
         Args:

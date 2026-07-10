@@ -22,7 +22,7 @@ class QGGMRFDenoiser(TomographyModel):
     paths: on a single device it runs the whole sweep in one JIT (the fast path, no qGGMRF halos --
     a single shard uses the reflected boundary condition); across multiple devices it slice-shards
     the image and runs a Python loop that stages the qGGMRF halos once per pass (host-side, so it
-    cannot live in a JIT), mirroring :meth:`TomographyModel.vcd_recon`.
+    cannot live in a JIT), mirroring ``TomographyModel.vcd_recon``.
     """
 
     def __init__(self, image_shape):
@@ -191,7 +191,7 @@ class QGGMRFDenoiser(TomographyModel):
         Returns:
             tuple: (denoised_image, denoiser_dict)
                 - denoised_image (numpy or jax array): A denoised image of the same shape as image
-                - denoiser_dict (dict): A dict obtained from :meth:`get_recon_dict` with entries
+                - denoiser_dict (dict): A dict obtained from :meth:`~mbirjax.TomographyModel.get_recon_dict` with entries
                     * 'recon_params'
                     * 'notes'
                     * 'recon_logs'
@@ -573,7 +573,7 @@ def median_filter3d(x, max_block_gb=4.0, return_min_max=False) -> Union[jnp.ndar
       to apply jnp.swapaxes(x, 0, long_dim) before applying median_filter3d, although swapaxes will make a copy of x.
     * Within each block the filter is computed by rolling the data in all 26
       neighbour directions, stacking the 27 volumes, and taking
-      :func:`jnp.median` along the new axis.
+      ``jnp.median`` along the new axis.
     * This is a whole-volume operation and is **not** sharding-aware.  The built-in d0-blocking
       already bounds single-device memory, so a large volume can be filtered on one device.  If ``x``
       is distributed across multiple devices (e.g. a recon returned with ``output_sharded=True``),
