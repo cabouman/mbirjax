@@ -2,7 +2,8 @@
 
 (The EVOLVING running list of open work, at `plans/current_plans.md`.  Rewritten
 2026-07-10 to read forward-looking; completed campaigns live in their own findings docs,
-cited where their results guide the work below.  Roughly ordered by likely value.)
+cited where their results guide the work below.  Roughly ordered by likely value.
+This file should be cleaned periodically to avoid build-up of historical detail.)
 
 ## Goals for the next release
 
@@ -72,7 +73,8 @@ sections) supplies the candidates and the durable guidance:
 - Raise **`max_iterations` from 15 into the ~25–50 range** (the 15-cap strangles the
   0.2% stop on hard objects); the threshold stays 0.2.
 - Metric caveat to respect in the experiments: FoV-truncation flash inflates NRMSE and
-  the change-% stop (see §1) — compare on cropped/remediated metrics or visually.
+  the change-% stop (see §1) — compare on cropped/remediated metrics or visually and 
+  do this investigation after the padding of §1.
 
 Supporting experiment (drafted, not run): the real-data partition-sequence convergence
 study (`plans/experiments/partition_sequence/`), which also tests the
@@ -172,8 +174,8 @@ choose-N-vs-communication model; this area is potentially finicky for a modest p
   block-buffering makes sweep logs non-chronological (`python -u`); `TF_CPP_MIN_LOG_LEVEL=2`
   can silence a residual BFC warning wall (document in the OOM hint, don't default).
 - **Suite tidiness**: seed the remaining unseeded-`np.random` tests; a pre-merge
-  `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers; simplify 
-  tests and reduce time on tests.
+  `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers.
+- **Suite efficiency**: simplify tests and reduce time on tests.
 - **>2^31 audit sweep**: grep for remaining flat-index / count-unsafe ops on full-size
   arrays (`argsort`, `searchsorted`, large `cumsum` indices, `nonzero`) per
   `lessons.md` §4 — AND the class's second face, found live 2026-07-10 (a student's
