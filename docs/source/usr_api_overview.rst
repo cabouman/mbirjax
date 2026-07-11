@@ -55,7 +55,7 @@ The median filter is implemented in jax using a fixed 3x3x3 neighborhood with re
 
 .. autosummary::
 
-   denoising.median_filter3d
+   median_filter3d
 
 Parameter Handling
 ------------------
@@ -65,7 +65,7 @@ Users can set, get, and printout parameters using the following primary methods.
 
 .. autosummary::
 
-   ParameterHandler.set_params
+   TomographyModel.set_params
    ParameterHandler.get_params
    ParameterHandler.print_params
 

@@ -12,7 +12,6 @@ Constructor
 -----------
 
 .. autoclass:: mbirjax.TomographyModel
-   :show-inheritance:
 
 
 Reconstruction and Projection
