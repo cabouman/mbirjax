@@ -1,3 +1,5 @@
+.claude/*.json
+experiments/.claude/*.json
 
 demo/data/*
 demo/output/*
