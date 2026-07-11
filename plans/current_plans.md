@@ -137,6 +137,40 @@ choose-N-vs-communication model; this area is potentially finicky for a modest p
 
 ## 6. Miscellaneous / cleanup
 
+- **Compile-free memory preflight in `recon()`** (parked 2026-07-10; design agreed with
+  Greg after a student's 2-GPU full recon at 1600×1617×1422 spent 32 min in XLA's BFC
+  retry loop before surfacing RESOURCE_EXHAUSTED — ~1,900 warning lines; the allocator's
+  retry policy is not user-tunable, so fail BEFORE the first doomed allocation).
+  Two parts:
+  1. *The gate*: a closed-form per-device peak ledger,
+     `_estimate_peak_device_bytes(sino_shape, recon_shape, partition_sequence,
+     weights_present, placement)`, checked ONCE at the top of `recon()` before any big
+     allocation (pool ≈ fully free via `device.memory_stats()`), so failure lands in
+     seconds with one readable error naming the dominant phase + the existing remedy
+     hint; `skip_memory_preflight` override, ~10–15% margin.  The ledger enumerates,
+     per phase, persistent set + largest co-live transient lineup: persistent = sino +
+     weights + error_sino (3× sino-shaped) + flat_recon + fm_hessian (2× recon-shaped);
+     subset update per granularity = the granularity-INDEPENDENT sino-shaped pair
+     (`weighted_error_sinogram` + `delta_sinogram` — what killed the student's run;
+     skip-1 sequences don't touch these) + 4–5 subset-shaped arrays (freed at the
+     mid-updater `del`) + the projector transient as a measured geometry-dependent
+     multiplier (constants already in code comments / the dashboard 12× aggregate).
+     Max over phases and over the granularities actually in the sequence.  A MODEL, not
+     a compile query, because the updater is eager Python — no single
+     `memory_analysis()` sees the cross-call lineup — and because it must run before
+     the compiles it would otherwise wait for.  Covers split_sino_recon (per half),
+     prox, and the denoiser for free via the `vcd_recon` entry path.
+  2. *Calibration, not user-facing*: at compile sites, a CI/debug-mode assertion
+     compares each program's actual `compiled.memory_analysis().temp_size_in_bytes`
+     against the modeled term and warns on excess; with the nightly `peak_bytes_in_use`
+     gates, model drift is caught by the dashboard, not by user crashes.
+  Implementation details settled: ledger terms overridable per geometry (cone vs
+  parallel differ mainly in the projector multiplier); print the ledger at verbose≥2 on
+  successful runs (free memory-budget printout, keeps the model inspectable).  Also
+  catches most of the removed multi-GPU-OOM-hang family (deterministic OOMs die before
+  any device enters a collective).  Related UX notes from the same incident: stdout
+  block-buffering makes sweep logs non-chronological (`python -u`); `TF_CPP_MIN_LOG_LEVEL=2`
+  can silence a residual BFC warning wall (document in the OOM hint, don't default).
 - **Suite tidiness**: seed the remaining unseeded-`np.random` tests; a pre-merge
   `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers; simplify 
   tests and reduce time on tests.
