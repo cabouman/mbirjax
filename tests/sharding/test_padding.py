@@ -585,7 +585,10 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
     VARIANTS = (False, True)   # circular, helical
     PADS_ROWS = False
     NUM_VIEWS = 8
-    NUM_DET_ROWS = 7           # isotropic cone -> num_slices = 7 (prime: pads at every count > 1)
+    # Isotropic cone: 5 detector rows -> 5 base slices + 1 visibility-extension slice per end
+    # = 7 recon slices (prime: pads at every count > 1); the helical variant lands on 11
+    # (also prime).  Guarded by test_prime_slice_count.
+    NUM_DET_ROWS = 5
 
     def _make_model(self, helical=False, curved=False):
         angles = jnp.linspace(0, jnp.pi, self.NUM_VIEWS, endpoint=False)
@@ -601,6 +604,13 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
 
     def _label(self, helical):
         return "helical" if helical else "circular"
+
+    def test_prime_slice_count(self):
+        """Guard the tuned geometry: both variants must auto-size to a prime slice count
+        (circular 7, helical 11) so every device count > 1 pads (a drift in
+        auto_set_recon_geometry would silently stop exercising the padded path)."""
+        self.assertEqual(int(self._make_model(False).get_params('recon_shape')[2]), 7)
+        self.assertEqual(int(self._make_model(True).get_params('recon_shape')[2]), 11)
 
     def test_curved_detector_projectors_padding(self):
         """A few fast projector checks with use_curved_detector=True under slice padding.
@@ -626,11 +636,12 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
             self.skipTest("no usable device count > 1")
 
     def test_fully_padded_trailing_shard(self):
-        """A tiny 3-slice cone on 4 devices makes the LAST shard entirely padding (n_valid
-        == 0): exercises the _mask_padded_slices / _mask_padded_views n_valid<=0 branch and
-        a gather that concatenates a fully-zero shard -- which auto-config normally avoids
-        (it skips a count whose last shard is all padding), so only an explicit configure
-        reaches it.  Projector-level, so it stays fast."""
+        """A tiny 5-slice cone (3 detector rows + one visibility-extension slice per end) on
+        4 devices makes the LAST shard entirely padding (shards of 2: 2+2+1+0, n_valid == 0):
+        exercises the _mask_padded_slices / _mask_padded_views n_valid<=0 branch and a gather
+        that concatenates a fully-zero shard -- which auto-config normally avoids (it skips a
+        count whose last shard is all padding), so only an explicit configure reaches it.
+        Projector-level, so it stays fast."""
         devs = preferred_devices(4)
         if devs is None:
             self.skipTest("need 4 devices")
@@ -644,8 +655,10 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
             return m
 
         ref_model = tiny()
-        # 3 slices over 4 devices -> shards of 1, so the last shard is entirely padding.
-        self.assertEqual(int(ref_model.get_params('recon_shape')[2]), 3)
+        # 5 slices over 4 devices -> shards of ceil(5/4) = 2, so the last shard is entirely
+        # padding (2+2+1 real).  Guard the tuned count: a drift in auto_set_recon_geometry
+        # would silently stop exercising the fully-padded-shard path.
+        self.assertEqual(int(ref_model.get_params('recon_shape')[2]), 5)
         sino = self._sino(ref_model)
         recon = self._recon_array(ref_model)
         ref_back = np.asarray(ref_model.back_project(sino))
@@ -655,7 +668,7 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
         assert_sharded_allclose(np.asarray(model.back_project(sino)), ref_back, msg="fully-padded-shard back mismatch", tol=self.PROJ_TOL)
         assert_sharded_allclose(np.asarray(model.forward_project(recon)), ref_fwd, msg="fully-padded-shard forward mismatch", tol=self.PROJ_TOL)
         back_dev = np.asarray(model.back_project(sino, output_sharded=True))
-        self.assertTrue(np.all(back_dev[..., 3:] == 0.0),
+        self.assertTrue(np.all(back_dev[..., 5:] == 0.0),
                         msg="fully-padded trailing shard not exactly zero")
 
 

@@ -233,6 +233,13 @@ class ConeBeamModel(TomographyModel):
 
     def auto_set_recon_geometry(self, no_compile=False, no_warning=False):
         """ Compute the automatic recon shape cone beam reconstruction.
+
+        Lateral extent (xy) covers the detector field of view at iso.  Axial extent (z) covers the
+        detector height at iso swept over any helical travel, then extends EACH end to the
+        cone-beam visibility bound (the deepest z any measured ray reaches while crossing the
+        reconstruction support), so material a ray passes through near the slab ends is
+        representable rather than flashing into the end slices -- see the per-end extension
+        comment below and plans/flash_remediation/phase_2d_remedies.html.
         """
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
 
@@ -260,14 +267,48 @@ class ConeBeamModel(TomographyModel):
         # Detector height mapped to iso
         H_iso = num_det_rows * (delta_det_row / magnification)
     
-        # Total axial coverage: include all slices that are projected onto at least one view
+        # Base axial coverage: the detector height at iso, swept over the helix travel
         num_recon_slices = int(jnp.ceil((H_iso + z_travel) / delta_voxel_slice))
         num_recon_slices = max(1, num_recon_slices)
-    
-        recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
-        
+
         # Center the recon about the helix travel (for circular, z_min=z_max=0 -> offset 0)
         recon_slice_offset = float(0.5 * (z_min + z_max))
+
+        # ---- Per-end axial extension to the cone-beam visibility bound (see docstring) ----
+        # An edge ray at height v diverges across the support to |z| = |v|*(SID + R)/SDD > |v|/mag;
+        # extend each end by its own excess over H_iso/2 (ends differ under det_row_offset; helical
+        # excesses attach at z_max/z_min).  Derivation: plans/flash_remediation/phase_2d_remedies.html.
+        source_detector_dist, det_row_offset, det_channel_offset, use_ror_mask = self.get_params(
+            ['source_detector_dist', 'det_row_offset', 'det_channel_offset', 'use_ror_mask'])
+        support_radius = mj.get_support_radius((num_recon_rows, num_recon_cols), delta_voxel_row,
+                                               delta_voxel, use_ror_mask=use_ror_mask)
+        # Detector row-edge heights v in ALU, via the model's own detector convention (the outer
+        # edges of the first and last rows sit at m = -0.5 and num_det_rows - 0.5; v does not
+        # depend on the channel argument n, so n = 0 is arbitrary).
+        _, v_row_low = self.detector_mn_to_uv(-0.5, 0.0, delta_det_channel, delta_det_row,
+                                              det_channel_offset, det_row_offset,
+                                              num_det_rows, num_det_channels)
+        _, v_row_high = self.detector_mn_to_uv(num_det_rows - 0.5, 0.0, delta_det_channel,
+                                               delta_det_row, det_channel_offset, det_row_offset,
+                                               num_det_rows, num_det_channels)
+        v_top = max(float(v_row_low), float(v_row_high))    # the +z detector edge
+        v_bot = min(float(v_row_low), float(v_row_high))    # the -z detector edge
+        # Iso-z reach per unit detector height at the far side of the support: written as
+        # 1/mag + R/SDD, which equals (SID + R)/SDD for finite SDD and degrades gracefully to
+        # 1/mag = 1 at SDD = inf (rays parallel in z, so the excess reduces to pure
+        # det_row_offset compensation).
+        z_per_v_far_side = 1.0 / float(magnification)
+        if not jnp.isinf(source_detector_dist):
+            z_per_v_far_side += support_radius / float(source_detector_dist)
+        excess_top = max(0.0, v_top * z_per_v_far_side - float(H_iso) / 2)    # attaches at z_max
+        excess_bot = max(0.0, -v_bot * z_per_v_far_side - float(H_iso) / 2)   # attaches at z_min
+        num_slices_top = int(np.ceil(excess_top / delta_voxel_slice))
+        num_slices_bot = int(np.ceil(excess_bot / delta_voxel_slice))
+        num_recon_slices += num_slices_top + num_slices_bot
+        # Recenter so the added slices land at the ends that need them
+        recon_slice_offset += 0.5 * (num_slices_top - num_slices_bot) * float(delta_voxel_slice)
+
+        recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
 
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel, recon_slice_offset=recon_slice_offset)
 
@@ -1069,7 +1110,16 @@ class ConeBeamModel(TomographyModel):
         det_half_height_iso = 0.5 * num_rows * delta_det_row / M_0
         visible = jnp.abs(z_k[:, None] - helical_z_shifts[None, :]) <= det_half_height_iso
         coverage = jnp.sum(visible, axis=1)
-        z_weight = num_views / coverage
+        # REAL slices can also have zero coverage: auto_set_recon_geometry extends the slab past
+        # the central-ray height H_iso/2 (to the cone visibility bound), and this weight's
+        # visibility criterion is the central-ray one -- so the extension slices at the travel
+        # ends are grazed only by diverging edge rays and count as out of view here.  FDK has
+        # essentially no data for them, so the honest initialization is 0 (the VCD iterations
+        # fill them from the grazing rays and the prior); jnp.maximum keeps the discarded branch
+        # of the where finite.
+        z_weight = jnp.where(coverage > 0, num_views / jnp.maximum(coverage, 1), 0.0)
+        # Padded device-form slices (k >= num_real_slices) stay zero as well: they are
+        # identically zero by the forced-zero invariant and must remain so.
         z_weight = jnp.where(k < num_real_slices, z_weight, 0.0)
         recon = recon * z_weight[None, None, :]
 
@@ -1167,8 +1217,10 @@ class ConeBeamModel(TomographyModel):
             ...                          source_detector_dist=1000.0,
             ...                          source_iso_dist=500.0)
             >>> recon, recon_info = model.split_sino_recon(sino, half_overlap=4)
+            >>> # 64 detector-height slices + 2 automatic visibility-extension slices
+            >>> # at each end (see auto_set_recon_geometry):
             >>> recon.shape  # Quilted reconstruction volume
-            (64, 64, 64)
+            (64, 64, 68)
         """
         # -------- Basic validation --------
         if half_overlap < 2:

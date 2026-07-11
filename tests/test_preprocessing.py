@@ -72,8 +72,21 @@ class TestNSIPreprocessing(unittest.TestCase):
         row0 = round(self.crop_pixels_top)
         border_width = self.edge_width
 
-        phantom_shape = self.cone_model.get_params('recon_shape')
-        self.phantom = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
+        # The phantom is only a source of realistic sinogram values for the preprocessing
+        # roundtrip, so build it on the central-ray base slab and embed it (zero-filled) in
+        # the auto recon shape: auto_set_recon_geometry extends the slab with
+        # visibility-extension end slices, and letting the phantom stretch into that
+        # half-sampled wedge would move the sinogram's gradients relative to the fixed
+        # defective-pixel seeds, silently changing what the tolerances measure.  Embedding
+        # keeps the ground-truth sinogram identical to its pre-extension calibration.
+        recon_shape = self.cone_model.get_params('recon_shape')
+        delta_det_row, delta_voxel = self.cone_model.get_params(['delta_det_row', 'delta_voxel'])
+        magnification = self.cone_model.get_magnification()
+        base_slices = int(np.ceil(self.num_det_rows * (delta_det_row / magnification) / delta_voxel))
+        phantom_core = mj.generate_3d_shepp_logan_low_dynamic_range(
+            (recon_shape[0], recon_shape[1], base_slices))
+        slab_start = (recon_shape[2] - base_slices) // 2
+        self.phantom = jnp.zeros(recon_shape).at[:, :, slab_start:slab_start + base_slices].set(phantom_core)
         sino_gt = self.cone_model.forward_project(self.phantom)
 
         # Mask the borders as needed

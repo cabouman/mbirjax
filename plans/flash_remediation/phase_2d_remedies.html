@@ -56,8 +56,9 @@ weighing of pros and cons (including "do nothing")
 &middot; 2026-07-09 &middot; evidence pages: <code>phase_1_results.html</code>,
 <code>phase_2a_axial_results.html</code>, <code>phase_2b_radial_results.html</code>,
 <code>phase_2c_split_results.html</code> &middot; plan of record:
-<code>flash_remediation_plan.md</code> &middot; ALL of this is plan-only: no library
-change has been made.</p>
+<code>flash_remediation_plan.md</code> &middot; Originally written plan-only;
+implementation began 2026-07-11 on <code>greg/kernel_investigation</code> (axial first,
+real-data validation after each step) — this page is the design record.</p>
 
 <div class="tldr">
   <p><strong>TL;DR — the three verdicts.</strong></p>
@@ -98,11 +99,19 @@ reach over the slab the existing calculation already provides:</p>
 <p class="eq">E<sub>top</sub> = max(0,&nbsp; v<sub>top</sub>&middot;(SID + R)/SDD &minus;
 H<sub>iso</sub>/2), &emsp; E<sub>bot</sub> = max(0,&nbsp;
 |v<sub>bot</sub>|&middot;(SID + R)/SDD &minus; H<sub>iso</sub>/2),</p>
-<p class="eq">v<sub>top</sub> = N<sub>rows</sub>&middot;&delta;<sub>row</sub>/2 +
+<p class="eq">v<sub>top</sub> = N<sub>rows</sub>&middot;&delta;<sub>row</sub>/2 &minus;
 det_row_offset, &emsp; v<sub>bot</sub> = &minus;N<sub>rows</sub>&middot;&delta;
-<sub>row</sub>/2 + det_row_offset, &emsp;
+<sub>row</sub>/2 &minus; det_row_offset, &emsp;
 R = &half;&middot;max(N<sub>r</sub>&middot;&delta;<sub>vox,r</sub>,
 N<sub>c</sub>&middot;&delta;<sub>vox,c</sub>).</p>
+<p class="note">Sign convention: these are the library's own
+(<code>detector_mn_to_uv</code>: v = (m &minus; center)&middot;&delta;<sub>row</sub>
+&minus; det_row_offset), in which a <em>negative</em> offset shifts the detector up —
+e.g. the NSI Lilly scan's det_row_offset of &minus;1.95 rows pairs with a
+recon_slice_offset of +1.95 slices. An earlier revision of this page wrote
+v<sub>top</sub> with the opposite offset sign; the implementation calls
+<code>detector_mn_to_uv</code> directly so the code cannot drift from the
+convention.</p>
 <p>Three things to notice. <strong>The two ends differ</strong>: a nonzero
 <code>det_row_offset</code> makes one detector edge taller than the other, so its wedge
 is deeper — translate the detector up and the top wedge grows while the bottom one
@@ -173,7 +182,8 @@ part.</p>
   <text x="336" y="314" font-size="10" fill="currentColor">E_bot at z_min</text>
 </svg>
 <figcaption><strong>The per-end excess.</strong> Side view with the detector shifted up
-(<code>det_row_offset</code> &gt; 0). Each end's wedge (red) is that detector edge's
+(<code>det_row_offset</code> &lt; 0 in the library's sign convention; the figure's
+bracket shows its magnitude). Each end's wedge (red) is that detector edge's
 reach, v&middot;(SID+R)/SDD across the support (a shallow V, largest at the far side),
 minus the covered slab — so the top wedge is taller and the bottom shorter, each end is
 clamped at zero, each is ceil'd to whole slices, and the slab center shifts by
@@ -220,7 +230,13 @@ a voxel depends on its distance from the <em>source</em>, which maxes at SID + (
 distance from the axis) — so R should be the maximum axis-distance of any voxel the
 projector actually updates: the RoR cylinder radius if the reconstruction is masked to
 one, but the grid half-diagonal (&radic;2 larger) if corner voxels are updated too;
-check against the projector, don't guess. <em>Side benefit:</em> because the two ends
+check against the projector, don't guess. <em>Resolved 2026-07-11 from the code:</em>
+both the VCD pixel partitions and the full-index forward/back projections restrict to
+<code>get_2d_ror_mask</code>, which is by default the ellipse <em>inscribed</em> in the
+grid — so R is the voxel-edge half-width of the longer axis (the formula above), and the
+implementation reads the <code>use_ror_mask</code> parameter: <code>False</code> or a
+custom mask updates corner voxels and switches R to the grid half-diagonal.
+<em>Side benefit:</em> because the two ends
 are computed separately, the automatic shape becomes correct for offset detectors —
 today's calculation is <code>det_row_offset</code>-blind and preprocessing pipelines
 compensate by hand-setting <code>recon_slice_offset</code>.

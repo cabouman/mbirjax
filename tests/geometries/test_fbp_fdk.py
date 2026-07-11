@@ -115,11 +115,32 @@ class TestFBPReconstruction(unittest.TestCase):
     # individually.
 
 
+    @staticmethod
+    def central_slab_slice_range(ct_model):
+        """[start, stop) of the central-ray-covered base slab within the auto recon shape.
+
+        Cone-beam auto shapes extend past the central-ray slab to the visibility bound
+        (auto_set_recon_geometry's per-end extension), and the extension slices see only
+        grazing edge rays -- the half-sampled cone wedge, where FDK accuracy is limited by
+        the sampling rather than the code, so no fixed tolerance there is meaningful.  This
+        gate therefore embeds the phantom in the base slab and evaluates the metrics there,
+        which keeps the tolerances at their pre-extension calibration (FDK's per-voxel
+        values in the base slab do not depend on the grid height)."""
+        num_det_rows = ct_model.get_params('sinogram_shape')[1]
+        delta_det_row, delta_voxel, voxel_slice_aspect = ct_model.get_params(
+            ['delta_det_row', 'delta_voxel', 'voxel_slice_aspect'])
+        magnification = ct_model.get_magnification()
+        base_slices = int(np.ceil(num_det_rows * (delta_det_row / magnification)
+                                  / (voxel_slice_aspect * delta_voxel)))
+        total_slices = int(ct_model.get_params('recon_shape')[2])
+        start = (total_slices - base_slices) // 2
+        return start, start + base_slices
+
     def verify_FBP(self, geometry_type, tolerances):
         """Test the FBP reconstructions against the defined tolerances."""
         self.set_view_params(geometry_type)
         ct_model = self.get_model(geometry_type)
-        
+
         # Generate 3D Shepp Logan phantom
         print('  Creating phantom')
         recon_shape = ct_model.get_params('recon_shape')
@@ -137,8 +158,17 @@ class TestFBPReconstruction(unittest.TestCase):
                 recon_shape[1],
                 embed_slice_stop - embed_slice_start,
             )
+        elif geometry_type in ('cone', 'anisotropic_cone'):
+            # Embed the phantom in the central-ray base slab and evaluate there (see
+            # central_slab_slice_range): the extended end slices are the half-sampled wedge.
+            embed_slice_start, embed_slice_stop = self.central_slab_slice_range(ct_model)
+            phantom_shape = (
+                recon_shape[0],
+                recon_shape[1],
+                embed_slice_stop - embed_slice_start,
+            )
         phantom_core = mj.generate_3d_shepp_logan_low_dynamic_range(phantom_shape)
-        if geometry_type == 'helical_cone':
+        if tuple(phantom_shape) != tuple(recon_shape):
             phantom = jnp.zeros(recon_shape)
             phantom = phantom.at[:, :, embed_slice_start:embed_slice_stop].set(phantom_core)
         else:
@@ -162,7 +192,16 @@ class TestFBPReconstruction(unittest.TestCase):
         filter_name = "ramp"
         ct_model.set_params(verbose=0)  # Silence warnings about helical fdk
         recon = ct_model.direct_recon(sinogram, filter_name=filter_name)
-        
+
+        # Evaluate cone geometries on the central-ray base slab (see central_slab_slice_range):
+        # crop BOTH volumes to their own base ranges -- they differ for anisotropic_cone, whose
+        # recon was re-auto-sized after the phantom was built -- so the anisotropic zoom below
+        # maps base slab to base slab, exactly as it did before the extension existed.
+        if geometry_type in ('cone', 'anisotropic_cone'):
+            phantom = phantom[:, :, embed_slice_start:embed_slice_stop]
+            recon_slab_start, recon_slab_stop = self.central_slab_slice_range(ct_model)
+            recon = recon[:, :, recon_slab_start:recon_slab_stop]
+
         # if anisotropic, rescale the recon to the phantom shape
         if (geometry_type == 'anisotropic_cone') | (geometry_type == 'anisotropic_parallel'):
             phantom_temp = scipy.ndimage.zoom(phantom, zoom=(np.shape(recon)[0] / np.shape(phantom)[0],

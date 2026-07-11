@@ -73,6 +73,43 @@ def get_2d_ror_mask(recon_shape, *, use_ror_mask=True, crop_radius_pixels=0, cro
         return mask
 
 
+def get_support_radius(recon_shape, delta_voxel_row, delta_voxel_col, use_ror_mask=True):
+    """
+    Return the maximum distance (in ALU) from the rotation axis to the outer edge of any voxel
+    the projectors can update.
+
+    The reconstruction is not updated everywhere: the VCD pixel partitions and the full-index
+    forward/back projections all restrict to the pixels selected by :func:`get_2d_ror_mask`.
+    With the default mask (``use_ror_mask=True``, the ellipse inscribed in the grid) the
+    farthest updatable pixels sit at the ends of the longer grid axis, so the radius is half
+    the larger physical grid width.  With the mask disabled (``False``) corner pixels are
+    updated too, so the radius is the grid half-diagonal (up to sqrt(2) larger).  A custom mask
+    also uses the conservative half-diagonal rather than measuring the mask: callers use this
+    radius in geometric visibility bounds (how far from the axis a ray can pass and still cross
+    updatable voxels), where overestimating only pads slightly while underestimating
+    reintroduces truncation artifacts.
+
+    Args:
+        recon_shape (tuple): Reconstruction shape; only recon_shape[0] (rows) and
+            recon_shape[1] (columns) are used.
+        delta_voxel_row (float): Voxel pitch along the recon row axis, in ALU
+            (``voxel_row_aspect * delta_voxel`` in model terms).
+        delta_voxel_col (float): Voxel pitch along the recon column axis, in ALU
+            (``delta_voxel`` in model terms).
+        use_ror_mask: The region-of-reconstruction mask setting, as in :func:`get_2d_ror_mask`
+            (True, False, or a custom 2D array).
+
+    Returns:
+        float: The support radius in ALU.
+    """
+    num_rows, num_cols = recon_shape[:2]
+    half_width_row = 0.5 * num_rows * delta_voxel_row
+    half_width_col = 0.5 * num_cols * delta_voxel_col
+    if use_ror_mask is True:
+        return float(max(half_width_row, half_width_col))
+    return float(np.hypot(half_width_row, half_width_col))
+
+
 def gen_set_of_pixel_partitions(recon_shape, granularity, output_device=None, use_ror_mask=True):
     """
     Generates a collection of voxel partitions for an array of specified partition sizes.
