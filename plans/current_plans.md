@@ -176,7 +176,24 @@ choose-N-vs-communication model; this area is potentially finicky for a modest p
   tests and reduce time on tests.
 - **>2^31 audit sweep**: grep for remaining flat-index / count-unsafe ops on full-size
   arrays (`argsort`, `searchsorted`, large `cumsum` indices, `nonzero`) per
-  `lessons.md` §4 — the known instances are fixed; this closes the class.
+  `lessons.md` §4 — AND the class's second face, found live 2026-07-10 (a student's
+  1600×1617×1422 run, count 3.7e9): **Python-int element counts crossing into jnp
+  arithmetic** (OverflowError at the jit boundary; invisible to the flat-index greps) —
+  sweep `/ num_`-style count divisions and int-count arguments to jitted functions too.
+  The `mar.py` `num_real_pixels` instance is FIXED (the `float()` idiom + a tiny-array
+  regression test, `test_mar.TestCorrectPlasticSinogramBigCounts` — the overflow is
+  VALUE-dependent, not size-dependent, so small tests pin it).  **SWEEP RUN 2026-07-10
+  (both faces, whole package):** loud face — only 4 reduction-division sites exist; two
+  carry the float() idiom, one divides by a jax scalar, and `_vcd_iteration_stats`'s
+  traced `real_sino_size` is float()ed by its only caller (traced args can't self-defend
+  in-jit; docstring now says callers MUST pass float).  Silent face — every
+  argsort/argmin/arange/unravel/scatter/take site audited: all operate on small axes
+  (pixel plane ≤2e6, channels, views, bands) or are host-side numpy (int64); stripe.py
+  sorts are per-axis; segmentation already uses the slab-count fix; the sino-indicator
+  histogram runs on the view-subsample by convention.  No new instances.  Residual known
+  edges (documented in lessons §4, accepted): np.histogram counts on Windows/numpy<2,
+  and the caller-enforced float contract above.  CLASS CLOSED at this code state; the
+  lessons §4 grep recipe is the re-check on new code.
 - **Minor API opens**: `configure_devices`/`use_gpu` unification; the forward
   pixel-batch default.
 - **Residual rounding-bug risk (monitor only)**: the six vertical-fan per-slice round

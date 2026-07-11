@@ -14,7 +14,8 @@ import numpy as np
 import jax.numpy as jnp
 import mbirjax as mj
 import mbirjax.preprocess as mjp
-from mbirjax.preprocess.mar import (_argmin_3d, _est_plastic_metal_sinos_from_recon,
+from mbirjax.preprocess.mar import (_argmin_3d, _correct_plastic_sinogram,
+                                    _est_plastic_metal_sinos_from_recon,
                                     _estimate_BH_model_params, _generate_metal_exponent_list)
 from conftest import preferred_devices, assert_sharded_allclose
 
@@ -74,6 +75,28 @@ class TestArgmin3d(unittest.TestCase):
             flat = int(np.argmin(x))
             self.assertEqual(np.ravel_multi_index(idx, x.shape), flat)
             self.assertEqual(float(val), float(x.reshape(-1)[flat]))
+
+
+class TestCorrectPlasticSinogramBigCounts(unittest.TestCase):
+
+    def test_num_real_pixels_beyond_int32(self):
+        """_correct_plastic_sinogram must accept a real-pixel count above 2^31 (a full-size
+        sinogram, e.g. 1600x1617x1422 = 3.7e9): a Python int crossing into the jitted division
+        is cast to int32 by jax and raised OverflowError before the float() fix.  The overflow
+        depends on the COUNT's value, not the array size, so tiny arrays pin it."""
+        shape = (4, 3, 5)
+        plastic = jnp.full(shape, 0.5, jnp.float32)
+        metal = [jnp.full(shape, 0.2, jnp.float32)]
+        measured = jnp.full(shape, 0.7, jnp.float32)
+        # One linear plastic column + one metal-only column (no cross terms).
+        h_exponents = [(1, 0), (0, 1)]
+        theta = jnp.array([1.0, 0.5], jnp.float32)
+        view_mask = jnp.ones((shape[0], 1, 1), jnp.float32)
+        corrected = _correct_plastic_sinogram(
+            measured, plastic, metal, theta, h_exponents, num_cross_terms=0,
+            num_metal_terms=1, p_normalization=1.0, gamma=0.05,
+            view_mask=view_mask, num_real_pixels=2 ** 31 + 100)
+        self.assertTrue(bool(jnp.all(jnp.isfinite(corrected))))
 
 
 class TestCorrectSinoPlasticMetal(unittest.TestCase):

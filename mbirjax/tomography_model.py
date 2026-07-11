@@ -3564,7 +3564,9 @@ class TomographyModel(ParameterHandler):
         executable, one set of collective allocations, and no full-size temporaries.
 
         ``real_sino_size`` is the REAL element count for the error-sino RMSE (see the caller: padded
-        entries are identically zero and must not dilute the RMSE).
+        entries are identically zero and must not dilute the RMSE).  Callers MUST pass it as a
+        FLOAT: it is a traced argument, so a Python int > 2^31 raises OverflowError at the jit
+        boundary (lessons.md §4), and being traced it cannot float() itself in the body.
         """
         fm_loss = TomographyModel.get_forward_model_loss(error_sinogram, sigma_y, weights,
                                                          num_real_elements=num_real_elements)
