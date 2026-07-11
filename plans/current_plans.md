@@ -73,8 +73,7 @@ sections) supplies the candidates and the durable guidance:
 - Raise **`max_iterations` from 15 into the ~25–50 range** (the 15-cap strangles the
   0.2% stop on hard objects); the threshold stays 0.2.
 - Metric caveat to respect in the experiments: FoV-truncation flash inflates NRMSE and
-  the change-% stop (see §1) — compare on cropped/remediated metrics or visually and 
-  do this investigation after the padding of §1.
+  the change-% stop (see §1) — compare on cropped/remediated metrics or visually.
 
 Supporting experiment (drafted, not run): the real-data partition-sequence convergence
 study (`plans/experiments/partition_sequence/`), which also tests the
