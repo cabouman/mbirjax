@@ -561,6 +561,19 @@ error reduction vs D0 (+ = better):
    low-frequency initial error fastest: iteration-1 error −0.70 vs D1's −0.64/−0.60),
    and D1 has caught up by iteration 5–10.  Only a ≤3-iteration preview use case would
    notice.
+   **Visual head-to-head (capture job 13481068, Greg's metrics-can-mislead check):**
+   `r2_recon_compare.html` (figures in `r2_recon_figs/`) shows reference | D0 | D1 |
+   difference at 15 and 20 iterations for all three datasets × sharpness {1.0, 2.0};
+   full volumes for slice_viewer at `/scratch/gautschi/buzzard/parity_recons/` (with
+   30-iteration snapshots too).  Read: D0 and D1 are visually indistinguishable in
+   every panel; the signed differences peak at ≲5% of the display window, concentrated
+   as speckle on object boundaries and faint bands at the axial ends/flash regions —
+   no coherent structural difference in the object interior, on any dataset, at either
+   budget.  Provenance note: the capture run is CONTINUOUS (production-like segments)
+   rather than the instrumented restart-per-iteration harness, and its trajectories
+   sit ~0.01–0.02 log10 from the R2 numbers — the D1 ≥ D0 ordering held in all 10
+   reference-checked cells (including the 20-iteration checkpoint, not measured
+   in R2).
 2. **The g1×2 coarse start is not better than plain g2×1 in any durable way.**  D2
    shows a real but transient edge on z62 around iterations 3–5 (e.g. −0.99 vs −0.93
    at iteration 3, s1.0) that fades to a tie by iteration 10–15, and it pays 1.5u for

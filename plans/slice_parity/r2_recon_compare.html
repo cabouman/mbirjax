@@ -1,0 +1,25 @@
+<html><head><title>D0 vs D1 recon comparison</title>
+<style>body{font-family:sans-serif;max-width:1400px;margin:auto} img{max-width:100%} h2{margin-top:2em}</style></head><body>
+<h1>D0 [0,2,4,6,7] vs D1 [2,4,6,7] — head-to-head recons</h1>
+<p>Same data, same sharpness, same iteration count; the only difference is whether the schedule includes the granularity-0 (single-subset, full-volume) first iteration.  Grayscale window is shared within each figure; the rightmost column shows the signed difference D1 − D0 with its own symmetric limit.  Volumes for slice_viewer are on gautschi in <code>/scratch/gautschi/buzzard/parity_recons</code>.</p>
+<h2>lilly_ds8</h2>
+<p>cropped log10 NRMSE (lower = better): it15: D0 -1.1527 / D1 -1.163, it20: D0 -1.2027 / D1 -1.211, it30: D0 -1.2865 / D1 -1.2936</p>
+<img src="r2_recon_figs/lilly_ds8_s1.0_it15.png">
+<img src="r2_recon_figs/lilly_ds8_s1.0_it20.png">
+<p>cropped log10 NRMSE (lower = better): it15: D0 -0.9532 / D1 -0.9647, it20: D0 -1.0062 / D1 -1.0153, it30: D0 -1.092 / D1 -1.0995</p>
+<img src="r2_recon_figs/lilly_ds8_s2.0_it15.png">
+<img src="r2_recon_figs/lilly_ds8_s2.0_it20.png">
+<h2>z62</h2>
+<p>cropped log10 NRMSE (lower = better): it15: D0 -1.5069 / D1 -1.5181, it20: D0 -1.5658 / D1 -1.5773, it30: D0 -1.6645 / D1 -1.6752</p>
+<img src="r2_recon_figs/z62_s1.0_it15.png">
+<img src="r2_recon_figs/z62_s1.0_it20.png">
+<p>cropped log10 NRMSE (lower = better): it15: D0 -1.4948 / D1 -1.5031, it20: D0 -1.5514 / D1 -1.5613, it30: D0 -1.6436 / D1 -1.6534</p>
+<img src="r2_recon_figs/z62_s2.0_it15.png">
+<img src="r2_recon_figs/z62_s2.0_it20.png">
+<h2>lilly_ds4</h2>
+<p>cropped log10 NRMSE (lower = better): it15: D0 -0.9867 / D1 -0.9951, it20: D0 -1.0282 / D1 -1.0358, it30: D0 -1.1025 / D1 -1.1092</p>
+<img src="r2_recon_figs/lilly_ds4_s1.0_it15.png">
+<img src="r2_recon_figs/lilly_ds4_s1.0_it20.png">
+<img src="r2_recon_figs/lilly_ds4_s2.0_it15.png">
+<img src="r2_recon_figs/lilly_ds4_s2.0_it20.png">
+</body></html>
