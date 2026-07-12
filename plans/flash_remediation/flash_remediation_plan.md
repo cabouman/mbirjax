@@ -322,27 +322,45 @@ s = 1.5/2.0).
 Volumes/logs/figures: `padding/p3e_*`; the radial-profile and three-way center-slice
 figures are the keepers for the results page.
 
+### Step D — NSI pipeline auto-geometry cleanup (DONE 2026-07-12, commit `dbc9c3b`)
+
+The NSI flow computed the axial extension at model construction with DEFAULT detector
+pitches and offsets: the pitch face inflated R/SID by 1/δ_ch (measured 2× over-extension
+on Lilly ds4; would be ~8× at full resolution), and the offset face mis-centered by
+|det_row_offset|·R/SDD.  The fix aligns NSI with the zeiss convention — **construct →
+`set_params(**optional_params)` → `auto_set_recon_geometry()`** — and
+`nsi.compute_sino_and_params` no longer hand-sets `recon_slice_offset` (the per-end
+extension places the slab from `det_row_offset` directly).  Design call (Greg): NO
+backward compatibility and no deprecation warning — `recon_slice_offset` is a legitimate
+`set_params` parameter, so loaders don't police it; a stale entry in an old parameter
+dict simply passes through (and is overwritten by the auto call under the new
+convention).  Companion changes: all `mbirjax_applications/nsi` scripts gained the auto
+call (the split demo also lost a stray `recon_slice_offset = 0.0` override), and the
+metrics `build_cache.py` NSI sidecar flipped to `auto_set_recon_geometry: True` for
+future cache builds.
+
+### Step D validation — Lilly, new flow (DONE 2026-07-12, job 13454976, `p3f_*`)
+
+- **Shape/offset exactly as derived**: ds4 recon (374, 374, **572**) vs the inflated 667
+  (95 slices ≈ 14% recovered; base 471 + per-end 55/46 from det_row_offset = −3.9 rows),
+  offset +4.50 slices (the per-end value; the old hand compensation was +3.90).
+- **Values preserved**: old-flow vs new-flow 15-iter recons agree on physically z-aligned
+  interior profiles to **max rel 0.62%** over the whole shared z-range (the level set by
+  the sub-slice grid difference + trajectory noise at 15 iterations).
+- **Split seam still fixed under the new flow**: ds8 seam max RMS **5.6e-4** (background
+  2.4e-5), formula still choosing h_recon = 9 at a near-worst-case sub-slice mismatch
+  (−0.45) — at or better than the step-B validated level (9.5e-4 under the old flow).
+
 ### Remaining steps
 
-- **D. NSI pipeline auto-geometry cleanup — NEAR-TERM PRIORITY; must land before the
-  re-baseline (or the NSI-scan baselines churn twice).**  The NSI flow (and any
-  set-params-after-construction pipeline) computes the axial extension at model
-  construction with DEFAULT detector pitches and offsets, so the extension is wrong in
-  two ways: the PITCH face inflates R/SID by 1/δ_ch — measured 2× over-extension on
-  Lilly ds4 (667 slices vs the intended ~569; ~8× at full resolution; ds8's δ_ch = 1.016
-  is coincidentally near-correct), harmless for correctness (the extra slices are
-  provably inert) but real memory — and the OFFSET face mis-centers by
-  |det_row_offset|·R/SDD (sub-slice on Lilly).  Fix: the pipeline re-runs
-  `auto_set_recon_geometry()` after setting the real detector params and drops its
-  hand-set `recon_slice_offset = -det_row_offset/mag` compensation (`nsi.py:390`; the
-  per-end extension now handles offsets correctly and better).  Touches the NSI usage
-  flow + docs/demos; validate on Lilly (shape shrinks to the intended extension,
-  seam/end behavior unchanged).
-- **E. Re-baseline** the regression dashboards + release note (after C and D; default
-  shapes grow and values shift, for the better); record the regime change both as an
-  `annotations.yaml` marker and a policy-block padding flag.
+- **E. Re-baseline** the regression dashboards + release note (all shape changes have
+  now landed); rebuild the NSI (Lilly) caches with the new library + builder in the same
+  pass; record the regime change both as an `annotations.yaml` marker and a policy-block
+  padding flag.
 - Later: analogous per-end bounds for translation and multiaxis-parallel; a cone
-  `scale_recon_shape` override warning on uncompensated lateral growth.
+  `scale_recon_shape` override warning on uncompensated lateral growth (the p3e
+  `extend_axially_to_bound` helper is the prototype); the z62 RoR-boundary-ring open
+  question (decoupled from truncation by the step-C validation).
 
 ## Method lessons (durable)
 

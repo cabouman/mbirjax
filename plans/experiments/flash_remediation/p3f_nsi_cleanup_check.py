@@ -37,7 +37,7 @@ SEED = 0
 MAX_ITERATIONS = 15
 SEAM_VIEW_HALF_WIDTH = 12
 INTERIOR_RADIUS_FRAC = 0.85
-EXPECTED_COMMIT = None       # set to the step-D commit hash before submitting
+EXPECTED_COMMIT = 'dbc9c3b'  # step-D head ("Match nsi preprocessing to zeiss re recon_slice_offset.")
 
 _ROLE, _JOB = 'P3F_ROLE', 'P3F_JOB'
 

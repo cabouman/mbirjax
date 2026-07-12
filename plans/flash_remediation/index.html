@@ -103,14 +103,21 @@ self-contained (figures embedded) and read in order.</p>
   no auto-padding (cover is not derivable and under-padding is catastrophic); split seam
   — geometry-derived h<sub>recon</sub> as the default, grid-shift alignment opt-in,
   taper retired with it.
-  All plan-only. <strong>Complete.</strong></p>
+  The design record; implemented 2026-07-11/12. <strong>Complete.</strong></p>
 </a>
 
-<div class="page pending">
-  <h2>Phase 3 — Real scans (planned)</h2>
-  <p>Validation of the winning policies on SiC (axial, z-ringing), z62 (radial-flash
-  dominated), and the BGA scan (severe lateral truncation).</p>
-</div>
+<a class="page" href="phase_3_results.html">
+  <h2>Phase 3 — The implemented remedies on real scans</h2>
+  <p>All four Phase 2d verdicts shipped as defaults and validated step by step on SiC,
+  Lilly, and the Purdue BGA scan: the axial extension removes the SiC end flash and
+  ringing, reconstructs the real object continuation, and reaches the 0.2% stop at
+  ~iteration 20 vs ~49; the split extension meets or beats every seam yardstick with the
+  taper retired; the lateral warning is correct on all four scans and corrected two of
+  our own labels (z62 is genuinely contained — its ring is not truncation flash; Lilly is
+  a mild true positive), with its advice verified on BGA (lateral 1.5&times; erases the
+  boundary ring and reveals the board past the old FoV); the NSI cleanup recovers ~14% of
+  the Lilly volume with values preserved. <strong>Complete.</strong></p>
+</a>
 
 <p class="note">Reproduction: scripts in <code>plans/experiments/flash_remediation/</code>
 (see the README in this directory); figures refresh via
