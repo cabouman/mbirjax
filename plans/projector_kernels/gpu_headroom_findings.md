@@ -276,6 +276,27 @@ the E4 gate.  **v2 (queued): even-partitioned tap stream with boundary fixup (th
 ModernGPU segreduce pattern) for the raster skew; then the cone variant (per-pixel
 weight scale + full-rows band) and the precompute-cost measurement.**
 
+## E3 hfan kernel v2 (2026-07-12; job 13478705; `e3_hfan_pallas_v2.py`)
+
+Cap-and-split skew fix, two store strategies (all-atomic into zero-aliased output vs
+hybrid store/atomic), caps {16, 32, 64}:
+
+- **Raster: bar crossed** — 1.59× (hybrid, cap 64; was 1.42× in v1); the split bounds
+  the stragglers as designed, and larger caps trend better (fewer atomic segments).
+- **Subset: regressed to 1.78×** (was 1.96×) — attributable mostly to the 130 MB
+  zeros-init write the atomic path requires (~35 µs/call ≈ the gap at cap 64, where
+  only ~1 segment/view splits).
+- Precompute on the H100 node: ~145 ms warm for the (V=128, P=8192) streams (63 ms on
+  the M3 — the device sort path is oddly slower; optimization candidate, amortized in
+  VCD regardless).  Values pass throughout (≤4e-7).
+- **v3 (queued, job 13479640): two-phase launch** — phase 1 direct-stores every
+  channel's first segment (every row written exactly once — no zeros pass, no race;
+  empty channels materialize as store-zero segments), phase 2 atomic-adds only leftover
+  split segments (~450/view raster, ~1/view subset) via input_output_aliases on the
+  phase-1 result.  Caps {32, 64, 96, 128}.  Interpret gates pass.  Also for the record:
+  v2's interpret gate caught a real pre-GPU correctness bug (whole-array out block
+  indexed with a literal view 0 instead of program_id — all views would have collided).
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
