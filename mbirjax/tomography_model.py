@@ -2353,6 +2353,7 @@ class TomographyModel(ParameterHandler):
                     small_weights = small_weights[:, :num_real_rows]
             # Compute indicator function for sinogram support
             sino_indicator = self._get_sino_indicator(small_sinogram, verbose=self.get_params('verbose'))
+            self._check_lateral_truncation(sino_indicator)
             self.auto_set_sigma_y(small_sinogram, sino_indicator, small_weights)
 
             recon_std = self._get_estimate_of_recon_std(small_sinogram, sino_indicator)
@@ -2366,6 +2367,48 @@ class TomographyModel(ParameterHandler):
         regularization_params = RegularizationParams(*tuple(regularization_param_values))._asdict()
 
         return regularization_params
+
+    def _check_lateral_truncation(self, sino_indicator):
+        """Warn if the sinogram support reaches the detector's edge channels (lateral FoV
+        truncation).
+
+        Called from :meth:`auto_set_regularization_params` on the support indicator it already
+        computes, so the check is free and inherits the indicator's calibrated object-vs-air
+        split -- no new threshold (the indicator's safety margin means very faint edge
+        attenuation can go undetected, which is the benign direction).  Support touching the
+        edge channels means material extends past the field of view laterally: every channel
+        is then contaminated (a point at radius r crosses all channels |c| <= r at some view),
+        producing a bright ring at the reconstruction boundary, a whole-interior bias, and
+        slowed convergence (see plans/flash_remediation/).  There is deliberately NO automatic
+        padding for this case: the required padding ("cover the object") is not derivable from
+        geometry or from the truncated data, and under-padding costs orders of magnitude while
+        over-padding costs percent -- so the warning names the manual remedy and its one
+        crucial usage rule instead.  Geometries where edge-touching support is the norm rather
+        than a defect (translation tomography, the image denoiser) override this with a no-op.
+
+        Args:
+            sino_indicator (ndarray): binary support indicator from :meth:`_get_sino_indicator`,
+                shaped (views, rows, channels) -- typically view-subsampled.
+        """
+        if np.all(sino_indicator):
+            # An all-ones indicator is either the undeterminable-background fallback (which has
+            # already warned on its own) or support genuinely everywhere -- indistinguishable
+            # here, so skip rather than risk a spurious warning on the fallback.
+            return
+        edge_frac = float(np.mean(np.logical_or(sino_indicator[:, :, 0],
+                                                sino_indicator[:, :, -1])))
+        # The 0.02 floor is a robustness guard against stray indicator pixels, not a
+        # calibrated knob: genuine truncation puts support on an edge channel over a
+        # substantial fraction of views.
+        if edge_frac > 0.02 and self.get_params('verbose') > 0:
+            warnings.warn(
+                f"Lateral FoV truncation detected: the object support reaches the detector's "
+                f"edge channels in {edge_frac:.0%} of the sampled view-rows.  Expect a bright "
+                f"ring at the reconstruction boundary, an interior bias, and slowed "
+                f"convergence.  To fix, enlarge the reconstruction with "
+                f"scale_recon_shape(s, s) where s >= object_diameter / FoV_diameter, and round "
+                f"s UP -- under-padding is far worse than over-padding.  (With severe "
+                f"truncation a uniform offset remains that no padding can remove.)")
 
     def auto_set_sigma_y(self, sinogram, sino_indicator, weights=1):
         """

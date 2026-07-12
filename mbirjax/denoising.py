@@ -86,6 +86,12 @@ class QGGMRFDenoiser(TomographyModel):
         sigma_y = self.get_params('sigma_noise')
         self.set_params(no_warning=True, sigma_y=sigma_y, auto_regularize_flag=True)
 
+    def _check_lateral_truncation(self, sino_indicator):
+        """No-op override: the denoiser's 'sinogram' is an ordinary image, and image content
+        reaching the frame edge is normal -- not the lateral FoV truncation the base check
+        warns about (see TomographyModel._check_lateral_truncation)."""
+        return
+
     def estimate_image_noise_std(self, image):
         """
         Estimate the standard deviation of the reconstruction from the noisy image.

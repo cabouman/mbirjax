@@ -204,6 +204,13 @@ class TranslationModel(mj.TomographyModel):
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel,
                         voxel_row_aspect=voxel_row_aspect)
 
+    def _check_lateral_truncation(self, sino_indicator):
+        """No-op override: in translation tomography the object (typically a plate wider than
+        the detector) routinely spans the whole field of view, so edge-touching sinogram
+        support is the normal operating condition rather than the lateral-truncation defect
+        the base check warns about (see TomographyModel._check_lateral_truncation)."""
+        return
+
     def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
         """Translation tiling: the base policy, unchanged -- with two MEASURED deliberate
         non-settings.
