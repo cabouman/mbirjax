@@ -220,6 +220,64 @@ optimum, ramp-start candidates); the decision now needs full SCHEDULES on real d
 Composite candidate the fx data suggests: **g1×2-start parity ramp → (128,1) fine tail**
 (best-of-both at equal cost), with f1_pall's (128,2) tail as the paid quality ceiling.
 
+## R1 — the real-data schedule protocol (drafted 2026-07-12; Greg-approved framing:
+## bounded search, decision-oriented)
+
+**Question.**  Which SCHEDULE through the (in-plane subsets S, z-phases P) grid should be
+the default-candidate, judged on real data at honest cost?  The toy rounds established
+the structure (state-dependence both ways; interior optimum; g1×2 the best ramp start);
+this protocol makes the decision.
+
+**Search space (bounded).**  P ∈ {1, 2} (P≥4 showed no ramp-context value and pays real
+cone forward cost); S on the doubling ladder; schedules start at ≥4 blocks (Greg).
+Four candidates:
+
+| id | schedule (pseq × phases) | rationale |
+|---|---|---|
+| C0 | [0,2,4,6,7] × 1 | current default (control) |
+| C1 | [0,2,4,6,7] × 2 | parity everywhere — the toy quality ceiling; tail cost 1.5× idealized |
+| C2 | [1,3,5,7] × [2,2,2,1] | the fx composite: g1×2-start parity ramp → plain (128,1) tail; ≈ C0 cost |
+| C3 | [7] × 1 | flat-128 (the §2 release-candidate control) |
+
+**Dataset and settings.**  Wave 1: Lilly D01788 at ds8 (the flash-remediation workhorse;
+NSI `compute_sino_and_params`, downsample (8,8), view-subsample 8), `transmission_root`
+weights, sharpness ∈ {1.0, 2.5} set BEFORE `auto_set_regularization_params` (then
+auto_regularize off) — the production-ish and hard cases.  Wave 2 (after wave-1 reading):
+z62 (radial character) and a ds4 confirmation of the winner (ds8 recons are
+interactive-size, where VCD is host-dispatch-bound — WALL times at ds8 do not transfer;
+see cost accounting).  8 arms + 2 references ≈ under an hour on one H100.
+
+**References.**  Per sharpness: 150-iteration default-sequence recon (stop forced off),
+cached in the staging dir.  All candidates target the same MAP objective.
+
+**Metrics (decision order).**
+1. Cropped NRMSE vs reference — interior disk (0.85 × ROR radius, the flash-analysis
+   pattern) AND axial ends excluded (10%), per the §2 flash-metric caveat — as a function
+   of (a) iteration and (b) IDEALIZED COST UNITS.
+2. Iterations/cost-to-quality: first iteration reaching {2.0×, 1.2×} of C0's final
+   (30-iteration) cropped NRMSE.
+3. Per-slice error profiles (the axial structure is the point) + hotspot trajectories.
+4. Wall time reported but CAVEATED at ds8 (host-dispatch-bound size; also mask-form
+   parity pays 2× projector cost that a slice-set-aware implementation would not).
+
+**Cost accounting (cone-specific, decided 2026-07-12).**  A P-phase iteration costs,
+in full-projection equivalents: back ≈ 1 (slice gathers halve per phase, phases sum to
+1); forward ≈ P (the vertical fan's cost scales with detector ROWS, which parity does
+not reduce — the slice-set-aware kernel would restore ≈1, see the kernel section).
+So a P=2 iteration is charged (P·fwd + back)/(fwd + back) ≈ **1.5 idealized units**
+(2.0 units as-implemented in mask form).  C2 is cost-matched to C0 except its three
+ramp iterations; C1's tail runs at 1.5×.  This charging is what makes the comparison
+honest for cone TODAY; the 1.0× charging becomes real only if the kernel campaign ships
+slice-set-aware forward fans.
+
+**Decision rule.**  A candidate displaces C0 if it reaches the 1.2× quality mark at
+≤0.8× C0's idealized cost at BOTH sharpness settings and is never worse at the 2.0×
+mark; C3 is judged by the same rule (it is the §2 candidate).  Ties → prefer the
+simpler schedule.  Runs seeded per call (identical partitions/order across arms).
+
+Script: `plans/experiments/slice_parity/parity_realdata.py` (+ `.slurm`), staging
+`~/parity_lilly` on gautschi.
+
 ## Interaction with the GPU-headroom kernel campaign
 
 If parity survives P1, the concrete change to the kernel work is an INTERFACE decision,
