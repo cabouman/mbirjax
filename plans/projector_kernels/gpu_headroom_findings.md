@@ -297,6 +297,30 @@ hybrid store/atomic), caps {16, 32, 64}:
   v2's interpret gate caught a real pre-GPU correctness bug (whole-array out block
   indexed with a literal view 0 instead of program_id — all views would have collided).
 
+## E3 hfan kernel v3 — THE SPIKE BAR IS MET (2026-07-12; job 13479640)
+
+Two-phase store+atomic (no zeros pass): **subset 2.13×** (caps ≥64; n2 = 1 atomic
+segment/view — phase 2 nearly empty as designed), best of all rounds; raster regressed
+to 1.41× (phase 1 spans all 992 channels including ~410 empty/view + a second launch —
+costs the skewed case roughly what the zeros pass cost v2).  Values ≤6e-7 everywhere.
+
+**Composite verdict — the plan's E3 success bar (≥1.5–2× at both cases) is MET by a
+variant policy**: v3-two-phase for uniform/subset batches (**2.13×**), v2b-hybrid for
+skewed raster batches (**1.59×**); the precompute computes the segment statistics that
+discriminate them, so the policy is free (and matches the TilePolicy kernel-selection
+pattern).  Iteration ledger: v1 structure → v2 skew fix → v3 init-tax fix; the interpret
+gate caught one real correctness bug (v2 view-index collision) before any GPU time.
+
+Remaining tuning upside (not needed for the bar, noted for E4+): raster's contiguous
+pixel ranges per channel should make it FASTER than subset, not slower — a zeros-free
+single-launch formulation (e.g. split-channel row pre-zeroing at ~14 MB instead of
+130 MB) and multi-channel programs are the known next levers; the H100 precompute at
+~145 ms (vs 63 ms on the M3 CPU) is its own small oddity to chase.
+
+**Next per plan: the cone hfan variant (per-pixel weight scale, full-rows band — the
+72%-share case), then E4 composition (TilePolicy flag, wrapper integration with the
+precompute placed per the Phase-D idiom, model-level A/B), then the band back kernel.**
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
