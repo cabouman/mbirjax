@@ -4,7 +4,9 @@ Runs the candidate (S, P) schedules at two sharpness settings on real cone datas
 against 150-iteration references, with the per-slice/cropped-NRMSE diagnostics and the
 cone cost accounting from the protocol.  Wave 1: Lilly D01788 ds8 (all four candidates).
 Wave 2: z62 (radial character, cached partition-study case) + Lilly ds4 confirmation
-(C0/C1/C2).  Select via RUN_CASES below.
+(C0/C1/C2).  R2: memory-driven schedules D0-D4 at sharpness {1.0, 2.0} on ds8 + z62
+(Greg go 2026-07-12).  Select via ROUND / RUN_CASES / per-case schedules below; earlier
+rounds' configs are in git history.
 
 Structure: EVERY GPU step (preprocess, references, arms) runs in its own SUBPROCESS so
 the orchestrator stays JAX-free — wave-1 lesson: in-process reference generation held
@@ -28,7 +30,8 @@ import numpy as np
 NSI_LILLY_DIR = '/scratch/gautschi/buzzard/flash_lilly/D01788'
 Z62_H5 = ('/depot/bouman/data/mbirjax_metrics/partition_sequence/cache/'
           'z62_v4x_d4x_nv201_nch512.h5')
-SHARPNESS_LIST = [1.0, 2.5]
+ROUND = 'r2'                    # tags the per-case summary file: <ROUND>_summary.json
+SHARPNESS_LIST = [1.0, 2.0]     # R2: Greg's realistic band (R1 waves used [1.0, 2.5])
 NUM_ITERATIONS = 30
 REF_ITERATIONS = 150
 SEED = 1000
@@ -44,20 +47,33 @@ SCHED_ALL = [
 ]
 SCHED_CONFIRM = SCHED_ALL[:3]   # ds4 confirmation: C3's read was already clear at ds8
 
-# Per-case dataset loader, staging dir, and schedule list.  RUN_CASES picks the wave.
+# R2 (memory-driven schedules, plan doc "R1 synthesis" item 3): does dropping the
+# granularity-0 full-volume iteration cost anything, and is a g1x2 coarse start better
+# than g2x1 on real data?  NOTE: mask-form g1x2 gives NO memory win today (full-height
+# buffers) — D2/D3 answer only the convergence-shape question; D1/D4 are the schedules
+# deployable now.
+R2_SCHEDULES = [
+    ('D0_default',   [0, 2, 4, 6, 7], 1),
+    ('D1_g2start',   [2, 4, 6, 7],    1),
+    ('D2_g1x2once',  [1, 4, 6, 7],    [2, 1, 1, 1]),
+    ('D3_g1x2twice', [1, 1, 4, 6, 7], [2, 2, 1, 1, 1]),
+    ('D4_g2twice',   [2, 2, 4, 6, 7], 1),
+]
+
+# Per-case dataset loader, staging dir, and schedule list.  RUN_CASES picks the round.
 CASES = {
     'lilly_ds8': dict(loader='nsi', dataset_dir=NSI_LILLY_DIR, downsample=(8, 8),
                       subsample_views=8, stage_dir='~/parity_lilly',
-                      schedules=SCHED_ALL),                        # wave 1 (complete)
+                      schedules=R2_SCHEDULES),     # wave 1 ran SCHED_ALL (git history)
     'z62': dict(loader='h5', h5_path=Z62_H5, auto_set_recon_geometry=True,
                 stage_dir='/scratch/gautschi/buzzard/parity_z62',
-                schedules=SCHED_ALL),                              # wave 2
+                schedules=R2_SCHEDULES),           # wave 2 ran SCHED_ALL (git history)
     'lilly_ds4': dict(loader='nsi', dataset_dir=NSI_LILLY_DIR, downsample=(4, 4),
                       subsample_views=4,
                       stage_dir='/scratch/gautschi/buzzard/parity_lilly_ds4',
-                      schedules=SCHED_CONFIRM),                    # wave 2
+                      schedules=SCHED_CONFIRM),    # wave 2 (complete)
 }
-RUN_CASES = ['z62', 'lilly_ds4']
+RUN_CASES = ['lilly_ds8', 'z62']
 
 
 def stage_dir(case_name):
@@ -259,7 +275,7 @@ def main():
                     print(f'[no RESULT rc={proc.returncode}] {cfg}\n'
                           f'{proc.stderr[-1500:]}', flush=True)
 
-        with open(os.path.join(stage, 'r1_summary.json'), 'w') as f:
+        with open(os.path.join(stage, f'{ROUND}_summary.json'), 'w') as f:
             json.dump(results, f, indent=2)
         print(f'[{case_name} summary + arrays in {stage}]', flush=True)
 

@@ -21,11 +21,15 @@ import os
 import numpy as np
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CASE_DIRS = ['r1', 'r1_z62', 'r1_lilly_ds4']    # subdirs of results/, analyzed if present
-QUALITY_FACTORS = [2.0, 1.2]        # multiples of C0's final cropped NRMSE
-DISPLACE_COST_FRAC = 0.8            # candidate must hit 1.2x mark at <= this x C0 cost
-CONTROL = 'C0_default'
+# (results/ subdir, control arm name) — analyzed if the dir holds a *_summary.json.
+CASE_SPECS = [
+    ('r1', 'C0_default'), ('r1_z62', 'C0_default'), ('r1_lilly_ds4', 'C0_default'),
+    ('r2_ds8', 'D0_default'), ('r2_z62', 'D0_default'),
+]
+QUALITY_FACTORS = [2.0, 1.2]        # multiples of the control's final cropped NRMSE
+DISPLACE_COST_FRAC = 0.8            # candidate must hit 1.2x mark at <= this x control
 PROFILE_ITERS = [4, 9, 29]          # per-slice profile snapshots (0-based iteration idx)
+MID_ITER = 14                       # 0-based index of the production budget (15 iters)
 
 
 def cost_to_mark(lognrmse, cum_cost, mark_log):
@@ -37,16 +41,17 @@ def cost_to_mark(lognrmse, cum_cost, mark_log):
 
 
 def main():
+    import glob
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results')
-    for case in CASE_DIRS:
+    for case, control in CASE_SPECS:
         results_dir = os.path.join(base, case)
-        if os.path.exists(os.path.join(results_dir, 'r1_summary.json')):
+        summaries = glob.glob(os.path.join(results_dir, '*_summary.json'))
+        if summaries:
             print(f'\n################ case {case} ################')
-            analyze(results_dir)
+            analyze(results_dir, summaries[0], control)
 
 
-def analyze(RESULTS_DIR):
-    SUMMARY = os.path.join(RESULTS_DIR, 'r1_summary.json')
+def analyze(RESULTS_DIR, SUMMARY, CONTROL):
     with open(SUMMARY) as f:
         results = [r for r in json.load(f) if r.get('status') == 'ok']
     if not results:
@@ -69,6 +74,22 @@ def analyze(RESULTS_DIR):
             vals = ' '.join(f'{tr[i]:7.3f}' for i in picks if i < len(tr))
             print(f'  {name:>14}: {vals}   [{tr[-1]:.4f} @ {cc[-1]:.1f}u, '
                   f'{r.get("wall_s", "?")}s]')
+
+    # ── Production budget: state at MID_ITER+1 iterations ────────────────────
+    print(f'\n=== state at {MID_ITER + 1} iterations '
+          f'(cropped log10 NRMSE; delta vs {CONTROL}: + = lower error) ===')
+    for s in sharpness_vals:
+        ctrl_mid = by_key[(CONTROL, s)]['cropped_lognrmse'][MID_ITER]
+        cells = []
+        for name in names:
+            r = by_key.get((name, s))
+            if r is None:
+                continue
+            v = r['cropped_lognrmse'][MID_ITER]
+            d = ctrl_mid - v
+            cells.append(f'{name}={v:.3f} ({d:+.3f}, {(1 - 10 ** (-d)) * 100:+.0f}%)'
+                         if name != CONTROL else f'{name}={v:.3f}')
+        print(f'  s{s}: ' + '  '.join(cells))
 
     # ── Decision rule ─────────────────────────────────────────────────────────
     print('\n=== cost-to-quality (idealized units; marks are relative to '
