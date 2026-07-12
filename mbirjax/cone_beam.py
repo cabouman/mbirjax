@@ -1176,7 +1176,8 @@ class ConeBeamModel(TomographyModel):
         return recon if output_sharded else self._gather_recon(recon)
 
     def split_sino_recon(self, sino, weights=None, half_overlap=5, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2,
-                         first_iteration=0, compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True):
+                         first_iteration=0, compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True,
+                         align_split_grid=False):
         """
         This function reduces memory usage for cone beam MBIR reconstruction by approximately a factor of 2
         by splitting the detector rows into two overlapping halves, reconstructing each half separately,
@@ -1185,10 +1186,24 @@ class ConeBeamModel(TomographyModel):
         The function can be called with the same arguments as TomographyModel.recon(), and it should return a
         reconstruction which is approximately equal to the reconstruction returned by TomographyModel.recon().
 
+        Each half keeps ``half_overlap`` detector rows past the iso row, and its reconstruction
+        extends ``half_overlap_recon`` slices past the split, where half_overlap_recon =
+        ceil(half_overlap_sino * (1 + R/SID) * rho) + 2 with rho = delta_det_row/(magnification *
+        delta_voxel_slice) and R the recon-support radius.  The (1 + R/SID) factor makes every
+        slice the kept rows can SEE representable (the cone-divergence bound of
+        auto_set_recon_geometry, evaluated at the iso ray); without it each half is axially
+        truncated at its extension end, which shows up as alternating stripes at the stitch seam
+        on real scans (see plans/flash_remediation/).  The +2 margin covers the voxel footprint
+        and the worst-case half-slice misalignment between the sinogram cut row and the recon
+        split slice.
+
         Args:
             sino (jnp.ndarray | np.ndarray): Full sinogram of shape (num_views, num_rows, num_cols).
             weights (jnp.ndarray | np.ndarray, optional): Optional sinogram weights with the same shape as `sino`.
-            half_overlap (int): Number of overlapping detector rows and recon slices per half. (total overlap = 2 * half_overlap)
+            half_overlap (int): Number of overlapping detector rows past the iso row per half (when
+                recon slices are coarser than the iso-mapped rows, the row overlap is scaled up so
+                it still spans ``half_overlap`` slices).  The recon overlap is derived from it by
+                the geometry formula above.
             init_recon (optional): Same as in the recon method.
             max_iterations (int, optional): Same as in the recon method.
             stop_threshold_change_pct (float, optional): Same as in the recon method.
@@ -1197,11 +1212,21 @@ class ConeBeamModel(TomographyModel):
             logfile_path (str, optional): Same as in the TomographyModel.recon() method.  The two
                 halves' logs are merged into this single file, each under a section header.
             print_logs (bool, optional): Same as in the TomographyModel.recon() method.
+            align_split_grid (bool, optional): If True, align the recon split slice with the
+                sinogram cut row: first by choosing the cut row (effective only when rho != 1,
+                where the row and slice grids are incommensurate), then by shifting the whole
+                recon grid by the sub-slice residual (at most half a slice).  Alignment removes
+                the seam-stripe driver outright, but the shifted output samples the object at
+                z-positions up to delta_voxel_slice/2 away from what recon() would use -- an
+                equally valid reconstruction that is NOT registration-identical to recon(), which
+                is why it is opt-in.  The applied shift is reported in the returned dictionary
+                under 'split_params'.  Defaults to False.
 
         Returns:
             Tuple[np.ndarray, dict]:
                 - Reconstructed volume (numpy array).
-                - Dictionary of metadata containing recon and model parameters for each half.
+                - Dictionary of metadata containing recon and model parameters for each half,
+                  plus 'split_params' (the overlaps and any alignment shift used).
 
         Raises:
             ValueError: If inputs are missing or shapes are inconsistent, if half_overlap < 2,
@@ -1237,8 +1262,8 @@ class ConeBeamModel(TomographyModel):
 
         # Operate on the host: split here and let each half's recon re-shard its own half, so the full
         # sinogram is never on the devices at once (the memory saving).  np.asarray is a no-op for a
-        # numpy input and gathers a device/sharded input once; it also lets the weight halves below be
-        # writable numpy copies, so the caller's weights array is never mutated by the sine taper.
+        # numpy input and gathers a device/sharded input once; the per-half slices below are then
+        # cheap host views.
         sino = np.asarray(sino)
         if weights is not None:
             weights = np.asarray(weights)
@@ -1259,16 +1284,75 @@ class ConeBeamModel(TomographyModel):
         delta_det_row = self.get_params('delta_det_row')
         full_det_row_offset = self.get_params('det_row_offset')
         delta_voxel = self.get_params('delta_voxel')
-        voxel_slice_aspect = self.get_params('voxel_slice_aspect')
+        voxel_slice_aspect, voxel_row_aspect = self.get_params(['voxel_slice_aspect', 'voxel_row_aspect'])
         delta_voxel_slice = voxel_slice_aspect * delta_voxel
         full_recon_shape = self.get_params('recon_shape')
         full_recon_slice_offset = self.get_params('recon_slice_offset')
+        source_iso_dist, use_ror_mask = self.get_params(['source_iso_dist', 'use_ror_mask'])
         magnification = self.get_magnification()
 
         # Get recon shape parameters
         full_recon_rows, full_recon_cols, full_recon_slices = full_recon_shape
 
-        # -------- Compute the recon slice nearest to iso --------
+        # -------- Overlaps: detector rows kept past the cut, recon slices kept past the split --------
+        # Sino overlap: when recon slices are coarser than the iso-mapped rows, scale the row
+        # overlap up so it still spans about half_overlap slices (the knob keeps its meaning in
+        # both unit systems).
+        delta_detector_row_at_iso = max(delta_det_row / magnification, 1e-12)
+        ratio_pixel_to_sino_pitch = delta_voxel_slice / delta_detector_row_at_iso
+        if ratio_pixel_to_sino_pitch > 1:
+            half_overlap_sino = int(jnp.round(half_overlap * ratio_pixel_to_sino_pitch))
+        else:
+            half_overlap_sino = half_overlap
+        # Recon overlap from geometry (see docstring): every slice the kept rows can SEE must be
+        # representable, or each half is axially truncated at its extension end and the seam
+        # stripes.  rho = slices seen per kept row at the iso ray; (1 + R/SID) is the
+        # cone-divergence bound evaluated at the far side of the support (the split-seam analogue
+        # of auto_set_recon_geometry's per-end extension); +2 covers the voxel footprint and the
+        # worst-case half-slice cut/split misalignment.
+        rho = 1.0 / ratio_pixel_to_sino_pitch
+        support_radius = mj.get_support_radius(full_recon_shape, voxel_row_aspect * delta_voxel,
+                                               delta_voxel, use_ror_mask=use_ror_mask)
+        half_overlap_recon = int(np.ceil(
+            half_overlap_sino * (1.0 + support_radius / float(source_iso_dist)) * rho)) + 2
+
+        """
+        Compute detector shape parameters for top and bottom sinograms
+        """
+        # -------- Choose the detector row nearest to iso (the cut row) --------
+        det_iso_row_float = ((full_num_rows - 1) / 2.0) + (full_det_row_offset / delta_det_row)
+        det_iso_row_index = int(jnp.round(det_iso_row_float))
+
+        # Validate iso-row index is inside (0, num_rows)
+        if not (0 < det_iso_row_index < full_num_rows):
+            raise ValueError(
+                f"Computed det_iso_row_index={det_iso_row_index} is out of valid range (0, {full_num_rows-1}). "
+            )
+
+        # -------- Optional cut/split alignment (align_split_grid) --------
+        # The seam-stripe driver is the SUB-SLICE misalignment eps between the cut row's
+        # iso-mapped plane and the split slice, eps = wrap(split_offset - cut_offset_rows * rho)
+        # with both round-off terms in [-1/2, 1/2].  Two mechanisms remove it: choosing a
+        # different cut row changes eps by rho per row (effective only when rho != 1; at rho == 1
+        # the row and slice grids are commensurate and eps is invariant under every index
+        # choice), and a sub-slice shift of the whole recon grid removes the residual exactly.
+        # The shift moves the OUTPUT grid by up to half a slice -- an equally valid sampling that
+        # is not registration-identical to recon(), which is why this is opt-in.
+        grid_shift_alu = 0.0
+        if align_split_grid:
+            def _wrap_half(x):
+                return (x + 0.5) % 1.0 - 0.5
+            iso_float_unshifted = (full_recon_slices - 1) / 2.0 - full_recon_slice_offset / delta_voxel_slice
+            split_off_unshifted = round(iso_float_unshifted) - iso_float_unshifted
+            candidates = [c for c in range(det_iso_row_index - 2, det_iso_row_index + 3)
+                          if 0 < c < full_num_rows]
+            eps_by_cut = {c: _wrap_half(split_off_unshifted - (c - det_iso_row_float) * rho)
+                          for c in candidates}
+            det_iso_row_index = min(eps_by_cut, key=lambda c: abs(eps_by_cut[c]))
+            grid_shift_alu = -float(eps_by_cut[det_iso_row_index]) * delta_voxel_slice
+            full_recon_slice_offset = full_recon_slice_offset + grid_shift_alu
+
+        # -------- Compute the recon slice nearest to iso (the split slice) --------
         full_recon_iso_slice_index_float = (full_recon_slices - 1) / 2.0 - full_recon_slice_offset / delta_voxel_slice
         split_index = int(jnp.round(full_recon_iso_slice_index_float))
         top_num_slices = split_index + 1
@@ -1277,10 +1361,20 @@ class ConeBeamModel(TomographyModel):
         # This will be used to slightly shift the slices so that they align with a standard reconstruction.
         split_offset = split_index - full_recon_iso_slice_index_float
 
-        # Fallback: If split index creates an empty top or bottom half sinogram, then warn and do a normal MBIR recon.
-        if (split_index < 1) or (split_index > full_recon_slices - 2):
+        # Residual sub-slice cut/split misalignment, for the returned split_params (0 up to float
+        # noise when align_split_grid=True; the +2 overlap margin absorbs it when False).
+        split_cut_mismatch = float((split_offset - (det_iso_row_index - det_iso_row_float) * rho
+                                    + 0.5) % 1.0 - 0.5)
+
+        # Fallback: if the split leaves either half too thin -- an empty half sinogram, or fewer
+        # kept slices than the recon overlap (the stitch spans 2 * half_overlap_recon slices) --
+        # then warn and do a normal MBIR recon.
+        if (split_index < 1 or split_index > full_recon_slices - 2
+                or top_num_slices < half_overlap_recon
+                or full_recon_slices - top_num_slices < half_overlap_recon):
             warnings.warn(
-                "split_index is too close to the volume boundary; falling back to standard MBIR reconstruction.",
+                "split_index is too close to the volume boundary for the recon overlap; "
+                "falling back to standard MBIR reconstruction.",
                 UserWarning,
             )
             return self.recon(
@@ -1295,29 +1389,6 @@ class ConeBeamModel(TomographyModel):
                 print_logs=print_logs,
             )
 
-        # Compute overlaps for sinogram and recon
-        delta_detector_row_at_iso = max(delta_det_row / magnification, 1e-12)
-        ratio_pixel_to_sino_pitch = delta_voxel_slice / delta_detector_row_at_iso
-        if ratio_pixel_to_sino_pitch > 1:
-            half_overlap_sino = int(jnp.round(half_overlap * ratio_pixel_to_sino_pitch))
-            half_overlap_recon = half_overlap
-        else:
-            half_overlap_sino = half_overlap
-            half_overlap_recon = int(jnp.round(half_overlap * 1/ratio_pixel_to_sino_pitch))
-
-        """
-        Compute detector shape parameters for top and bottom sinograms
-        """
-        # -------- Choose the detector row nearest to iso --------
-        det_iso_row_float = ((full_num_rows - 1) / 2.0) + (full_det_row_offset / delta_det_row)
-        det_iso_row_index = int(jnp.round(det_iso_row_float))
-
-        # Validate iso-row index is inside (0, num_rows)
-        if not (0 < det_iso_row_index < full_num_rows):
-            raise ValueError(
-                f"Computed det_iso_row_index={det_iso_row_index} is out of valid range (0, {full_num_rows-1}). "
-            )
-
         # -------- Per-half scalar parameters (cheap; the heavy arrays + models are built one half at a
         # time in _recon_one_half below, so only ONE half's inputs are resident at once) --------
         top_lo, top_hi = 0, min(det_iso_row_index + half_overlap_sino, full_num_rows)
@@ -1330,22 +1401,23 @@ class ConeBeamModel(TomographyModel):
 
         full_det_center = (full_num_rows - 1) / 2.0
 
-        # Sine filter (float32) applied to the overlap rows of each half's weights to reduce boundary
-        # artifacts.  Note that 0 weight is used deliberately on the most extreme row to reduce ringing.
-        num_filter_pts = half_overlap_sino
-        sine_filter_inputs = (np.pi / 2) * np.linspace(0, 1, num_filter_pts, endpoint=False)
-        sine_filter = np.sin(sine_filter_inputs).astype(np.float32)
+        # NOTE: earlier versions applied a quarter-sine taper to each half's overlap-row weights.
+        # With the geometry-derived recon overlap above, the overlap data is fully explainable by
+        # each half's extended slices, so the taper is unnecessary -- and the flash-remediation
+        # campaign showed it is a regime-dependent suppressor that fails at coarse downsampling
+        # while the matched extension fixes the seam in every regime tested
+        # (plans/flash_remediation/).  The taper is therefore retired.
 
         # Regularization params come from the FULL sinogram; the halves copy them and set
         # auto_regularize_flag=False so they do not re-derive from their partial sinograms.
         self.auto_set_regularization_params(sino)
 
-        def _recon_one_half(lo, hi, recon_shape, recon_slice_offset, taper_top, half_logfile_path):
+        def _recon_one_half(lo, hi, recon_shape, recon_slice_offset, is_top, half_logfile_path):
             """Reconstruct one detector-row half on the host; return (host_recon, recon_dict).
 
             Builds the half's model, sinogram slice, and weights, runs recon, and gathers the result to
-            the host.  All the heavy state (the weights copy, the half model, the device recon) is local,
-            so it is released when this returns -- only ONE half's inputs are resident at a time, which is
+            the host.  All the heavy state (the half model, the device recon) is local, so it is
+            released when this returns -- only ONE half's inputs are resident at a time, which is
             the point of doing half a recon at a time.  The returned reconstruction is a host array.
             """
             num_rows = hi - lo
@@ -1364,23 +1436,15 @@ class ConeBeamModel(TomographyModel):
             if self.shard_devices is not None:
                 model.configure_devices(self.shard_devices)
 
-            # Sinogram slice (a host view) and FRESH writable weights (a copy, never a view into the
-            # caller's weights -- the taper writes into them and the halves overlap).
+            # Sinogram and weight slices are host VIEWS (nothing mutates them; weights=None passes
+            # through so the half recon uses its constant-weight path with no ones array built).
             sino_half = sino[:, lo:hi, :]
-            if weights is None:
-                weights_half = np.ones_like(sino_half)
-            else:
-                weights_half = np.array(weights[:, lo:hi, :])
-            # Taper the overlap rows: the top half tapers its LAST rows (reversed ramp), the bottom its FIRST.
-            if taper_top:
-                weights_half[:, -half_overlap_sino:] = weights_half[:, -half_overlap_sino:] * sine_filter[None, ::-1, None]
-            else:
-                weights_half[:, :half_overlap_sino] = weights_half[:, :half_overlap_sino] * sine_filter[None, :, None]
+            weights_half = None if weights is None else weights[:, lo:hi, :]
 
             # init_recon slice: the top half takes the first recon_shape[2] slices, the bottom the last.
             half_init = None
             if init_recon is not None:
-                half_init = init_recon[:, :, :recon_shape[2]] if taper_top else init_recon[:, :, -recon_shape[2]:]
+                half_init = init_recon[:, :, :recon_shape[2]] if is_top else init_recon[:, :, -recon_shape[2]:]
 
             recon_half, recon_dict = model.recon(sino_half, weights=weights_half, init_recon=half_init,
                                                  max_iterations=max_iterations,
@@ -1404,10 +1468,10 @@ class ConeBeamModel(TomographyModel):
             log_path, half_log_paths = None, (None, None)
         try:
             recon_top_half, recon_top_dict = _recon_one_half(top_lo, top_hi, top_recon_shape,
-                                                             top_recon_slice_offset, taper_top=True,
+                                                             top_recon_slice_offset, is_top=True,
                                                              half_logfile_path=half_log_paths[0])
             recon_bot_half, recon_bot_dict = _recon_one_half(bot_lo, bot_hi, bot_recon_shape,
-                                                             bot_recon_slice_offset, taper_top=False,
+                                                             bot_recon_slice_offset, is_top=False,
                                                              half_logfile_path=half_log_paths[1])
         finally:
             if log_path:
@@ -1436,6 +1500,15 @@ class ConeBeamModel(TomographyModel):
                            'notes_top': recon_top_dict['notes'],
                            'notes_bottom': recon_bot_dict['notes'],
                            'model_params_top': recon_top_dict['model_params'],
-                           'model_params_bottom': recon_bot_dict['model_params'], }
+                           'model_params_bottom': recon_bot_dict['model_params'],
+                           # The overlaps actually used, the residual sub-slice cut/split
+                           # misalignment, and any align_split_grid shift of the OUTPUT grid
+                           # (in ALU; the returned volume samples a grid whose
+                           # recon_slice_offset differs from the model's by this amount).
+                           'split_params': {'half_overlap_sino': int(half_overlap_sino),
+                                            'half_overlap_recon': int(half_overlap_recon),
+                                            'align_split_grid': bool(align_split_grid),
+                                            'grid_shift_alu': float(grid_shift_alu),
+                                            'split_cut_mismatch_slices': split_cut_mismatch}, }
 
         return recon_full, recon_full_dict
