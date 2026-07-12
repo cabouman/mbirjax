@@ -211,13 +211,30 @@ parity; direction unchanged).  Flow this to the parity session's R1 reading.
 ## E3 step zero — Pallas smoke, round 1 (2026-07-12; job 13473088; `e3_pallas_smoke.py`)
 
 Vfan-shaped computed-index gather kernel (P=8192, R=1008, slice-SET of 126 @ stride 8,
-T=3), interpret gate PASS (rel 0 on-node).  **Both backends rejected the naive
-formulation at production shapes, for exactly the risks the Pallas appendix flagged**:
-Mosaic GPU — "Async copies only support ≤256 elements per dimension" (the (8,1008) col
-block); Triton — power-of-2 shape requirement (1008).  Neither fatal; round 2
-(`e3_pallas_smoke2.py`) fixes both: Triton = pad R→1024/L→128/T→4 (zero-weight taps);
-MGPU = R-chunked staging (4×252) with per-chunk masked tap accumulation.  Both round-2
-formulations pass interpret gates (rel 8.9e-8).  XLA reference at this shape: 92.5 µs.
+T=3); XLA reference ~93 µs.  **The backend-constraint ladder, one layer per round**
+(every variant passes interpret gates; failures are GPU lowerings — jobs 13473088,
+13473710, 13474601):
+
+| round | Triton verdict | Mosaic GPU verdict |
+|---|---|---|
+| 1 naive (block-load + jnp gather) | power-of-2 shapes required (1008) | async-copy cap 256 elements/dim |
+| 2 padded / R-chunked | `slice` primitive unimplemented (w[...,t]) | 128-byte warpgroup alignment on copies |
+| 3 per-tap weights, aligned | **`gather` primitive unimplemented** | **`gather` unimplemented (Lane/Warpgroup semantics)** |
+
+**Round-3 verdict is the structural finding: NEITHER backend lowers an in-kernel HLO
+gather at jax 0.10.1** — array-level `take_along_axis`/integer indexing of a LOADED
+block is a dead end.  The working idiom (from in-tree `paged_attention`, which gathers
+at this pin) is **REF-level integer-array indexing** (`ref[idx_array]` → pointer loads,
+never materializing the block).  Round 4 (`e3_pallas_smoke4.py`, job 13475379) tests
+three ref-gather variants on Triton (TILE=1 1-D, TILE=8 2-D advanced, flat-index whole-
+array window); MGPU parked (its gather gap is at lane semantics — deeper).  Implication
+for the E3 kernel designs regardless of outcome: all gathers must be expressed at the
+ref level, which also means SMEM staging of gathered values (the cross-view-reuse
+lever) is NOT free-form at this pin — the Triton backend has no SMEM scratch, so reuse
+must come from L1/L2 behavior of pointer loads, and the MGPU route (explicit SMEM)
+needs its gather gap resolved upstream or a different formulation.  If round 4 fails
+too: probe a newer jax in a spike-only side env, or jax-triton raw (library pin
+untouched either way).
 
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
