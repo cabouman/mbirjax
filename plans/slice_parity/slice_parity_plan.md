@@ -564,8 +564,11 @@ error reduction vs D0 (+ = better):
    **Visual head-to-head (capture job 13481068, Greg's metrics-can-mislead check):**
    `r2_recon_compare.html` (figures in `r2_recon_figs/`) shows reference | D0 | D1 |
    difference at 15 and 20 iterations for all three datasets × sharpness {1.0, 2.0};
-   full volumes for slice_viewer at `/scratch/gautschi/buzzard/parity_recons/` (with
-   30-iteration snapshots too).  Read: D0 and D1 are visually indistinguishable in
+   full volumes for slice_viewer in depot at
+   `/depot/bouman/data/mbirjax_metrics/slice_parity/` — `recons/` (D0/D1 at 15/20/30
+   iterations, all cases) and `refs/` (the 150-iteration references, case-prefixed);
+   scratch staging `/scratch/gautschi/buzzard/parity_recons/` is the purge-eligible
+   original.  Read: D0 and D1 are visually indistinguishable in
    every panel; the signed differences peak at ≲5% of the display window, concentrated
    as speckle on object boundaries and faint bands at the axial ends/flash regions —
    no coherent structural difference in the object interior, on any dataset, at either
