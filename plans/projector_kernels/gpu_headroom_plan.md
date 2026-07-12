@@ -229,14 +229,19 @@ alongside); A1 prototype (eager sort + concrete order; bitwise gate; the §5 mem
 check; a debug-mode monotone-ids assertion); A4 ncu L2-hit A/B.  A3 if E0 shows
 repairable fusion.
 
-**E3 — Pallas de-risking spike (scratch benches, NOT library code, ~1–2 weeks):** pilot =
-the multi-device BAND back kernel (the (c) main target): transpose-free, register-tile
-across views, writing the band directly (ASTRA's canonical structure).  Success bar
-stated in advance: **band-kernel-level ≥1.5–2× at production shapes on H100 beyond
-whatever A5 achieved, interpret-mode value equality, no register-spill cliff** — with the
-composition bar held for E4: cone back n=2 must beat n=1.  Probe MGPU vs Triton on the
-same kernel.  Second target: the parallel-back register-tile kernel (serves (a)); then
-the forward CSR/segment kernel, seeded by whatever A1/A2 became.
+**E3 — Pallas de-risking spike (scratch benches, NOT library code, ~1–2 weeks).**
+Step zero (backend validation) CLOSED 2026-07-12 with a green light — findings doc:
+Triton backend + ref-level gathers, bitwise-exact, 1.03× XLA untuned.  **First real
+kernel (Greg, 2026-07-12): the HFAN-FORWARD kernel** — the CSR segment-walk gather
+replacing the sorted-reduce fusion (86–88% of parallel fwd device time, 72% of cone
+fwd; one kernel serves all four geometries' forwards; simplest value gates; its
+load-balance machinery reuses everywhere).  Success bar: **≥1.5–2× kernel-level at
+production shapes on H100 vs the XLA sorted reduce, at BOTH the raster full-grid batch
+(real channel skew) and the VCD-subset batch (uniform); rel-max ≤1e-5; no
+register-spill cliff.**  SECOND: the multi-device BAND back kernel (the (c) main
+target — transpose-free, register-tile across views, composition bar for E4: cone back
+n=2 must beat n=1), reusing the segment-walk machinery; the parallel-back register-tile
+kernel after, as the (a)-track follow-on.
 
 **E4 — composition (only if E3 clears its bar):** TilePolicy-gated integration of the
 pilot band kernel on the multi-device back path (cone first), model-level n=1/2/4 A/B —
