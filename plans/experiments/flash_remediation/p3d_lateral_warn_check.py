@@ -34,7 +34,7 @@ DATASETS = {
     'sic_v4x_d4x_nv401_nch512': os.path.join(PARTITION_CACHE, 'sic_v4x_d4x_nv401_nch512'),
     'lilly_v4x_d4x_nv450_nch470': os.path.join(PARTITION_CACHE, 'lilly_v4x_d4x_nv450_nch470'),
 }
-EXPECTED_COMMIT = None                    # set to the step-C commit hash before running
+EXPECTED_COMMIT = '41ecbc2'               # step-C head ("Update plans and code for lateral padding.")
 
 TRUNCATION_MATCH = 'Lateral FoV truncation'
 

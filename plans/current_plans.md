@@ -49,9 +49,14 @@ equations, implementation sketches, and pros/cons is
    (seam 9.5e-4 at 8× where the old taper managed 6.1e-3; 4.1e-4 at 4×) — even at the
    worst-case half-slice mismatch — and alignment buys another ~6–12× (to ~5× background).
    Details in `flash_remediation_plan.md`.
-3. **Lateral truncation detect-and-warn** via the `_get_sino_indicator` support mask
-   already computed in `auto_set_regularization_params` (support touching the edge
-   channels ⇒ truncated; free, no new threshold).  Deliberately NO auto-padding.
+3. **Lateral truncation detect-and-warn — DONE + VALIDATED 2026-07-11** (commit
+   `41ecbc2`: `_check_lateral_truncation` hook off the existing sino indicator; no-op
+   overrides for translation + denoiser; deliberately NO auto-padding).  Real-scan check:
+   BGA fires at 86% edge-fraction, SiC silent — and two expectation corrections: **z62 is
+   genuinely contained** (edge channels exactly zero → its famous ring is NOT truncation
+   flash; open question, cover-padding would not help it) and **Lilly is a true positive**
+   (mild one-sided truncation at 16%; auto-crop clamped at the raw detector edge).
+   Details in `flash_remediation_plan.md`.
 4. **NSI pipeline auto-geometry cleanup — NEAR-TERM PRIORITY (quantified 2026-07-11,
    must land BEFORE the re-baseline or we re-baseline twice).**  The NSI (and any
    set-params-after-construction) flow computes the axial extension at construction with
@@ -66,9 +71,9 @@ equations, implementation sketches, and pros/cons is
 5. **Re-baseline the regression dashboards** (after 1–4: default shapes grow and values
    shift, for the better) + a release note; record the regime change both as an
    `annotations.yaml` marker and a policy-block padding flag.
-6. **Phase 3 validation on real scans** — SiC (axial) and BGA (axial-only) DONE under
-   step 1; Lilly (split) DONE under step 2; z62 (radial) rides with step 3's warning
-   check.
+6. **Phase 3 validation on real scans — COMPLETE**: SiC (axial) and BGA (axial-only)
+   under step 1; Lilly (split) under step 2; the lateral warning under step 3 (BGA fires,
+   SiC silent, z62 reattributed as contained, Lilly a true positive).
 7. Later: the analogous per-end bounds for translation and multiaxis-parallel.
 
 ## 2. Partition sequence and iteration defaults

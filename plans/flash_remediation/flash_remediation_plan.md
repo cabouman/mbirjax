@@ -248,12 +248,46 @@ transmission_root:
   verifies end-to-end on real data.
 - The formula chose h_recon = 9 in both regimes (the P2c-validated value at 8×).
 
-### Remaining steps
+### Step C — lateral detect-and-warn (DONE 2026-07-11, commit `41ecbc2`)
 
-- **C. Lateral detect-and-warn**: geometry-gated (cone/parallel/multiaxis on; translation
-  and the denoiser no-op — both inherit the base `auto_set_regularization_params`), skip
-  when the indicator is the all-ones fallback → check firing on z62/BGA and silence on
-  contained scans.
+- `TomographyModel._check_lateral_truncation`, called from
+  `auto_set_regularization_params` on the support indicator it already computes: free,
+  threshold-free (the 0.02 edge-fraction floor is a stray-pixel guard), skips the
+  all-ones indicator fallback, respects `verbose`, and the message names the manual
+  remedy with its usage rule (`scale_recon_shape(s, s)`, round UP) plus the
+  severe-truncation DC-offset caveat.  Geometry-gated by documented no-op overrides in
+  `TranslationModel` (a plate spanning the FoV is the normal condition) and
+  `QGGMRFDenoiser` (image content at the frame edge is normal); cone/parallel/multiaxis
+  inherit the active check.  Tests: `tests/geometries/test_lateral_warning.py` (7); the
+  full suite confirmed no warning pollution (Shepp-Logan phantoms sit at ~0.9 FoV, under
+  the indicator threshold).
+
+### Step C validation — real scans incl. BGA (DONE 2026-07-11, `p3d_lateral_warn_check.py`)
+
+| scan | verdict | edge fraction | reading |
+|---|---|---|---|
+| BGA Normal | **FIRED** | 86% | severe lateral truncation — as known |
+| Lilly ds4  | **FIRED** | 16% | TRUE POSITIVE, previously unlabeled (see below) |
+| SiC        | silent  | 0.000 | contained laterally — as known |
+| z62        | silent  | 0.000 | contained — an ATTRIBUTION CORRECTION (see below) |
+
+Two findings beyond the pass/fail:
+
+- **z62 is genuinely contained** (edge channels exactly zero; support spans channels
+  [94, 417] of 512, ~94 channels of air per side).  The partition study's z62 ring — a
+  5% radial crop drops the 0.2%-stop NRMSE 5×, "the ring holds ~80% of the reported
+  error" — is therefore NOT lateral-truncation flash: it is a ring at the RoR boundary
+  in what is air, with the object at only ~63% of the FoV radius.  Lateral cover-padding
+  would do nothing for z62; its ring needs its own investigation (open question, outside
+  this program's remedies).  The §2 metric caveat (crop before comparing) still stands as
+  a measurement practice.
+- **Lilly is mildly laterally truncated on one side** — a previously unlabeled true
+  positive: support spans the full channel range with strong right-edge attenuation
+  (p99 0.34 vs indicator threshold 0.043; 16% of view-rows), because
+  `auto_crop_sino_conebeam` clamped at the RAW detector boundary there (it cropped only
+  14 channels total against its 20-pixel buffer).  The Lilly recons therefore carry a
+  mild one-sided lateral flash contribution — worth remembering when reading Lilly
+  metrics.
 - **D. NSI pipeline auto-geometry cleanup — NEAR-TERM PRIORITY; must land before the
   re-baseline (or the NSI-scan baselines churn twice).**  The NSI flow (and any
   set-params-after-construction pipeline) computes the axial extension at model
