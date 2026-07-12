@@ -4,10 +4,12 @@ Runs the four candidate (S, P) schedules C0-C3 at two sharpness settings on the 
 D01788 cone dataset (ds8, view-subsample 8), against 150-iteration references, with the
 per-slice/cropped-NRMSE diagnostics and the cone cost accounting from the protocol.
 
-Structure: main() preprocesses ONCE (cached npz in STAGE_DIR), generates references
-first (fail-fast), then runs each (schedule, sharpness) arm in its own SUBPROCESS
-(fresh jax, honest memory), mask-form parity via the P1 ParityMixin (bitwise-verified
-copy of the library updater).  Restart-per-iteration capture, seeded per call.
+Structure: EVERY GPU step (preprocess, references, arms) runs in its own SUBPROCESS so
+the orchestrator stays JAX-free — wave-1 lesson: in-process reference generation held
+the XLA pool and every arm worker's cuBLAS init then failed with "Unable to get Blas
+support".  Case npz + references are cached in STAGE_DIR (fail-fast ordering); parity is
+mask-form via the P1 ParityMixin (bitwise-verified copy of the library updater).
+Restart-per-iteration capture, seeded per call.
 
 Run (gautschi, 1 GPU):  sbatch plans/experiments/slice_parity/parity_realdata.slurm
 """
@@ -146,26 +148,47 @@ def worker(cfg):
     print('RESULT ' + json.dumps(out), flush=True)
 
 
+def prep_worker():
+    """Subprocess: preprocess and cache the case (imports jax when cache is cold)."""
+    sino, _, _, _ = load_case()
+    print(f'[preprocess] sino {sino.shape}', flush=True)
+
+
+def ref_worker(sharpness):
+    """Subprocess: one 150-iteration library-solver reference on the GPU."""
+    sino, weights, cone_params, optional_params = load_case()
+    model = build_model(cone_params, optional_params, sharpness, sino,
+                        parity_cls=False)
+    np.random.seed(SEED)
+    ref, _ = model.recon(sino, weights=weights, max_iterations=REF_ITERATIONS,
+                         stop_threshold_change_pct=0, print_logs=False)
+    np.save(os.path.join(STAGE_DIR, f'ref_sharp{sharpness}.npy'), np.asarray(ref))
+
+
+def run_step(argv, label):
+    """Run one GPU step in a subprocess; the orchestrator must stay JAX-free
+    (a resident XLA pool starves later workers' cuBLAS init)."""
+    proc = subprocess.run([sys.executable, os.path.abspath(__file__)] + argv,
+                          capture_output=True, text=True)
+    sys.stdout.write(proc.stdout)
+    if proc.returncode != 0:
+        print(f'[{label} FAILED rc={proc.returncode}]\n{proc.stderr[-2000:]}',
+              flush=True)
+        sys.exit(1)
+
+
 def main():
     os.makedirs(STAGE_DIR, exist_ok=True)
     print('[preprocess] loading/caching the ds8 case...', flush=True)
-    sino, weights, cone_params, optional_params = load_case()
-    print(f'[preprocess] sino {sino.shape}', flush=True)
+    run_step(['--prep-worker'], 'preprocess')
 
     # References first (fail-fast; library solver, default sequence).
     for sharpness in SHARPNESS_LIST:
-        ref_path = os.path.join(STAGE_DIR, f'ref_sharp{sharpness}.npy')
-        if os.path.exists(ref_path):
+        if os.path.exists(os.path.join(STAGE_DIR, f'ref_sharp{sharpness}.npy')):
             continue
         print(f'[reference] sharpness {sharpness}: {REF_ITERATIONS} iterations...',
               flush=True)
-        model = build_model(cone_params, optional_params, sharpness, sino,
-                            parity_cls=False)
-        np.random.seed(SEED)
-        ref, _ = model.recon(sino, weights=weights, max_iterations=REF_ITERATIONS,
-                             stop_threshold_change_pct=0, print_logs=False)
-        np.save(ref_path, np.asarray(ref))
-        del model, ref
+        run_step(['--ref-worker', str(sharpness)], f'reference s{sharpness}')
 
     results = []
     for sharpness in SHARPNESS_LIST:
@@ -195,5 +218,9 @@ def main():
 if __name__ == '__main__':
     if len(sys.argv) >= 3 and sys.argv[1] == '--worker':
         worker(json.loads(sys.argv[2]))
+    elif len(sys.argv) >= 2 and sys.argv[1] == '--prep-worker':
+        prep_worker()
+    elif len(sys.argv) >= 3 and sys.argv[1] == '--ref-worker':
+        ref_worker(float(sys.argv[2]))
     else:
         main()
