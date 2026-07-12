@@ -114,13 +114,23 @@ Two quantified headroom pools guide any future performance work (both from the
   per-subset dispatches / host syncs — e.g. jit a whole subset update or iteration (the
   concrete-centers plumbing supports precomputed-per-partition centers if that jit
   lands).  cProfile is the instrument, not kernel benches (`lessons.md` §3/§5).
-- **GPU kernel headroom is ~10×**: the forward sorted-reduce and back gather both sit
-  roughly 10× above compute-only bounds — compute is ~10% of kernel time — and ncu
-  attributes it to memory ACCESS PATTERNS, not HBM bandwidth.  Closing it is
-  custom-kernel territory; deferred, but the ceiling is known and large.
+- **GPU kernel headroom — ACTIVE investigation** (plan of record:
+  `plans/projector_kernels/gpu_headroom_plan.md`, 2026-07-12, + five research appendices).
+  Provenance of the earlier "~10×" phrasing: BACK is a measured 10–12×
+  (`back_nogather` = 0.08–0.10× of the current kernel; `back_kernel_ab.py`,
+  `fwd_back_findings.md` back-projection section); FORWARD's control
+  (`fwd_noscatter` = 3–4%) was measured against the PRE-campaign 35 s kernel — re-based
+  against the current 8.2 s kernel it implies ~6–7×; the ncu access-pattern attribution
+  is from the June profiling of pre-campaign kernels (re-run scheduled, plan E0).
+  Recalibrated prize (published hand-CUDA SOTA + traffic model, see the plan): 2–3×
+  custom-kernel (Pallas), 1.5–3× XLA-level.  Priority (Greg 2026-07-12): multi-GPU cone
+  TIME scaling first (the band-transpose limiter), large single-device VCD wall second.
+  Next: E0 (HLO/ncu re-attribution) ∥ E1 (production-granularity VCD device share — the
+  gating number), on branch `greg/gpu_headroom`.
 
 Small optional refinements (do only if a measured case wants them): cached
-per-(view, pixel-batch) sort permutations for the sorted reduce; extend the
+per-(view, pixel-batch) sort permutations for the sorted reduce (now approach A1 in the
+headroom plan, with its memory cost quantified there); extend the
 collision-ratio guard to parallel/cone if very wide detectors with modest pixel batches
 become real; true size-adaptive `view_batch` scaling / divisor-of-shard sizing to avoid
 ragged tail batches.
