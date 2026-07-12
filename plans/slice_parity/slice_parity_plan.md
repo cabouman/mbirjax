@@ -6,6 +6,41 @@ Companion background: `plans/bugs_and_artifacts/center slice noise/
 center_slice_preconditioner_notes.md` (the convergence diagnosis and the two z-only
 preconditioner designs this idea competes with / complements).
 
+## Summary findings (study complete through R2, 2026-07-12)
+
+Evidence base: two toy rounds plus three real datasets (Lilly ds8/ds4, z62) × two
+sharpness settings each, all against 150-iteration references, judged at the 15- and
+30-iteration budgets.  Details and tables in the R1/R2 sections below; the "How to
+read" section explains the metrics.
+
+1. **Recommendation — drop the granularity-0 iteration: `[2,4,6,7]` is the
+   memory-friendly default candidate.**  Removing the single-subset full-volume
+   iteration (wanted for memory reasons) costs nothing: `[2,4,6,7]` is equivalent to
+   or slightly better than the default `[0,2,4,6,7]` in every tested cell, at both 15
+   and 30 iterations.  The one visible trace is the first ~3 iterations on data whose
+   initial error is dominated by low spatial frequencies (z62), recovered by iteration
+   5–10 — only a ≤3-iteration preview would notice.  No new machinery required.
+2. **Parity (z-phase alternation) is a quality option, not a default ingredient.**
+   In the realistic operating envelope (sharpness ≤ 2.0, max_iterations = 15) it buys
+   only ~4–5% error reduction, while costing +50% cone projector work per iteration as
+   implementable today.  Its margin becomes material only when three axes are pushed
+   together: sharpness (15–19% at the s2.5 extreme, 15 iterations), iteration budget
+   (23–35% at 30 iterations), and problem size (23% → 35% from ds8 → ds4; the
+   production-scale margin is the one open question).  Even then it is a
+   quality-at-fixed-iterations gain, not a speed gain: with a free slice-set-aware
+   cone forward kernel it would save only 1–6 iterations out of 15–30.  Worth
+   revisiting only if that kernel ships (see the kernel-campaign section) or a
+   high-sharpness quality-critical use case appears.
+3. **Flat-fine sequences without a coarse start are unsafe as defaults** at
+   interactive iteration budgets: flat-128 is mildly worse on Lilly and catastrophic
+   on z62 (essentially still at the FDK start after 15 iterations at high sharpness).
+   Large low-frequency initial error cannot be corrected by fine scattered subsets —
+   directly relevant to the §2 default-sequence decision.
+4. **Block aspect ratio (g1×2 vs g2×1) gives no durable real-data benefit**, despite
+   consistent toy-phantom wins.  Four separate toy schedule findings failed to
+   transfer to real data in decision-relevant form — treat toy-case schedule results
+   as hypotheses to check, never as decisions.
+
 ## Notation glossary
 
 - **`S`** — number of in-plane (scattered-pixel) subsets in a partition.
