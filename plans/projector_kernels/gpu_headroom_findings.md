@@ -89,10 +89,57 @@ the 1024³ cell, and the per-iteration projector-seconds prediction
 - Full-grid medians replicate the campaign scoreboard (7.95 s fwd / 10.48 s back vs
   8.19 / 10.92 in `fwd_back_findings.md` — different node/day, −3%).
 
+## E0b — kernel shares, round 1 (2026-07-12; job 13440013; `e0b_kernel_share.py`)
+
+Traced window of 2 warm full-grid calls each (parallel 1024³ n=1):
+
+- **Back: unambiguous.**  Wall 11.24 s/call (+7% profiler overhead vs E1a's 10.48);
+  ~95% of wall is device; **98.3% of device time is the single `input_reduce_fusion`**
+  (10.5 s/call).  Back = one kernel; its fix is that kernel's access pattern.  Also
+  visible: cuGraphLaunch events — XLA command buffers ARE capturing the loops.
+- **Forward: composition contaminated by overlapping trace tracks** (event-name
+  self-time summed to 162% of wall — graph-node/annotation tracks double-count kernels).
+  Trustworthy pieces: `input_scatter_fusion` = 6.46 s/call (≥67% of the 9.59 s/call
+  traced wall), and a 7.5 s/call `<UNKNOWN>` bucket of ~44k events (~7 per sort call —
+  the CUB sub-kernel signature) that overlaps it.  **The sort share therefore remains
+  open** — the unambiguous instrument is the A1 prototype itself (identical kernel fed
+  PRE-SORTED inputs; promoted into the next round).  Round 2 of this script reports
+  device busy from the STREAM-track totals (single timeline, no double counting) and
+  adds a 6,026-pixel variant (the E1b replacement, below).
+
+## E1b — VCD iteration walls (2026-07-12; job 13439992; `e1_vcd_trace.py`)
+
+**The traced-window-difference design FAILED — and the failure is itself a finding:**
+device-STREAM totals were identical between the 1- and 2-iteration windows to 3 digits
+(e.g. 40.85 vs 40.84 s at parallel 1024³) while wall grew 37.5 s — the signature of the
+profiler's event buffer saturating early in a whole-recon window and dropping everything
+after.  Traced differencing over long windows is unusable; per-call SHORT traces (E0b
+round 2) replace it.  The cone-1024³ cell segfaulted (rc=-11, no Python traceback —
+native, likely the profiler on the largest window); its wall-only rerun is queued for a
+later round.  (Lesson recorded: whole-recon jax traces at 1024³ overflow the event
+buffer SILENTLY — trace windows must be a few calls, not a recon.)
+
+**What survives (untraced walls, trustworthy) — joined with E1a's prediction:**
+
+| cell | iter wall (untraced) | E1a predicted projector-call wall | projector share of iteration |
+|---|---|---|---|
+| parallel 512³-class | 2.84 s | (not swept at 512³) | — |
+| cone 512³-class | 3.80 s | (not swept) | — |
+| parallel 1024³ | **36.7 s** | **34.5 s** | **~94%** |
+
+**The (a)-track gate, provisionally: PASSED at 1024³** — a production-granularity
+(128-subset) VCD iteration is ~94% projector CALLS by wall.  What fraction of those
+70–200 ms calls is device-busy (vs per-call host/dispatch) is the one remaining piece —
+E0b round 2's 6,026-pixel cells measure exactly that.
+
 ## Pending
 
-- **E0b (job 13440013):** fwd sort share + back kernel composition from a traced window.
-- **E1b (job 13439992, running):** window-difference VCD device share at granularity 128,
-  parallel+cone × 512³+1024³ — the (a)-track gate.
-- ncu round (pipe-level: L1/LSU vs HBM on the two big fusions; the band kernel at n≥2)
-  — needs kernel names from E0b; `ncu` availability on compute nodes to be checked.
+- **E0b round 2** (revised script): stream-track device busy + composition at full-grid
+  AND 6,026-pixel calls — closes the sort-share and per-subset-call device-share gaps.
+- **A1 prototype** (next round): pre-sorted-input kernel variant — the clean sort-share
+  measurement AND the A1 win estimate in one experiment.
+- **back_view_batch L2-residency sweep** (new lever from E0): 128 → {64, 32, 16, 8} at
+  1024³ n=1.
+- Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
+- ncu round (pipe-level attribution; the band kernel at n≥2); `ncu` availability on
+  compute nodes to be checked.
