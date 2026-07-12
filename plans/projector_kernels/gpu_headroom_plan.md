@@ -243,6 +243,55 @@ target — transpose-free, register-tile across views, composition bar for E4: c
 n=2 must beat n=1), reusing the segment-walk machinery; the parallel-back register-tile
 kernel after, as the (a)-track follow-on.
 
+**E3b — the back-projection kernel design (drafted 2026-07-12, discussion-first;
+parallel beam first, cone-with-vfan second).**
+
+*The operation and its structure.*  Back's hfan is the forward's adjoint:
+`out[p, :] = Σ_v Σ_t A[t,p,v] · sino[v, center[p,v]+t−r, :]` — per-pixel gathers of T
+channel rows per view, weighted-summed ACROSS views.  The current XLA form (E0) is one
+fusion doing the per-view work with the view sum folded in; its cost is the
+transaction-bound row gathers over a 512 MB per-step working set (E2a: not
+L2-capacity-bound at the vmap level — but chunkable below it, see lever 2).
+
+*Why back is EASIER than forward was:*  (1) NO sort, NO segments, NO skew — every pixel
+has exactly T taps, so the work is perfectly uniform (forward's whole v2/v3 saga was
+skew handling); (2) single-write outputs by construction (each program owns its output
+cells — no atomics anywhere); (3) the precompute is just the weight formula — no
+permutation: concrete centers (V, P) already exist per call, plus a precomputed A
+(V, T, P) f32 = 3× the centers' bytes (≈1.2 GB chunk-resident full-grid, ~5 MB at VCD
+subsets), or 2× with in-kernel weight arithmetic.  coeff_power=2 (the Hessian) is the
+same kernel with squared weights — a precompute flag.
+
+*The kernel (ASTRA's register-tile, adapted):*  grid = (row-chunk, pixel); each program
+owns out[p, r·RC:(r+1)·RC] in REGISTERS and loops over ALL V views × T taps,
+ref-gathering RC-float row chunks from the channel-major (V, C, rows) sinogram, one
+store at the end.  Two levers XLA cannot express:
+  1. **Cross-view register accumulation** — the view sum never touches memory (XLA's
+     fusion re-materializes per-view partials into the reduction).
+  2. **Row-chunk L2 residency** — with the row-chunk as the SLOWEST grid dimension,
+     every program in a chunk phase gathers from the same (V, C, RC) slice: RC=128 →
+     ~65 MB ≈ L2, RC=64 → ~33 MB comfortably resident.  The transaction-bound gathers
+     become L2 hits — the direct attack on the E2a-confirmed limiter, unavailable to
+     the fused XLA kernel (whose gathers span the full row width).
+Program count P × rows/RC (~65k at the 1024³ cell) keeps occupancy high; the V×T-long
+program body is the latency-hiding question (num_warps sweep; fallback if single-program
+-all-views stalls: split the view axis across the grid with a small second-phase
+reduction — the two-phase machinery from forward v3 reuses directly).
+
+*Slice-set generality from day one:*  the row-chunk dimension indexes through a small
+row-index table, so contiguous bands (the multi-device band path — the (c) target) and
+strided parity sets are the same kernel with different tables.  For parallel beam,
+rows ≡ slices, so THIS kernel IS the band kernel; cone back adds the vertical-fan
+fusion as its own design step (E0 showed cone's hfan hides behind the vfan, so cone
+back needs the fused treatment to pay).
+
+*Bench plan (mirrors the forward spike):*  baseline = the library back kernel
+(stacked gather, coeff_power ∈ {1,2}) vmapped + view-summed, at the raster and subset
+batches of the 1024³ cell; success bar ≥1.5–2× at both; value gates rel ≤1e-5 PLUS an
+explicit adjoint check against the Pallas FORWARD kernel (⟨A x, y⟩ = ⟨x, Aᵀ y⟩ on
+random pairs — the pair ships together per the E4 agreement).  Sweeps: RC ∈
+{64, 128, 256}, num_warps ∈ {1, 2, 4}, view-loop-in-program vs view-split-grid.
+
 **E4 — composition (only if E3 clears its bar):** TilePolicy-gated integration of the
 pilot band kernel on the multi-device back path (cone first), model-level n=1/2/4 A/B —
 the scaling curve IS the deliverable for (c) — plus VCD guard cells (the
