@@ -6,6 +6,56 @@ Companion background: `plans/bugs_and_artifacts/center slice noise/
 center_slice_preconditioner_notes.md` (the convergence diagnosis and the two z-only
 preconditioner designs this idea competes with / complements).
 
+## Notation glossary
+
+- **`S`** — number of in-plane (scattered-pixel) subsets in a partition.
+- **`P`** — number of z-phase classes: P=2 = even/odd slices, P=3 = mod-3
+  ("parity-2"/"parity-3").
+- **`g<n>`** — granularity index on the library's doubling ladder: 2^n in-plane subsets
+  (g7 = 128, g0 = 1).
+- **`g<n>×<p>`** — block shape: 2^n in-plane subsets × p z-phases (e.g. g1×2, g5×4,
+  g4×8).
+- **`pseq [0,2,4,6,7]`** — `partition_sequence`: granularity index per iteration; the
+  library repeats the last entry for all later iterations ([0,2,4,6,7] = current
+  default).
+- **flat-[7] / flat-128** — constant sequence at granularity 7 (128 subsets) — no
+  coarse start.
+- **su/it** — sub-updates per iteration = S × P (one sub-update = one subset-×-phase
+  VCD step).
+- **u (idealized cost units)** — full-projection equivalents: a P-phase cone iteration
+  costs (P+1)/2 — forward ∝ P because the vertical fan scales with detector ROWS,
+  back ≈ 1 (phases sum to one full backprojection).  Mask-form as-implemented cost is
+  higher (≈ 2× projector cost for P=2); a slice-set-aware forward kernel would restore
+  ≈ 1×.
+- **s1.0 / s2.5** — mbirjax `sharpness` = 1.0 / 2.5, set BEFORE
+  `auto_set_regularization_params` (auto-regularization then frozen).
+- **ds8 / ds4** — NSI preprocessing `downsample_factor` (8,8) / (4,4) with
+  `subsample_view_factor` 8 / 4.
+- **C0–C3** — the R1 candidate schedules (table in §R1): C0 default, C1 parity-all,
+  C2 g1×2-ramp composite, C3 flat-128.
+- **cropped log10 NRMSE** — log10 of ‖x − x_ref‖/‖x_ref‖ restricted to the interior
+  disk (0.85 × ROR radius) with 10% of slices excluded at each axial end.
+- **x_∞ / reference** — deep run of the same MAP objective used as ground truth:
+  300 iterations (toy rounds), 150 (R1).
+- **1.2× / 2.0× marks** — quality thresholds = multiples of C0's final 30-iteration
+  cropped NRMSE, per sharpness.
+- **P1 / F1–F3 / FX / R1** — experiment rounds: P1 = first mask-based A/B,
+  F = follow-ups, FX = post-F probes, R1 = real-data schedule protocol.
+- **f1_base / f1_pall** — F1 arms: default sequence plain / with parity-2 at every
+  iteration.
+- **red–black GS** — red–black Gauss–Seidel: update one z-parity class while the other
+  stays fixed.
+- **VCD** — vectorized coordinate descent — the library's block-update solver.
+- **MM / block-MM** — majorization–minimization: each sub-update minimizes a surrogate
+  that upper-bounds the true cost on the updated block, so descent is monotone.
+- **MRF** — Markov random field (the prior's nearest-neighbor edge structure).
+- **FDK** — Feldkamp–Davis–Kress, the direct (filtered-backprojection-family) cone
+  recon used as the warm start.
+- **ROR** — region of reconstruction (the recon cylinder); its radius sets the
+  cropped-metric disk.
+- **z62 / Lilly** — datasets: ORNL Versa Z62 (radial character, partition-study cache)
+  / NSI D01788 autoinjector (flash-remediation workhorse).
+
 ## The idea
 
 Instead of (or before) adding an axial preconditioner to the per-cylinder surrogate,
@@ -278,6 +328,27 @@ simpler schedule.  Runs seeded per call (identical partitions/order across arms)
 Script: `plans/experiments/slice_parity/parity_realdata.py` (+ `.slurm`), staging
 `~/parity_lilly` on gautschi.
 
+## How to read the R1 results
+
+- **The metric.**  Every number below is cropped log10 NRMSE against a 150-iteration
+  reference recon of the SAME cost function (see glossary): log10 of the relative RMS
+  difference over the interior region.  **More negative = less error = better.**
+  Anchors: −1.0 means the recon is 10% RMS away from the converged answer, −1.3 ≈ 5%,
+  −1.7 ≈ 2%.
+- **Differences.**  "Arm A is +0.10 log10 better than B" means A's error is 10^0.10 ≈
+  1.26× smaller — a 21% error reduction at the same point in the run.  In this
+  document a **+ difference is always an improvement** (error reduction).
+- **Cost units (u).**  1u = the projector work of one ordinary VCD iteration.  A
+  parity (P=2) iteration is charged 1.5u, because the cone forward cost scales with
+  detector rows and masked phases don't reduce it (glossary "u").  So 30 ordinary
+  iterations cost 30u while 30 parity iterations cost 45u — whenever a parity arm
+  "wins at the same iteration count", it paid 1.5× per iteration to get there.
+- **The displacement rule** asks: to reach a fixed quality level, does the candidate
+  need ≤0.8× the cost units C0 needs (and never more at the looser 2.0× level, at both
+  sharpness settings)?  Deliberately strict: a candidate that ties C0 on cost but ends
+  at better quality "does not displace" — it becomes a quality OPTION, not a new
+  default.
+
 ## R1 WAVE-1 RESULTS (2026-07-12, gautschi 1×H100, Lilly ds8)
 
 Provenance: job 13472514 FAILED (all 8 arms "Unable to get Blas support" — the
@@ -287,7 +358,7 @@ References from the failed job were valid and cached; rerun job 13473504 COMPLET
 all 8 arms ok.  Raw arrays in `~/parity_lilly` on gautschi + local gitignored
 `results/r1/`; analysis by `r1_analysis.py`.
 
-Final cropped log10 NRMSE at 30 iterations [@ total idealized cost, wall]:
+Final cropped log10 NRMSE at 30 iterations (lower = better) [@ total cost, wall]:
 
 | arm | s1.0 | s2.5 |
 |---|---|---|
@@ -296,7 +367,8 @@ Final cropped log10 NRMSE at 30 iterations [@ total idealized cost, wall]:
 | C2 composite | −1.3123 [31.5u, 61.8s] | −1.0298 [31.5u, 60.9s] |
 | C3 flat-128 | −1.1912 [30.0u, 49.6s] | −0.9147 [30.0u, 49.9s] |
 
-Idealized cost to reach the quality marks (multiples of C0's 30-iteration final):
+Cost units needed to reach the quality marks (lower = cheaper; marks are 2.0× and 1.2×
+of C0's final error):
 
 | arm | s1.0 2.0× / 1.2× | s2.5 2.0× / 1.2× |
 |---|---|---|
@@ -305,44 +377,125 @@ Idealized cost to reach the quality marks (multiples of C0's 30-iteration final)
 | C2 | 7.5 / 22.5 | 7.5 / 23.5 |
 | C3 | 12.0 / never | 13.0 / never |
 
-**Verdict (protocol rule): NO candidate displaces C0** — none reaches the 1.2× mark at
-≤0.8× C0's idealized cost; C1 and C3 are also worse at the 2.0× mark.  C0 stays the
-default-candidate.
+**Verdict (protocol rule): NO candidate displaces C0** — none reaches the 1.2× mark
+cheaper than C0, let alone at ≤0.8× its cost.  C0 stays the default-candidate.
 
-**Reads:**
+**In plain terms:**
 
-1. **C1 (parity everywhere) is a real QUALITY ceiling, not a speed win**: better final
-   at both settings, and strongly sharpness-dependent — +0.033 log10 at s1.0 but
-   **+0.116 log10 at s2.5** (23% lower NRMSE), consistent with the mechanism (weaker
-   prior → the data term's axial coupling dominates the error budget).  Its gain is
-   DISTRIBUTED across the interior (median per-slice error −43% vs C0 at s2.5, iter 30),
-   not a localized hotspot fix — no interior hotspot exists on this dataset (per-slice
-   profiles are monotone toward the axial ends for every arm).
-2. **C2 (g1×2-ramp composite) is a cost-neutral wash on real data**: it leads C0
-   per-ITERATION early (the toy's fx read replicates directionally) but the 1.5×-charged
-   ramp iterations eat exactly that lead in cost units (marks within ~0.5u of C0
-   everywhere; finals within 0.007/0.0005 log10).  The toy composite's promise does NOT
-   carry to real data at honest cone cost.
-3. **C3 flat-128 clearly loses on real data at 30 iterations** (never reaches the 1.2×
-   mark; ~1.7–1.9× C0's cost to the 2.0× mark) — the toy's "coarse-start dominates
-   flat" DID transfer.  Directly relevant as a negative datum for the §2 flat-sequence
-   candidacy at interactive iteration budgets (caveat: 30 iters, ds8, two sharpness
-   settings; the partition-sequence study's longer-horizon evidence is a separate
-   regime).
-4. **Kernel-campaign coupling, quantified**: with a slice-set-aware cone forward
-   (P=2 charged ~1.0×), C1's 30 iterations would cost 30u and it reaches C0's final at
-   ITERATION 27 (s1.0) / 21 (s2.5) — i.e. even then C1 misses the 0.8× displacement bar
-   at s1.0 (0.91×; s2.5 passes at 0.73×).  The kernel's payoff is therefore "parity
-   becomes a free quality upgrade at a fixed iteration budget", not a rule-displacement
-   — flag for the kernel session, no implementation here.
-5. Wall times at ds8 are host-dispatch-bound (C1 1.44× C0 wall vs 2.0× mask-form
-   projector cost) — per protocol, not decision inputs.
+1. **C1 (parity at every iteration) reaches the best final quality of any candidate,
+   but pays more than that quality is worth in cost units.**  At the same 30-iteration
+   count its error is 7% lower than C0's at sharpness 1.0 and 23% lower at sharpness
+   2.5 — but it spent 45u to C0's 30u, and measured per unit of work it trails C0 at
+   every quality mark.  The strong sharpness dependence is the proposed mechanism
+   showing through: at high sharpness the prior is weak, so the axial data coupling
+   (the thing parity fixes) is a larger share of the remaining error.  The gain is
+   spread across the interior slices (median per-slice error 43% lower than C0 at
+   s2.5, iteration 30); Lilly has no single-slice hotspot for parity to fix.
+2. **C2 (the memory-friendly ramp) ties C0 everywhere** — final quality within 1–2%
+   relative error, cost-to-quality within half a unit.  The toy-predicted better start
+   is visible per-iteration but is exactly cancelled by the 1.5u charge on its three
+   parity ramp iterations.  (This tie becomes a positive result in the memory
+   discussion below: C2 never runs the granularity-0/1 full-volume iterations.)
+3. **C3 (flat-128, no coarse start) is clearly worse on real data at this iteration
+   budget**: it never reaches C0's 1.2× quality mark and needs ~1.8× the work to reach
+   the 2.0× mark.  The toy's "coarse start dominates flat sequences" transferred to
+   real data.  Directly relevant to the §2 default-sequence question at interactive
+   iteration budgets (caveat: 30 iterations, ds8; the partition-sequence study's
+   longer-horizon evidence is a separate regime).
+4. **Kernel-campaign coupling, quantified**: if a slice-set-aware cone forward kernel
+   made a parity iteration cost 1.0u, C1 would reach C0's 30-iteration quality in 27
+   iterations (s1.0) / 21 (s2.5) — a real but modest saving that still misses the 0.8×
+   displacement bar at s1.0 (0.91×; s2.5 passes at 0.73×).  The kernel's payoff is
+   "parity becomes a free quality upgrade at a fixed iteration budget", not a faster
+   default — flagged for the kernel session, nothing implemented here.
+5. Wall clock at ds8 is dominated by host dispatch, not projector work (C1 measures
+   1.44× C0's wall against its 2.0× mask-form projector cost) — recorded, but not a
+   decision input at this size.
 
-**Wave 2 (per protocol):** z62 (radial character; cached
-`z62_v4x_d4x_nv201_nch512` case from the partition study, loaded via
-`load_preprocessing` + sidecar) with the full C0–C3 × {1.0, 2.5} grid, and a Lilly ds4
-confirmation restricted to C0/C1/C2 (C3's read is already clear; ds4 arms are ~8×
-ds8 cost).  Decision discussion with Greg after both land.
+## R1 WAVE-2 RESULTS (2026-07-12, gautschi 1×H100: z62 full grid + Lilly ds4)
+
+Provenance: job 13474445, both cases sequentially in one job (runner made multi-case,
+commit 943c646).  z62: sino (201, 512, 512) from the partition-study cache, recon
+512×512×640, all four candidates × both sharpness.  Lilly ds4: sino (450, 470, 374),
+recon 374×374×667, C0/C1/C2 only (C3's read was already clear; ds4 arms are ~3× ds8
+wall).  Staging `/scratch/gautschi/buzzard/parity_{z62,lilly_ds4}`; compact per-arm
+arrays mirrored locally to `results/r1_z62/`, `results/r1_lilly_ds4/`.
+
+Final cropped log10 NRMSE at 30 iterations (lower = better) [@ total cost]:
+
+| arm | z62 s1.0 | z62 s2.5 | ds4 s1.0 | ds4 s2.5 |
+|---|---|---|---|---|
+| C0 default | −1.680 [30u] | −1.577 [30u] | −1.114 [30u] | −0.860 [30u] |
+| C1 parity-all | **−1.724** [45u] | **−1.711** [45u] | **−1.154** [45u] | **−1.044** [45u] |
+| C2 composite | −1.675 [31.5u] | −1.579 [31.5u] | −1.118 [31.5u] | −0.868 [31.5u] |
+| C3 flat-128 | −0.934 [30u] | −0.327 [30u] | — | — |
+
+State at 15 iterations (Greg: max_iterations=15 is the near-term production setting),
+all three datasets — C1's error reduction vs C0 at the same iteration count:
+
+| | s1.0 | s2.5 |
+|---|---|---|
+| ds8 @15 iters | +4% | +15% |
+| z62 @15 iters | +5% | +15% |
+| ds4 @15 iters | +5% | +19% |
+| (for contrast, @30 iters) | +7% / +10% / +9% | +23% / +26% / +35% |
+
+**Verdict: the wave-1 conclusions replicate on both datasets — nothing displaces C0.**
+One nuance: ds4 s2.5 is the single cell where C1 wins a cost race even at the 1.5×
+charge (16.5u vs C0's 19.0u to the 1.2× mark) — its tail advantage there is that
+large — but it still loses at s1.0 (27u vs 20u), so the both-settings rule fails.
+
+**In plain terms:**
+
+1. **C1's quality margin is systematic and grows along three axes**: sharpness (weak
+   prior), iteration count (the advantage accrues in the tail), and problem size
+   (s2.5 @30: 23% at ds8 → 26% at z62 → 35% at ds4).  The size trend means the margin
+   at production ds1–ds2 scale is an open question — the corner where parity matters
+   may be larger than these runs show.
+2. **C2 ties C0 on all three datasets** (finals within 2% relative error, 15-iteration
+   values within noise) — consistent, useful evidence that schedules starting at ≥2
+   subsets lose nothing on real data.  Note its g1×2 ramp start was slightly SLOWER
+   than C0's early iterations on z62 — the toy's "g1×2 is the best ramp start" did not
+   transfer (third instance of toy→real non-transfer; treat all toy schedule reads as
+   hypotheses only).
+3. **C3 collapses on z62**: −0.93 (s1.0) / −0.33 (s2.5) vs C0's −1.68 / −1.58 — at
+   s2.5 it is barely past the FDK starting point after 30 iterations (monotone but
+   crawling), and at 15 iterations it has essentially not moved (−0.21).  z62's initial
+   error is dominated by low spatial frequencies (its radial/ring character), exactly
+   what fine scattered subsets cannot correct.  Strongest real-data evidence yet that
+   a flat-fine default is unsafe at interactive iteration budgets.
+4. **z62 has a modest interior hotspot** (slice ≈400 at ~4.7× the median slice error,
+   s1.0); C1 trims it to ~4.3× and cuts the interior median 46% at s2.5 — same
+   distributed-improvement character as Lilly.
+5. Reference-depth caveat: at z62 s1.0 the best arms end within ~2% RMS of the
+   150-iteration reference, so orderings in the last ~0.05 log10 lean on reference
+   quality; the displacement verdicts don't (they're decided at much coarser marks),
+   but per-arm final rankings closer than that should not be over-read.
+
+## R1 synthesis — the decision frame (discussion with Greg, 2026-07-12)
+
+Greg's production envelope: sharpness realistically ≤1.5–2.0 (2.5 is extreme);
+max_iterations=15 for the near term; and the granularity-0 (1-subset, full-volume)
+iteration is likely to be dropped for memory reasons.
+
+1. **Parity is not a default-schedule ingredient.**  In the production envelope its
+   benefit is ≈4–5% error reduction at s1.0 and ≤15–19% even at the s2.5 extreme
+   (15 iterations), against +50% projector cost per iteration as implemented — and
+   even at kernel-restored 1.0× cost the saving is only 1–6 iterations out of 15–30.
+   It remains a QUALITY OPTION for high-sharpness, generous-iteration, quality-critical
+   recons, economical only if the slice-set-aware cone forward ships (kernel-session
+   coupling #1), with an open upside at production resolution (the size trend above).
+2. **Dropping granularity 0 looks ~free on real data** — C2 never used it and tied C0
+   on three datasets.  Remaining question for the memory-driven default: does plain
+   `[2,4,6,7]` do as well without any parity compensation?  → R2.
+3. **R2 (proposed, pending Greg's go):** arms D0 = `[0,2,4,6,7]` (control),
+   D1 = `[2,4,6,7]`, D2 = `[g1×2, 4,6,7]`, D3 = `[g1×2, g1×2, 4,6,7]`,
+   D4 = `[2,2,4,6,7]` (plain cost-control for D3); sharpness {1.0, 2.0}; ds8 + z62;
+   report at 15 AND 30 iterations.  Memory note: in today's mask form a g1×2 update
+   still allocates full-height voxel buffers, so ONLY D1/D4 deliver the memory win
+   now; D2/D3's memory benefit needs a compact slice-set updater (kernel-session
+   coupling #2).  The convergence question (is the g1×2 shape a better coarse start
+   than g2×1 on real data?) is what D2/D3 answer.
 
 ## Interaction with the GPU-headroom kernel campaign
 

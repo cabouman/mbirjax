@@ -21,8 +21,7 @@ import os
 import numpy as np
 
 # ── Config ────────────────────────────────────────────────────────────────────
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results', 'r1')
-SUMMARY = os.path.join(RESULTS_DIR, 'r1_summary.json')
+CASE_DIRS = ['r1', 'r1_z62', 'r1_lilly_ds4']    # subdirs of results/, analyzed if present
 QUALITY_FACTORS = [2.0, 1.2]        # multiples of C0's final cropped NRMSE
 DISPLACE_COST_FRAC = 0.8            # candidate must hit 1.2x mark at <= this x C0 cost
 CONTROL = 'C0_default'
@@ -38,6 +37,16 @@ def cost_to_mark(lognrmse, cum_cost, mark_log):
 
 
 def main():
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results')
+    for case in CASE_DIRS:
+        results_dir = os.path.join(base, case)
+        if os.path.exists(os.path.join(results_dir, 'r1_summary.json')):
+            print(f'\n################ case {case} ################')
+            analyze(results_dir)
+
+
+def analyze(RESULTS_DIR):
+    SUMMARY = os.path.join(RESULTS_DIR, 'r1_summary.json')
     with open(SUMMARY) as f:
         results = [r for r in json.load(f) if r.get('status') == 'ok']
     if not results:
