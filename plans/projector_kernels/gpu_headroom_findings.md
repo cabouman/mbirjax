@@ -196,6 +196,29 @@ replacement, per the plan's Pallas design).  Two small notes: subset-shaped call
 real but modest ~10% at vb=32 (a possible VCD-only tuning crumb, below the
 bother-threshold alone); peak memory eases slightly at small vb (−0.4 GB).
 
+## Cone forward vfan/hfan split (2026-07-12; job 13473088; `cone_fwd_split_ab.py`)
+
+Kernel level at the 1024³-class cell (P=4096, V=128, H100): full 15.15 ms; vfan-only
+6.27 ms (**41%**); hfan-only 10.84 ms (**72%**; sum 1.13 — overlap, the cone-back
+lesson).  Reads: (1) the vfan-elimination prize on cone forward is bounded ~1.4×; the
+hfan (sorted channel reduce over the FULL detector rows) is the bigger share.  (2) For
+slice-parity efficiency (slice_parity_plan.md R1 cost accounting): the hfan's cost is
+SLICE-COUNT-INDEPENDENT (its reduce columns are detector rows), so slice-set-aware
+kernels recover only the vfan share of the P=2 forward penalty — refined idealized
+charge ≈ **1.3–1.4×** per P=2 iteration (protocol used 1.5×, slightly generous to
+parity; direction unchanged).  Flow this to the parity session's R1 reading.
+
+## E3 step zero — Pallas smoke, round 1 (2026-07-12; job 13473088; `e3_pallas_smoke.py`)
+
+Vfan-shaped computed-index gather kernel (P=8192, R=1008, slice-SET of 126 @ stride 8,
+T=3), interpret gate PASS (rel 0 on-node).  **Both backends rejected the naive
+formulation at production shapes, for exactly the risks the Pallas appendix flagged**:
+Mosaic GPU — "Async copies only support ≤256 elements per dimension" (the (8,1008) col
+block); Triton — power-of-2 shape requirement (1008).  Neither fatal; round 2
+(`e3_pallas_smoke2.py`) fixes both: Triton = pad R→1024/L→128/T→4 (zero-weight taps);
+MGPU = R-chunked staging (4×252) with per-chunk masked tap accumulation.  Both round-2
+formulations pass interpret gates (rel 8.9e-8).  XLA reference at this shape: 92.5 µs.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
