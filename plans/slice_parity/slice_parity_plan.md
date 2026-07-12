@@ -162,6 +162,46 @@ F2 — block aspect-ratio sweep at equal cost: granularity {5,6,7} × phases {4,
 (50+ iterations: does compensated's lead persist against its shallower tail slope?).
 F4 — noise + weights + a larger case before any policy conclusion.
 
+## F-ROUND RESULTS (2026-07-12, local CPU; deep 300-iteration reference — the P1
+## 100-iteration reference sat 2.8e-3 relative above it, far below all observed errors,
+## so P1's conclusions stand)
+
+All cone, sharpness 3.0.  Final log10 NRMSE at 20 iterations unless noted:
+
+| group | arm | log10 NRMSE | read |
+|---|---|---|---|
+| F1 (default seq [0,2,4,6,7]) | base | −1.507 | slice-19 BAD STEP reproduced (−0.988→−0.976 rise at iter 2) |
+| | parity-2 at coarse iters only | −1.540 | dip softened (~0.03 log better through the transient), not removed |
+| | **parity-2 everywhere** | **−1.596** | best 20-iter result in the study; slice 19 −1.339 vs base −1.268 at iter 9 |
+| F2 fine (equal cost, 128 su/it) | g5×4 / g6×2 / g7×1 | **−0.941** / −0.869 / −0.848 | MONOTONE: wider×thinner keeps winning; knee NOT reached |
+| | g7×2 (2× cost) | −0.811 | flat-seq parity still loses, replicating P1 |
+| F2c coarse (equal cost, 4 su/it) | g0×4 / g1×2 / g2×1 | −1.099 / **−1.139** / −1.129 | NON-monotone: the all-pixels×¼-slices extreme loses — in-plane isolation cannot be traded away entirely |
+| F3 (60 iters, flat) | base / compensated | −1.054 / **−1.073** | lead PERSISTS; tail slopes equalize (−0.0042 vs −0.0043/iter) — P1's shallower-slope worry resolved |
+
+**Synthesis:**
+
+1. **Parity's value is STATE-DEPENDENT, and the P1/F1 contrast explains it**: from an FDK
+   start under flat-fine sequences (P1), parity-2 loses — the dominant residual is
+   low-z-frequency, where red-black GS's prior anchoring drags.  After coarse iterations
+   clear the low-z-frequency error (F1's default sequence), parity-2 helps at EVERY
+   granularity — f1_pall beats everything while also largely fixing the slice-19
+   hotspot.  This is exactly the smoother character the plan's caveat predicted, now
+   measured from both sides.
+2. **The aspect-ratio trade has an interior optimum**: at the fine end, wider-in-plane ×
+   thinner-in-z wins monotonically as far as tested (g5×4 best; try g4×8); at the coarse
+   end it reverses at the extreme (g0×4 < g1×2) — in-plane subset isolation remains
+   necessary.  Block SHAPE is a real, free design dimension, not a parity-on/off switch.
+3. **The coarse-start default sequence dominates flat-fine on this case** (−1.51 vs
+   −0.85 at 20 iterations; even 60 flat iterations only reach −1.05).  CAUTION: this
+   small noiseless cube phantom rewards coarse low-frequency corrections; the
+   partition-sequence study's real-data evidence for flat tails need not transfer —
+   flag for the §2 default-sequence work, do not conclude from a toy.
+4. **Obvious next arm (not yet run): the combined recipe at equal cost** — coarse-start
+   sequence with parity everywhere AND a compensated fine tail (e.g. [0,2,4,6,6,...] with
+   phases 2 throughout ≈ f1_pall's quality at f1_base's cost), plus the g4×8 probe of
+   F2's unreached knee.  Then F4 (noise + weights + larger case, GPU) before any policy
+   discussion.
+
 ## Interaction with the GPU-headroom kernel campaign
 
 If parity survives P1, the concrete change to the kernel work is an INTERFACE decision,
