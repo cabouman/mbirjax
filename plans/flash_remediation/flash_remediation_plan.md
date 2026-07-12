@@ -179,14 +179,36 @@ hatch; sequence [0,2,4,6,7], seed 0, transmission_root weights, snapshots at ite
   `p3a_sic_diff_stream.py` streams the per-slice stats/diff/cross-check in row blocks
   (~1 GB peak); reuse it for big-volume comparisons.
 
-### Step A validation — BGA Normal scan (RUNNING 2026-07-11, job 13438912)
+### Step A validation — BGA Normal scan (DONE 2026-07-11; axial-only A/B, job 13438912)
 
-BGA (`17U1-250TC-Normal_Tomo_No_HART.txrm`) leaves the FoV both LATERALLY and axially;
-the old recon shows prominent noise near the center slices and converges very slowly.
-Axial-only A/B (`p3b_*`, settings mirroring `experiment_zeiss.py`: d2x, view/2, sharpness
-1.5, snr_db 35): with the lateral contamination present in BOTH variants, does the axial
-extension alone improve the center-slice noise and the convergence?  *[result to be
-added]*
+BGA (`17U1-250TC-Normal_Tomo_No_HART.txrm`; `experiment_zeiss.py` settings: d2x, view/2,
+sharpness 1.5, snr_db 35) leaves the FoV both LATERALLY (untreated in both variants) and
+axially at BOTH ends; new shape 766²×684 vs old 766²×484 (R/SID ≈ 0.41, the widest fan
+yet: +100 slices per end).  **Answer: axial padding alone does NOT materially improve
+the center-slice noise or the slow convergence — both are dominated by the untreated
+lateral truncation, plus a separate center-slice artifact:**
+
+- The "noise near the center few slices" is a sharply LOCALIZED spike of the in-plane
+  high-pass noise index at the exact center slice (0.22 vs ~0.03 surroundings at iter
+  15; still 0.11 vs ~0.02 at iter 50) and it is IDENTICAL in old and new — it is not a
+  truncation artifact at all; cross-reference the known center-slice artifact
+  (`plans/bugs_and_artifacts/center slice noise/`, observed in this same sharpness 1.5 /
+  snr 35 regime).  The broad interior speckle (lateral contamination + sharp
+  regularization) changes only ~5% (center-40 noise old/new = 1.06× at iter 15).
+- Convergence unchanged: both variants still ~1.5%/iter at iteration 50, nowhere near
+  the 0.2% stop (new 1.62 / old 1.48 at 50 — equal within trajectory noise).
+- What the extension DOES do here, exactly as on SiC but at both ends: the end-slice
+  flash and ringing arcs are removed, the end noise spikes drop (top end 0.032 → 0.017
+  at iter 50), and the extensions reconstruct the real material continuation.  Interior
+  RMS(new−old)/bodyRMS = 0.047 — larger than SiC's 0.0075 because the volume is far from
+  converged, so the two trajectories differ more.
+- Consistent with the mechanism section: axial remedies are axially LOCAL.  BGA needs
+  the lateral treatment — step C's detect-and-warn plus deliberate cover padding, with
+  P2b's severe-overshoot caveat (a DC offset survives even correct cover without an air
+  anchor).
+
+Scripts `p3b_*` (incl. `p3b_noise_probe.py`, the per-slice noise-index instrument); the
+BGA cache, volumes, trajectory logs, and figures live under `padding/`.
 
 ### Remaining steps
 
