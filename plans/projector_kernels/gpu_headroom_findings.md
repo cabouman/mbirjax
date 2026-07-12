@@ -166,10 +166,37 @@ Stream-track busy (one timeline — no double counting) + composition, parallel 
    per-pixel penalty; a subset-call fast path (skip concat when one chunk) is a candidate
    small VCD win, noted for later.
 
-## Pending
+## E2a — back_view_batch L2-residency sweep: HYPOTHESIS REFUTED (2026-07-12; job 13444276)
 
-- **E2a (submitted):** back_view_batch 128 → {64, 32, 16, 8} at 1024³ n=1, full-grid +
-  subset shapes — the L2-residency lever on the back reduce fusion.
+Parallel 1024³ n=1; median wall (2 full / 5 subset trials, tight repeats); working set =
+view_batch × 4 MB channel-major views:
+
+| view_batch | working set | full back s | subset (6,026 px) back s | peak GB |
+|---|---|---|---|---|
+| 128 (default) | 512 MB | **10.56** | 0.200 | 15.96 |
+| 64 | 256 MB | 13.45 | 0.256 | 15.69 |
+| 32 | 128 MB | 11.65 | **0.179** | 15.62 |
+| 16 | 64 MB | 13.25 | 0.181 | 15.58 |
+| 8 | 32 MB | 11.48 | 0.207 | 15.58 |
+
+**Verdict: shrinking the per-step view working set toward L2 residency does NOT recover
+back's gap — the default 128 is the FASTEST full-grid setting, and even a 32 MB working
+set (comfortably inside the 50 MB L2) is 9% SLOWER.**  If the reduce fusion's cost were
+L2-capacity misses on the 512 MB set, vb=8–16 would have won large.  It didn't, so the
+E0 working-set framing was too coarse: within one view the gather's 992 distinct channel
+rows are only a 4 MB source with ~6 reads per row — reuse is per-view and L2 captures it
+at ANY view batch.  The cost is the TRANSACTION pattern of the uncoalesced 4 KB row
+gathers + the tap/view-sum structure — exactly the June ncu signature (97% L1, 8% HBM),
+now confirmed by ablation rather than extrapolation.  Non-monotonicity across settings
+(64/16 worse than 32/8) looks like per-shape launch/autotune variation, not signal.
+
+**Consequences:** the last cheap XLA-level lever for back is closed — back projection's
+remaining ~10× is CUSTOM-KERNEL-ONLY (coalescing/register-tiling inside the fusion
+replacement, per the plan's Pallas design).  Two small notes: subset-shaped calls got a
+real but modest ~10% at vb=32 (a possible VCD-only tuning crumb, below the
+bother-threshold alone); peak memory eases slightly at small vb (−0.4 GB).
+
+## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
 - ncu round (pipe-level attribution of the two big fusions; the band kernel at n≥2);
