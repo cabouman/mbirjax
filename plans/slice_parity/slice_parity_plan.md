@@ -202,6 +202,24 @@ All cone, sharpness 3.0.  Final log10 NRMSE at 20 iterations unless noted:
    F2's unreached knee.  Then F4 (noise + weights + larger case, GPU) before any policy
    discussion.
 
+## FX PROBES (2026-07-12, same setup/deep reference; run during the Greg discussion of
+## the general state-dependence principle)
+
+| arm | schedule | final log10 NRMSE | read |
+|---|---|---|---|
+| fx_g4x8 | flat (16 subsets × 8 phases), 128 su/it | −1.033 | flat fine-end trend STILL monotone past stride 8 — the PSF-bandwidth P-cap hypothesis is FALSIFIED as stated; more likely the toy's coarse-in-plane preference in disguise |
+| fx_comb | ramp [0,2,4,6,6…]×P2 (compensated tail, 128 su/it) | −1.467 | compensated tail LOSES to f1_base's (128,1) tail in the ramp context — the flat-context compensated win does NOT carry past a coarse start |
+| fx_comb_g1x2 | ramp [1,3,5,6,6…]×P2 (Greg's (2,2) start) | −1.478 | **best EARLY trajectory of all arms** (iters 1–3: −1.030/−1.078/−1.146, ahead of f1_pall) — g1×2 is a better ramp start than granularity-1; its (64,2) tail then decays slower |
+
+**Third confirmation of state-dependence, now in both directions:** flat-context winners
+(compensated shape) lose in ramp context; parity wins only post-coarse; the flat
+fine-end "monotone aspect-ratio trend" is largely the toy's coarse-preference wearing a
+z-phase costume.  Single-operating-point optimization on this phantom has hit
+diminishing returns — the toy has yielded the STRUCTURE (state-dependence, interior
+optimum, ramp-start candidates); the decision now needs full SCHEDULES on real data.
+Composite candidate the fx data suggests: **g1×2-start parity ramp → (128,1) fine tail**
+(best-of-both at equal cost), with f1_pall's (128,2) tail as the paid quality ceiling.
+
 ## Interaction with the GPU-headroom kernel campaign
 
 If parity survives P1, the concrete change to the kernel work is an INTERFACE decision,
