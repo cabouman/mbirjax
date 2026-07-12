@@ -288,6 +288,42 @@ Two findings beyond the pass/fail:
   14 channels total against its 20-pixel buffer).  The Lilly recons therefore carry a
   mild one-sided lateral flash contribution — worth remembering when reading Lilly
   metrics.
+
+### Step C follow-up — lateral+axial padding on the warned scans (DONE 2026-07-12, `p3e_*`)
+
+The missing arm of the comparison: the warning's own remedy applied on top of the new
+default (no-pad and axial-only already measured under steps A/B).  Lateral scaling grows
+R and hence the axial bound, so the experiment applies the compensating slice growth
+explicitly (`extend_axially_to_bound`, measured against the CURRENT slab — the concrete
+form of the planned cone `scale_recon_shape` warning's advice; Lilly's NSI-inflated slab
+already covered 1.25×R so it got +0 slices, while BGA needed +50/+100 per end at
+s = 1.5/2.0).
+
+- **BGA at s = 1.5 (1149², iter 50): cover reached — and it fixes what axial could not.**
+  The axial-only run has a 3.2× ring at the old FoV boundary (radial peak 0.049 vs
+  interior 0.015); the padded run erases it (old-boundary region at interior level) and
+  shows NO ring at its own boundary (peak 0.006 vs inner 0.010 — natural decay).  By the
+  P2b asymmetry, s = 1.5 is at/past cover, so the OOM'd s = 2.0 run is unnecessary — the
+  knee question is answered from the s = 1.5 volume itself (the single-H100 limit sits
+  between 1149²×784 and 1532²×884).  The center slice now reconstructs the actual board
+  continuing past the old FoV.  Interior speckle drops (center-40 noise 0.043 → 0.035,
+  off-center median 0.017 → 0.013), though the localized center-slice spike persists
+  (the separate artifact).  Convergence: change-% at iter 50 drops 1.62 → 0.92 — better,
+  but still far from the 0.2% stop, consistent with P2b's severe-overshoot caveat (the
+  interior-tomography DC ambiguity keeps converging slowly; an air anchor remains the
+  only fix for that residual).
+- **Lilly at s = 1.25 (467², iter 15): a null result, honestly.**  The mild one-sided
+  truncation (16% of view-rows) produces NO measurable ring at the central slab in
+  either variant (annulus means ~1e-4 at all shared radii) — the warning correctly
+  describes the DATA, while the reconstruction impact at ds4 is below noise at the
+  probed slices.  (A slice-resolved hunt at the specific rows with edge support is
+  possible if ever needed.)
+
+Volumes/logs/figures: `padding/p3e_*`; the radial-profile and three-way center-slice
+figures are the keepers for the results page.
+
+### Remaining steps
+
 - **D. NSI pipeline auto-geometry cleanup — NEAR-TERM PRIORITY; must land before the
   re-baseline (or the NSI-scan baselines churn twice).**  The NSI flow (and any
   set-params-after-construction pipeline) computes the axial extension at model
