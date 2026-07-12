@@ -26,19 +26,21 @@ This file should be cleaned periodically to avoid build-up of historical detail.
 
 ## 1. Flash remediation: padding and the split seam
 
-**State:** investigation complete; remedies designed and ready for discussion →
-implementation → testing.  The synthesis with rationale, equations, implementation
-sketches, and pros/cons is `plans/flash_remediation/phase_2d_remedies.html` (published
-at `/depot/bouman/www/mbirjax/flash_remediation/`); the plan of record is
+**State:** investigation complete; implementation IN PROGRESS with real-data validation
+after each step (step 1 done + validated, below).  The synthesis with rationale,
+equations, implementation sketches, and pros/cons is
+`plans/flash_remediation/phase_2d_remedies.html` (published at
+`/depot/bouman/www/mbirjax/flash_remediation/`); the plan of record is
 `plans/flash_remediation/flash_remediation_plan.md`.
 
 **Forward, in implementation order:**
 
-1. **Cone-beam per-end axial extension in `auto_set_recon_geometry`** — E_top/E_bot from
-   the detector row edges (det_row_offset-aware; helical ends attach at z_max/z_min),
-   R from the recon grid; `scale_recon_shape` stays a pure scaler + warns on
-   uncompensated lateral growth.  Open implementation check: R = RoR-mask radius vs grid
-   half-diagonal (what does the projector actually update?).
+1. **Cone-beam per-end axial extension — DONE + VALIDATED 2026-07-11** (commit `a872695`:
+   extension + `get_support_radius` + a helical-FDK zero-coverage fix + tests).  SiC A/B at
+   two scales: truncated-end flash/ringing removed (the real object continuation is
+   reconstructed instead), interior <1% change, and the 0.2% stop reached at ~iter 20 vs
+   ~49 (≈2.2× faster to the default stop at +12–15%/iter).  BGA axial-only check running;
+   details in `flash_remediation_plan.md` (implementation record).
 2. **split_sino_recon**: h_recon = ceil(h_sino·(1+R/SID)·ρ) + 2 with ρ =
    δ_row/(mag·δ_slice) as the default; `align_split_grid` opt-in (sub-slice grid shift —
    alignment is NOT reachable by index choice at ρ=1); retire the taper in the same
