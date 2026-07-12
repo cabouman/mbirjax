@@ -1,14 +1,19 @@
 # Flash remediation — recon-support padding for FoV truncation
 
-**Status (2026-07-11): investigation COMPLETE (Phases 1–2d); implementation IN PROGRESS
-with real-data validation after each step.  Step A (cone per-end axial extension) is
-in-tree at commit `a872695` and validated on the real SiC scan at two scales; the BGA
-axial-only check is running; steps B (split) and C (lateral warn) are next.**
+**Status (2026-07-12): investigation COMPLETE (Phases 1–2d); implementation COMPLETE and
+VALIDATED on real scans, step by step — A: cone per-end axial extension (`a872695`;
+SiC at two scales + BGA axial-only), B: split_sino_recon geometry overlap + taper
+retirement (`fcc0e9e`; Lilly 4×/8×), C: lateral detect-and-warn (`41ecbc2`; BGA/z62/
+SiC/Lilly scorecard + the axial+lateral BGA comparison), D: NSI auto-geometry cleanup
+(`dbc9c3b`; Lilly shape/values/seam).  The illustrated validation report is
+`phase_3_results.html` (published).  Step E (re-baseline records + Lilly cache rebuild)
+is in progress — see the implementation record below.**
 
 Source item: `plans/current_plans.md` §1.  The per-case remedy spec — equations, code
-sketches, pros/cons including do-nothing — is **`phase_2d_remedies.html`** (published at
-`/depot/bouman/www/mbirjax/flash_remediation/`); the illustrated evidence pages per phase
-are listed in `README.md`; scripts live in `plans/experiments/flash_remediation/`.
+sketches, pros/cons including do-nothing — is **`phase_2d_remedies.html`**; the
+illustrated evidence pages per phase are listed in `README.md` and published at
+`/depot/bouman/www/mbirjax/flash_remediation/`; scripts live in
+`plans/experiments/flash_remediation/`.
 
 *This file was reorganized 2026-07-11 (Greg's request) into the settled story.  The full
 chronological record — the announce-and-retract chains, per-round build-up narratives, and
@@ -351,12 +356,53 @@ future cache builds.
   2.4e-5), formula still choosing h_recon = 9 at a near-worst-case sub-slice mismatch
   (−0.45) — at or better than the step-B validated level (9.5e-4 under the old flow).
 
-### Remaining steps
+### Step E — re-baseline and release record (IN PROGRESS 2026-07-12)
 
-- **E. Re-baseline** the regression dashboards + release note (all shape changes have
-  now landed); rebuild the NSI (Lilly) caches with the new library + builder in the same
-  pass; record the regime change both as an `annotations.yaml` marker and a policy-block
-  padding flag.
+Landed in `mbirjax_metrics` (staged): the engine's policy block now records
+`axial_extension` (capability-probed via `get_support_radius`, so the dashboard
+auto-marks the cone-cell shape/value/memory step in every chart when a tracked branch
+crosses the padding commits), the dashboard diffs it (`_POLICY_FIELDS`), and
+`annotations.yaml` carries the narrative marker.  Timing: the nightly last measured
+`401ad311` (2026-07-09, pre-padding), so these records land before the first
+post-padding measurement.  Remaining operational actions (each needs a go-ahead):
+
+1. **First post-padding nightly review + ack**: when the nightly measures `dbc9c3b`+,
+   review the correctness divergences (expected: cone-family shapes/values step in the
+   padded direction; split cells change with the taper retirement; memory up ~R/SID in
+   cone recon cells), then bump the reviewed-through watermark via
+   `action_scripts/clear_correctness.sh`.
+2. **Rebuild the five Lilly caches — DONE 2026-07-12** (job 13459660; the old caches are
+   parked in `cache/superseded_2026-07-12_pre_padding/`, MANIFEST regenerated).  All
+   five rebuilt with identical sinograms, sidecar `auto_set_recon_geometry: True`, and
+   offset-free `optional_params`; loaded per the sidecar they produce the lean new-flow
+   grids — d4x tags (470, 470, 427) with the per-end offset +0.82 ALU, v3x_d2x
+   (940, 940, 828).  (These caches use the `Autoinjector_HighRes_Horizontal` source with
+   auto-crop — landscape, 470 channels — not the portrait D01788 copy the p3c/p3f
+   validations loaded, hence the different numbers; both are the same new-flow
+   machinery.)  The existing partition-sequence reference recons/floors correspond to
+   the OLD grids and stay as historical records.
+
+**Release note (draft, for the next release's PR/notes):**
+
+- Cone-beam automatic reconstruction shapes now extend the slab, per end, to the
+  cone-beam visibility bound: material a ray crosses near the slab ends is representable
+  instead of flashing into the end slices.  Default shapes grow by ~R/SID
+  (geometry-dependent, typically 10–40% more slices); truncated scans lose the end-slice
+  flash/ringing, reconstruct the real out-of-slab continuation, and reach the stopping
+  threshold in fewer iterations (SiC: ~iteration 20 vs ~49).  Offset detectors and
+  helical travel are handled per end.  Setting `recon_shape` explicitly overrides, as
+  before.
+- `split_sino_recon` derives its reconstruction overlap from the same geometry
+  (`ceil(h_sino·(1+R/SID)·ρ) + 2`); the sine weight taper is retired (it failed at
+  coarse downsampling; the matched extension fixes the seam in every regime tested).
+  New: `align_split_grid` opt-in (sub-slice grid alignment; not registration-identical
+  to `recon()`), and `recon_dict['split_params']` reports the overlaps used.
+- Lateral FoV truncation is now detected from the existing sinogram support indicator
+  and warned with the remedy (`scale_recon_shape(s, s)`, round UP); deliberately no
+  auto-padding (the required cover is not derivable from truncated data).
+- NSI preprocessing: call `auto_set_recon_geometry()` after
+  `set_params(**optional_params)` (as the zeiss flow does); `optional_params` no longer
+  carries a hand-set `recon_slice_offset`.
 - Later: analogous per-end bounds for translation and multiaxis-parallel; a cone
   `scale_recon_shape` override warning on uncompensated lateral growth (the p3e
   `extend_axially_to_bound` helper is the prototype); the z62 RoR-boundary-ring open
