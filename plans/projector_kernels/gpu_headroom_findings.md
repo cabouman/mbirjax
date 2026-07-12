@@ -338,6 +338,34 @@ another policy-selected knob.
 on parallel AND cone; skewed one-shot cases stay on XLA by policy.  Next: the
 back-projection kernel (design at plan §E3b), then E4 integration of the pair.**
 
+## E3b back-projection kernel v1 (2026-07-12; job 13483553; `e3_back_pallas_v1.py`)
+
+**The largest win of the campaign, first attempt**: register-tile across views +
+row-chunk L2 phases, at the 1024³ parallel cell vs the library stacked-gather baseline
+(vmap + view-sum, the production composition):
+
+| case | best | speedup | Hessian (cp=2) |
+|---|---|---|---|
+| raster | rc256 w1 | **16.3×** | 14.9× |
+| subset | rc256 w2 | **26.0×** | 22.7× |
+
+Ruler checks (a result this size demands them): the baseline extrapolates correctly
+from E0b's measured 3.59 ms/step (~14 ms at this P); the kernel's HBM traffic under the
+L2-phase design (~0.6 GB/call) predicts ~0.9 ms — the observed ratio IS the roofline
+(b)-bound headroom for back (23–36×), realized by the design's two levers.  Values
+~1e-6 (view-sum reorder); **adjoint ⟨Ax,y⟩=⟨x,By⟩ prints exactly equal** (agreement
+below f32 quantization at that magnitude).  rc=256 dominates (fewer weight re-reads);
+warps flat-ish.  No skew sensitivity — back is uniform work, as designed.
+
+**Composition consequences for E4 (the next design deliverable):** at 15–26× kernel
+speed, the back DRIVER becomes the limiter — but the pallas kernel has no scan carry,
+so the driver simplifies: the whole pixel set can go in ONE grid per view-chunk (no
+94-step pixel scan, possibly no transfer chunking), which is where much of the
+kernel-level win can survive composition.  The E4 model-level A/B remains the gate
+(compose, don't extrapolate).  E3 spike status: parallel fwd 2.13×/1.59×, cone fwd
+2.13× (fine-tail), parallel back 16–26× + Hessian — the pair is ready for the E4
+integration design.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
