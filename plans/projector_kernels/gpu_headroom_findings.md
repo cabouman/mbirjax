@@ -132,14 +132,46 @@ buffer SILENTLY — trace windows must be a few calls, not a recon.)
 70–200 ms calls is device-busy (vs per-call host/dispatch) is the one remaining piece —
 E0b round 2's 6,026-pixel cells measure exactly that.
 
+## E0b round 2 — kernel shares, resolved (2026-07-12; job 13440901)
+
+Stream-track busy (one timeline — no double counting) + composition, parallel 1024³ n=1:
+
+| cell | traced wall/call | device busy/call | busy vs UNTRACED wall | dominant kernels |
+|---|---|---|---|---|
+| fwd @ full grid | 9.63 s | 7.37 s (77%) | ~93% of E1a's 7.95 s | `input_scatter_fusion` 6.45 s (**86–88% of busy**) |
+| back @ full grid | 11.34 s | 10.63 s (94%) | ~100% of E1a's 10.48 s | `input_reduce_fusion` 10.5 s (**98%**) |
+| fwd @ 6,026 px | 0.122 s | 0.066 s (55%) | **~92% of E1a's 0.072 s** | scatter fusion 82% |
+| back @ 6,026 px | 0.277 s | 0.190 s (69%) | **~96% of E1a's 0.198 s** | reduce fusion 63% + **`input_concatenate_fusion` 32%** |
+
+**Verdicts:**
+
+1. **The sort share is ~2–3% — approach A1 (sort hoist) is DEAD.**  The named-op track
+   total (≈7.65 s/call: scatter 6.45 + clamp 0.53 + add 0.38 + iota 0.20 + small) matches
+   the stream busy (7.37 s/call) within noise, leaving ≲0.2 s/call for the batched CUB
+   sorts.  The roofline appendix's 2.1–4.6 s sort extrapolation scaled per-call sort cost
+   linearly in pixels; at production shape the 128×24576 batched sorts are tiny next to
+   the 252-column scatter work.  (A1's memory quantification in the plan §5 is moot.)
+2. **Forward = the scatter fusion's in-fusion access pattern (86–88% of device); back =
+   the reduce fusion's 512 MB-working-set gathers (98%).**  With A1 and A3 both dead, the
+   remaining XLA-level levers are A2 (index-read vectorization inside the scatter fusion —
+   small, cheap A/B), A5 (multi-device band restructure), and the NEW back_view_batch
+   L2-residency sweep (E2a).  Everything else is custom-kernel (Pallas) territory, as the
+   plan's tiering anticipated.
+3. **Subset-sized calls are DEVICE-bound** (~92% fwd / ~96% back against untraced walls)
+   — combined with E1b's 94%-projector-calls iteration wall: **production-granularity VCD
+   at 1024³ is ~85–90% projector device time.  The (a)-track Amdahl gate is PASSED** —
+   kernel wins transfer nearly fully at this size.
+4. Small-call overhead attribution: at 6,026 pixels, back spends 32% of device in
+   `input_concatenate_fusion` (the pixel-chunk concat) — the fixed cost behind E1a's 2.4×
+   per-pixel penalty; a subset-call fast path (skip concat when one chunk) is a candidate
+   small VCD win, noted for later.
+
 ## Pending
 
-- **E0b round 2** (revised script): stream-track device busy + composition at full-grid
-  AND 6,026-pixel calls — closes the sort-share and per-subset-call device-share gaps.
-- **A1 prototype** (next round): pre-sorted-input kernel variant — the clean sort-share
-  measurement AND the A1 win estimate in one experiment.
-- **back_view_batch L2-residency sweep** (new lever from E0): 128 → {64, 32, 16, 8} at
-  1024³ n=1.
+- **E2a (submitted):** back_view_batch 128 → {64, 32, 16, 8} at 1024³ n=1, full-grid +
+  subset shapes — the L2-residency lever on the back reduce fusion.
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
-- ncu round (pipe-level attribution; the band kernel at n≥2); `ncu` availability on
-  compute nodes to be checked.
+- A2 flatten A/B (small); the subset-call concat fast path (observation 4).
+- ncu round (pipe-level attribution of the two big fusions; the band kernel at n≥2);
+  `ncu` availability on compute nodes to be checked.
+- Then: the Pallas spike per the plan (band kernel first — the (c) main target).
