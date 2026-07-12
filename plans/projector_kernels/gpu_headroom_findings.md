@@ -249,6 +249,33 @@ E3 bar (≥1.5–2×) is now a kernel-design question, as intended.  Design cons
 carry: no SMEM scratch on Triton, so reuse comes from registers + L1/L2 behavior of
 pointer loads (the ASTRA register-tile pattern — registers, not shared memory).
 
+## E3 hfan-forward kernel v1 (2026-07-12; job 13476543; `e3_hfan_pallas_v1.py`)
+
+First real kernel, first attempt — the CSR segment-walk (one program per (view,
+channel), dynamic-trip fori_loop, ref-level row gathers, register accumulation, one
+store; streams precomputed eagerly from concrete centers).  1024³-class parallel cell
+(P=8192, C=992, band 252→256, V=128), H100, values ≤6.3e-7 rel:
+
+| case | taps/channel skew | XLA sorted reduce | Pallas v1 | speedup |
+|---|---|---|---|---|
+| subset (uniform — the VCD shape) | 2.2× | 0.666 ms | 0.340 ms | **1.96×** |
+| raster (full-grid batch) | 4.6× | 0.689 ms | 0.484 ms | **1.42×** |
+
+**The success bar (≥1.5–2× at both cases) is MET on the subset case immediately and
+missed by 0.08× on the raster case — by exactly the predicted mechanism** (channel-skew
+stragglers in the one-program-per-channel grid: identical work volume runs 0.34 vs
+0.49 ms).  num_warps ∈ {1,2,4} is flat (~±3%); nw=1 suffices — the per-program work is
+one warp's worth, as designed.
+
+Open accounting items before composition claims: (1) the stream precompute (sort +
+searchsorted, eager) is uncounted — fair for VCD (fixed partitions amortize it across
+iterations) but must be charged for one-shot full projections; (2) the isolated-bench
+XLA baseline (0.69 ms) differs from the in-scan production step (~2.1 ms of scatter
+fusion) — the campaign's compose-don't-extrapolate lesson applies; model-level A/B is
+the E4 gate.  **v2 (queued): even-partitioned tap stream with boundary fixup (the
+ModernGPU segreduce pattern) for the raster skew; then the cone variant (per-pixel
+weight scale + full-rows band) and the precompute-cost measurement.**
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
