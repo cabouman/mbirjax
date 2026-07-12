@@ -321,6 +321,23 @@ single-launch formulation (e.g. split-channel row pre-zeroing at ~14 MB instead 
 72%-share case), then E4 composition (TilePolicy flag, wrapper integration with the
 precompute placed per the Phase-D idiom, model-level A/B), then the band back kernel.**
 
+## E3 cone hfan v1+v2 (2026-07-12; jobs 13480264, 13481121)
+
+v1 (parallel design transplanted): values pass (≤5e-7) but subset 1.14× / raster 0.84×
+— cone forfeits parallel's shared-L2-tile advantage (per-view values), moves 4 KB rows
+with parallel-tuned num_warps=1, and has half-length segments.  **v2 (row-chunked grid
++ warp sweep, two-phase only): subset = 2.13× (rc=256, w=1) — identical to parallel's
+best; the row-chunk restored the vector/register balance.**  Raster improved to 1.15×
+(rc=256, w=4) but remains below bar: cone raster combines skew WITH short segments
+(mean 12.4 taps) — largely MOOT under the E4 policy (one-shot coarse full-grid
+iterations keep the XLA path; the pallas path serves the repeated fine tail, where the
+kernel is at bar).  Note the warp story flipped by case: raster wants w=4, subset w=1 —
+another policy-selected knob.
+
+**E3 spike verdict, both geometries: the production (VCD fine-tail) case is at 2.13×
+on parallel AND cone; skewed one-shot cases stay on XLA by policy.  Next: the
+back-projection kernel (design at plan §E3b), then E4 integration of the pair.**
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
