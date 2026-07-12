@@ -92,8 +92,12 @@ def analyze_module(path):
                 fusion_count += 1
             # Materialization ranking: only instructions OUTSIDE fused computations produce
             # HBM buffers (fusion interiors are virtual; the fusion op itself appears in its
-            # caller with the output shape), and parameters alias existing buffers.
-            if (nbytes is not None and 'fused_computation' not in comp
+            # caller with the output shape), and parameters alias existing buffers.  GPU
+            # fusion interiors are named fused_*/wrapped_* (CPU: fused_computation*); the
+            # entry (main*) and while bodies/conds (region_*) are the real buffer sites.
+            in_fusion_interior = (comp.startswith('fused_') or comp.startswith('wrapped_')
+                                  or 'fused_computation' in comp)
+            if (nbytes is not None and not in_fusion_interior
                     and ' parameter(' not in line):
                 largest.append((nbytes, comp, frag[:120]))
     largest.sort(key=lambda t: -t[0])
