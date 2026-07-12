@@ -1,0 +1,3 @@
+# The repo root ignores *.png globally; these comparison figures are part of the
+# committed record (r2_recon_compare.html embeds them).
+!*.png
