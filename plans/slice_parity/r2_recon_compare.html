@@ -1,7 +1,7 @@
 <html><head><title>D0 vs D1 recon comparison</title>
 <style>body{font-family:sans-serif;max-width:1400px;margin:auto} img{max-width:100%} h2{margin-top:2em}</style></head><body>
 <h1>D0 [0,2,4,6,7] vs D1 [2,4,6,7] — head-to-head recons</h1>
-<p>Same data, same sharpness, same iteration count; the only difference is whether the schedule includes the granularity-0 (single-subset, full-volume) first iteration.  Grayscale window is shared within each figure; the rightmost column shows the signed difference D1 − D0 with its own symmetric limit.  Volumes for slice_viewer are on gautschi in <code>/scratch/gautschi/buzzard/parity_recons</code>.</p>
+<p>Same data, same sharpness, same iteration count; the only difference is whether the schedule includes the granularity-0 (single-subset, full-volume) first iteration.  Grayscale window is shared within each figure; the rightmost column shows the signed difference D1 − D0 with its own symmetric limit.  Volumes for slice_viewer are on gautschi in <code>/depot/bouman/data/mbirjax_metrics/slice_parity/recons</code>.</p>
 <h2>lilly_ds8</h2>
 <p>cropped log10 NRMSE (lower = better): it15: D0 -1.1527 / D1 -1.163, it20: D0 -1.2027 / D1 -1.211, it30: D0 -1.2865 / D1 -1.2936</p>
 <img src="r2_recon_figs/lilly_ds8_s1.0_it15.png">
@@ -22,4 +22,5 @@
 <img src="r2_recon_figs/lilly_ds4_s1.0_it20.png">
 <img src="r2_recon_figs/lilly_ds4_s2.0_it15.png">
 <img src="r2_recon_figs/lilly_ds4_s2.0_it20.png">
+<h2>Center-slice (fan-plane) zoom - lilly_ds4 s2.0</h2><p>The D1 &minus; D0 coronal band sits at z &asymp; 329&ndash;331 (the fan plane).  Both schedules show the same elevated slice-decoupling noise there; the profile panel shows D0 and D1 essentially coincide (D1 &lt; 1% higher at 15 iterations, &lt; 0.1% at 30).</p><img src="r2_recon_figs/lilly_ds4_s2.0_it15_centerzoom.png">
 </body></html>
