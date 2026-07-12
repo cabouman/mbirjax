@@ -236,6 +236,19 @@ needs its gather gap resolved upstream or a different formulation.  If round 4 f
 too: probe a newer jax in a spike-only side env, or jax-triton raw (library pin
 untouched either way).
 
+## E3 step zero — CLOSED, GREEN LIGHT (round 4, job 13475379; `e3_pallas_smoke4.py`)
+
+**All three ref-level gather variants compile, match the XLA reference BITWISE (rel err
+0), and run at 1.03–1.04× the XLA time untuned** (tile1 97.8 µs / tile8 98.2 / flat
+98.5 vs XLA 94.5 µs at the vfan-shaped production case).  The working recipe at the
+pin: **Triton backend + ref-level integer-array indexing** (1-D, 2-D advanced, and
+flat-index whole-array windows all work — full layout freedom for CSR segment walks).
+Read: a naive Pallas kernel TIES XLA before any tuning (num_warps/num_stages, tap-load
+dedup, view-tiling, load balance all untouched) — the tooling is not the obstacle; the
+E3 bar (≥1.5–2×) is now a kernel-design question, as intended.  Design constraint to
+carry: no SMEM scratch on Triton, so reuse comes from registers + L1/L2 behavior of
+pointer loads (the ASTRA register-tile pattern — registers, not shared memory).
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
