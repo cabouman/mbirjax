@@ -210,22 +210,69 @@ lateral truncation, plus a separate center-slice artifact:**
 Scripts `p3b_*` (incl. `p3b_noise_probe.py`, the per-slice noise-index instrument); the
 BGA cache, volumes, trajectory logs, and figures live under `padding/`.
 
+### Step B — split_sino_recon extension + taper retirement (DONE 2026-07-11, commit `fcc0e9e`)
+
+- `half_overlap_recon = ceil(half_overlap_sino·(1+R/SID)·ρ) + 2` (R via the shared
+  `get_support_radius`; the two-branch `half_overlap_sino` sizing kept so the knob still
+  spans ~half_overlap slices when recon slices are coarser than rows); the sine taper
+  RETIRED (with the geometry-derived extension the overlap data is fully explainable —
+  the taper was a regime-dependent suppressor); weight halves are now host views and
+  `weights=None` passes through (the per-half all-ones array is no longer built);
+  `align_split_grid` opt-in (cut-row search, effective at ρ≠1, + residual sub-slice grid
+  shift ≤ δ_slice/2 — output NOT registration-identical to `recon()`); feasibility
+  fallback when a half is thinner than the recon overlap; new
+  `recon_dict['split_params']` reports the overlaps, the residual cut/split mismatch,
+  and any grid shift.  Tests: `tests/geometries/test_split_overlap.py`; the
+  production-size split-vs-unsplit gate unchanged (0.0505 vs 0.0487 pre-change).
+
+### Step B validation — Lilly 4×/8× (DONE 2026-07-11, job 13439000; decisive)
+
+Shipped `split_sino_recon` vs a matching unsplit `recon()` at the exact P2c regimes
+(seam metric: per-slice interior-disk RMS of split−ref; the aligned variant is compared
+against an unsplit reference on its own shifted grid).  15 iterations, seed 0,
+transmission_root:
+
+| regime | default (formula, no taper) | aligned (opt-in) | P2c yardsticks |
+|---|---|---|---|
+| ds4 (4,4)/ss2 | **4.1e-4** (18.8× bg) | **7.0e-5** (5.1× bg) | old taper 6.5e-4; ext. 5.7e-4 |
+| ds8 (8,8)/ss8 | **9.5e-4** (38.1× bg) | **8.2e-5** (5.0× bg) | old taper 6.1e-3; ext. 9.0e-4 |
+
+- The default meets/beats every yardstick: at 8× it reproduces the P2c formula-value fix
+  (9.5e-4 vs the measured 9.0e-4; the old shipped taper managed only 6.1e-3 there), and
+  at 4× it beats both the old taper and the P2c deep-extension number.
+- Notably, the ds8 default ran at the WORST-CASE sub-slice mismatch (split_params
+  reported 0.4999) and still hit the formula-level seam — the +2 margin absorbs the
+  worst case, as designed.
+- `align_split_grid` buys another ~6–12× (to ~5× background), with the residual
+  mismatch at ~1e-14 and grid shifts of 0.05–0.11 ALU — the alignment bookkeeping
+  verifies end-to-end on real data.
+- The formula chose h_recon = 9 in both regimes (the P2c-validated value at 8×).
+
 ### Remaining steps
 
-- **B. split_sino_recon**: h_recon = ceil(h_sino·(1+R/SID)·ρ) + 2 (keep the existing
-  two-branch h_sino sizing; shared `get_support_radius`; feasibility fallback for
-  volumes too thin for the stitch overlap), `align_split_grid` opt-in, taper retired in
-  the same change → validate on Lilly 4×/8× (the measured stripe fixes: taper 6.5e-4 at
-  4× but only 1.3× at 8×; formula value 9.0e-4 at both).
 - **C. Lateral detect-and-warn**: geometry-gated (cone/parallel/multiaxis on; translation
   and the denoiser no-op — both inherit the base `auto_set_regularization_params`), skip
   when the indicator is the all-ones fallback → check firing on z62/BGA and silence on
   contained scans.
-- **D. Re-baseline** the regression dashboards + release note; record the regime change
-  both as an `annotations.yaml` marker and a policy-block padding flag.
-- Later: analogous per-end bounds for translation and multiaxis-parallel; the NSI
-  pipeline auto-geometry cleanup; a cone `scale_recon_shape` override warning on
-  uncompensated lateral growth.
+- **D. NSI pipeline auto-geometry cleanup — NEAR-TERM PRIORITY; must land before the
+  re-baseline (or the NSI-scan baselines churn twice).**  The NSI flow (and any
+  set-params-after-construction pipeline) computes the axial extension at model
+  construction with DEFAULT detector pitches and offsets, so the extension is wrong in
+  two ways: the PITCH face inflates R/SID by 1/δ_ch — measured 2× over-extension on
+  Lilly ds4 (667 slices vs the intended ~569; ~8× at full resolution; ds8's δ_ch = 1.016
+  is coincidentally near-correct), harmless for correctness (the extra slices are
+  provably inert) but real memory — and the OFFSET face mis-centers by
+  |det_row_offset|·R/SDD (sub-slice on Lilly).  Fix: the pipeline re-runs
+  `auto_set_recon_geometry()` after setting the real detector params and drops its
+  hand-set `recon_slice_offset = -det_row_offset/mag` compensation (`nsi.py:390`; the
+  per-end extension now handles offsets correctly and better).  Touches the NSI usage
+  flow + docs/demos; validate on Lilly (shape shrinks to the intended extension,
+  seam/end behavior unchanged).
+- **E. Re-baseline** the regression dashboards + release note (after C and D; default
+  shapes grow and values shift, for the better); record the regime change both as an
+  `annotations.yaml` marker and a policy-block padding flag.
+- Later: analogous per-end bounds for translation and multiaxis-parallel; a cone
+  `scale_recon_shape` override warning on uncompensated lateral growth.
 
 ## Method lessons (durable)
 

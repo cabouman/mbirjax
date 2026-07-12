@@ -39,20 +39,37 @@ equations, implementation sketches, and pros/cons is
    extension + `get_support_radius` + a helical-FDK zero-coverage fix + tests).  SiC A/B at
    two scales: truncated-end flash/ringing removed (the real object continuation is
    reconstructed instead), interior <1% change, and the 0.2% stop reached at ~iter 20 vs
-   ~49 (≈2.2× faster to the default stop at +12–15%/iter).  BGA axial-only check running;
-   details in `flash_remediation_plan.md` (implementation record).
-2. **split_sino_recon**: h_recon = ceil(h_sino·(1+R/SID)·ρ) + 2 with ρ =
-   δ_row/(mag·δ_slice) as the default; `align_split_grid` opt-in (sub-slice grid shift —
-   alignment is NOT reachable by index choice at ρ=1); retire the taper in the same
-   change (it fails at 8× downsampling — the shipped default visibly stripes there).
+   ~49 (≈2.2× faster to the default stop at +12–15%/iter).  BGA axial-only A/B: axial
+   padding cleans both slab ends but does NOT fix BGA's center-slice noise (a separate,
+   sharply localized center-slice artifact) or its lateral-dominated convergence drag.
+   Details in `flash_remediation_plan.md` (implementation record).
+2. **split_sino_recon — DONE + VALIDATED 2026-07-11** (commit `fcc0e9e`: h_recon formula,
+   taper retired, `align_split_grid` opt-in, feasibility fallback, `split_params`
+   metadata).  Lilly A/B at the P2c regimes: the default meets/beats every yardstick
+   (seam 9.5e-4 at 8× where the old taper managed 6.1e-3; 4.1e-4 at 4×) — even at the
+   worst-case half-slice mismatch — and alignment buys another ~6–12× (to ~5× background).
+   Details in `flash_remediation_plan.md`.
 3. **Lateral truncation detect-and-warn** via the `_get_sino_indicator` support mask
    already computed in `auto_set_regularization_params` (support touching the edge
    channels ⇒ truncated; free, no new threshold).  Deliberately NO auto-padding.
-4. **Re-baseline the regression dashboards** in the same change (default shapes grow and
-   values shift, for the better) + a release note.
-5. **Phase 3 validation on real scans** before the defaults ship: SiC (axial), z62
-   (radial), BGA (severe lateral, stretch).
-6. Later: the analogous per-end bounds for translation and multiaxis-parallel.
+4. **NSI pipeline auto-geometry cleanup — NEAR-TERM PRIORITY (quantified 2026-07-11,
+   must land BEFORE the re-baseline or we re-baseline twice).**  The NSI (and any
+   set-params-after-construction) flow computes the axial extension at construction with
+   DEFAULT detector pitches and offsets: the pitch face inflates R/SID by 1/δ_ch
+   (measured 2× over-extension on Lilly ds4 — 667 slices vs the intended ~569; ~8× at
+   full resolution — harmless for correctness, real memory), and the offset face
+   mis-centers by |det_row_offset|·R/SDD (sub-slice).  Fix: the pipeline re-runs
+   `auto_set_recon_geometry()` after setting detector params and drops its hand-set
+   `recon_slice_offset` compensation (the per-end extension now handles offsets
+   correctly).  Touches `preprocess/nsi.py` usage flow + docs/demos; validate on Lilly
+   (shape shrinks to the intended extension, seam/end behavior unchanged).
+5. **Re-baseline the regression dashboards** (after 1–4: default shapes grow and values
+   shift, for the better) + a release note; record the regime change both as an
+   `annotations.yaml` marker and a policy-block padding flag.
+6. **Phase 3 validation on real scans** — SiC (axial) and BGA (axial-only) DONE under
+   step 1; Lilly (split) DONE under step 2; z62 (radial) rides with step 3's warning
+   check.
+7. Later: the analogous per-end bounds for translation and multiaxis-parallel.
 
 ## 2. Partition sequence and iteration defaults
 

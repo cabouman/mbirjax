@@ -43,7 +43,7 @@ REGIMES = {
 SEAM_VIEW_HALF_WIDTH = 12
 INTERIOR_RADIUS_FRAC = 0.85
 SEED = 0
-EXPECTED_COMMIT = None       # set to the step-B commit hash before submitting
+EXPECTED_COMMIT = 'fcc0e9e'  # step-B head ("Remove sine taper and use padding instead.")
 
 _ROLE, _JOB = 'P3C_ROLE', 'P3C_JOB'
 
