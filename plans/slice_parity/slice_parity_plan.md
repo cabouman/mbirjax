@@ -278,6 +278,72 @@ simpler schedule.  Runs seeded per call (identical partitions/order across arms)
 Script: `plans/experiments/slice_parity/parity_realdata.py` (+ `.slurm`), staging
 `~/parity_lilly` on gautschi.
 
+## R1 WAVE-1 RESULTS (2026-07-12, gautschi 1×H100, Lilly ds8)
+
+Provenance: job 13472514 FAILED (all 8 arms "Unable to get Blas support" — the
+orchestrator generated references in-process and its resident XLA pool starved each arm
+worker's cuBLAS init; the runner now subprocesses every GPU step, commit e8e4261).
+References from the failed job were valid and cached; rerun job 13473504 COMPLETED,
+all 8 arms ok.  Raw arrays in `~/parity_lilly` on gautschi + local gitignored
+`results/r1/`; analysis by `r1_analysis.py`.
+
+Final cropped log10 NRMSE at 30 iterations [@ total idealized cost, wall]:
+
+| arm | s1.0 | s2.5 |
+|---|---|---|
+| C0 default | −1.3050 [30.0u, 59.6s] | −1.0303 [30.0u, 58.5s] |
+| C1 parity-all | **−1.3378** [45.0u, 85.9s] | **−1.1467** [45.0u, 83.0s] |
+| C2 composite | −1.3123 [31.5u, 61.8s] | −1.0298 [31.5u, 60.9s] |
+| C3 flat-128 | −1.1912 [30.0u, 49.6s] | −0.9147 [30.0u, 49.9s] |
+
+Idealized cost to reach the quality marks (multiples of C0's 30-iteration final):
+
+| arm | s1.0 2.0× / 1.2× | s2.5 2.0× / 1.2× |
+|---|---|---|
+| C0 | 7.0 / 22.0 | 7.0 / 22.0 |
+| C1 | 10.5 / 30.0 | 9.0 / 24.0 |
+| C2 | 7.5 / 22.5 | 7.5 / 23.5 |
+| C3 | 12.0 / never | 13.0 / never |
+
+**Verdict (protocol rule): NO candidate displaces C0** — none reaches the 1.2× mark at
+≤0.8× C0's idealized cost; C1 and C3 are also worse at the 2.0× mark.  C0 stays the
+default-candidate.
+
+**Reads:**
+
+1. **C1 (parity everywhere) is a real QUALITY ceiling, not a speed win**: better final
+   at both settings, and strongly sharpness-dependent — +0.033 log10 at s1.0 but
+   **+0.116 log10 at s2.5** (23% lower NRMSE), consistent with the mechanism (weaker
+   prior → the data term's axial coupling dominates the error budget).  Its gain is
+   DISTRIBUTED across the interior (median per-slice error −43% vs C0 at s2.5, iter 30),
+   not a localized hotspot fix — no interior hotspot exists on this dataset (per-slice
+   profiles are monotone toward the axial ends for every arm).
+2. **C2 (g1×2-ramp composite) is a cost-neutral wash on real data**: it leads C0
+   per-ITERATION early (the toy's fx read replicates directionally) but the 1.5×-charged
+   ramp iterations eat exactly that lead in cost units (marks within ~0.5u of C0
+   everywhere; finals within 0.007/0.0005 log10).  The toy composite's promise does NOT
+   carry to real data at honest cone cost.
+3. **C3 flat-128 clearly loses on real data at 30 iterations** (never reaches the 1.2×
+   mark; ~1.7–1.9× C0's cost to the 2.0× mark) — the toy's "coarse-start dominates
+   flat" DID transfer.  Directly relevant as a negative datum for the §2 flat-sequence
+   candidacy at interactive iteration budgets (caveat: 30 iters, ds8, two sharpness
+   settings; the partition-sequence study's longer-horizon evidence is a separate
+   regime).
+4. **Kernel-campaign coupling, quantified**: with a slice-set-aware cone forward
+   (P=2 charged ~1.0×), C1's 30 iterations would cost 30u and it reaches C0's final at
+   ITERATION 27 (s1.0) / 21 (s2.5) — i.e. even then C1 misses the 0.8× displacement bar
+   at s1.0 (0.91×; s2.5 passes at 0.73×).  The kernel's payoff is therefore "parity
+   becomes a free quality upgrade at a fixed iteration budget", not a rule-displacement
+   — flag for the kernel session, no implementation here.
+5. Wall times at ds8 are host-dispatch-bound (C1 1.44× C0 wall vs 2.0× mask-form
+   projector cost) — per protocol, not decision inputs.
+
+**Wave 2 (per protocol):** z62 (radial character; cached
+`z62_v4x_d4x_nv201_nch512` case from the partition study, loaded via
+`load_preprocessing` + sidecar) with the full C0–C3 × {1.0, 2.5} grid, and a Lilly ds4
+confirmation restricted to C0/C1/C2 (C3's read is already clear; ds4 arms are ~8×
+ds8 cost).  Decision discussion with Greg after both land.
+
 ## Interaction with the GPU-headroom kernel campaign
 
 If parity survives P1, the concrete change to the kernel work is an INTERFACE decision,
