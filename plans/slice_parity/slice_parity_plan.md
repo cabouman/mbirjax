@@ -108,6 +108,60 @@ NRMSE.
 cross-cylinder magnitude, separability); the cone parity cost measurement (fwd wall of
 a masked half-slice cylinder vs full); scale-up beyond 40 slices if P1 is positive.
 
+## P1 RESULTS (2026-07-12, local CPU run; raw data + figures in
+## `plans/experiments/slice_parity/results/`, gitignored — numbers recorded here)
+
+Setup as designed: cone 128×40×128 cube phantom, sharpness 3.0, noiseless, flat
+sequences, 20 iterations, 100-iteration converged references; self-check passed at
+exactly 0 (copied updater bitwise = library).  Final whole-volume NRMSE and per-iteration
+log10-NRMSE trajectories:
+
+| variant | sub-updates/iter | final NRMSE | log10 NRMSE @ iter 0 / 18 |
+|---|---|---|---|
+| cone baseline [7] | 128 | 0.1416 | −0.656 / −0.841 |
+| cone parity-2 [7]×2 | 256 | 0.1543 | −0.606 / −0.804 |
+| cone parity-3 [7]×3 | 384 | 0.1540 | −0.606 / −0.804 |
+| **cone compensated [6]×2** | **128** | **0.1347** | **−0.675 / −0.864** |
+| parallel baseline / parity-2 | 128 / 256 | 0.04217 / 0.04218 | identical |
+
+**Verdicts:**
+
+1. **The null control is exactly null** (parallel: 0.04217 vs 0.04218) — parity's effects
+   flow entirely through the cone data term's z-coupling, as the mechanism analysis
+   predicted.  Attribution confirmed.
+2. **Greg's compensated variant WINS at equal cost, at every iteration** — the
+   conjecture is supported: at fixed sub-updates/iteration, blocks that are
+   wider-in-plane × thinner-in-z (S/2 × 2 phases) beat the standard shape.  It leads
+   from iteration 1 (−0.675 vs −0.656) and holds ~0.02 log10 through iteration 18.
+   Caveat: its tail slope is slightly SHALLOWER (−0.0078 vs −0.0085 log10/iter over
+   iterations 10–18), so the lead may erode in very long runs — needs a longer-run arm.
+3. **Pure z-refinement at fixed in-plane granularity LOSES**: parity-2/3 are uniformly
+   ~0.04 log10 WORSE than baseline per iteration despite 2–3× the sub-updates.
+   Interpretation: at flat-128 granularity the overshoot-injection mechanism barely
+   binds (fine subsets don't inflate much), while parity phases ANCHOR updated slices to
+   fixed z-neighbors through the prior — red-black GS is a smoother, and the dominant
+   post-FDK error is low-z-frequency, exactly where full-cylinder joint updates (which
+   let whole columns move freely) are structurally better.  Net: block-shape trade, not
+   free z-decoupling.
+4. **Slice 19 (hotspot) fine structure**: parity-2 improves the EARLY hotspot behavior
+   (−1.01 vs −0.90 after iteration 1 — the predicted interference fix) but loses its
+   lead by ~iteration 10; compensated starts WORSE at slice 19 (−0.68; bigger in-plane
+   blocks = more cross-cylinder interference early) then converges fastest, overtaking
+   everything by ~iteration 5, with its lag-1 increment cosine DECORRELATING (1.0 → ~0.2
+   around iterations 6–8) where baseline/parity stay pinned at 0.99 — compensated stops
+   creeping along the single slow direction; the others don't.
+   NOTE: the notes' Symptom-A transient (slice-19 error INCREASING early) did NOT
+   reproduce under flat-[7] sequences — it belongs to the coarse-start default sequence,
+   which P1 deliberately avoided.  The coarse-granularity regime (where overshoot
+   injection is strongest and parity should bind hardest) is untested — follow-up F1.
+
+**Follow-ups (proposed):** F1 — default sequence [0,2,4,6,7] with parity masks applied
+only at the coarse iterations (tests the injection regime the mechanism targets most).
+F2 — block aspect-ratio sweep at equal cost: granularity {5,6,7} × phases {4,2,1}
+(is compensated the knee, or does wider×thinner keep winning?).  F3 — longer runs
+(50+ iterations: does compensated's lead persist against its shallower tail slope?).
+F4 — noise + weights + a larger case before any policy conclusion.
+
 ## Interaction with the GPU-headroom kernel campaign
 
 If parity survives P1, the concrete change to the kernel work is an INTERFACE decision,
