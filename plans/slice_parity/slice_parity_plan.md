@@ -497,6 +497,52 @@ iteration is likely to be dropped for memory reasons.
    coupling #2).  The convergence question (is the g1×2 shape a better coarse start
    than g2×1 on real data?) is what D2/D3 answer.
 
+## R2 RESULTS — memory-driven schedules (2026-07-12, gautschi 1×H100, job 13479215)
+
+The two questions from the synthesis: (a) does dropping the granularity-0 full-volume
+iteration cost anything on real data?  (b) is a g1×2 coarse start better than the plain
+g2×1 it would replace?  Arms D0 `[0,2,4,6,7]` (control), D1 `[2,4,6,7]`,
+D2 `[g1×2, 4,6,7]`, D3 `[g1×2, g1×2, 4,6,7]`, D4 `[2,2,4,6,7]`; sharpness {1.0, 2.0}
+(the realistic band); ds8 + z62; new 150-iteration s2.0 references.  Summaries
+`r2_summary.json` per staging dir, mirrored to `results/r2_{ds8,z62}/`.
+
+Final cropped log10 NRMSE at 30 iterations (lower = better), and the 15-iteration
+error reduction vs D0 (+ = better):
+
+| arm | ds8 s1.0 | ds8 s2.0 | z62 s1.0 | z62 s2.0 | @15 iters vs D0 (4 cells) |
+|---|---|---|---|---|---|
+| D0 `[0,2,4,6,7]` | −1.3050 | −1.1199 | −1.6796 | −1.6570 | — |
+| D1 `[2,4,6,7]` | **−1.3128** | **−1.1289** | **−1.6905** | **−1.6645** | +2% / +3% / +3% / +1% |
+| D2 `[g1×2,4,6,7]` | −1.3146 | −1.1303 | −1.6770 | −1.6632 | +3% / +3% / +1% / +2% |
+| D3 `[g1×2,g1×2,4,6,7]` | −1.3062 | −1.1200 | −1.6672 | −1.6551 | +0% / +0% / −2% / −0% |
+| D4 `[2,2,4,6,7]` | −1.3046 | −1.1197 | −1.6808 | −1.6554 | +0% / +0% / −0% / −2% |
+
+**In plain terms:**
+
+1. **Dropping the granularity-0 iteration is free — slightly beneficial, even.**
+   D1 ties or beats D0 in every cell at both the 15- and 30-iteration budgets, and
+   reaches most quality marks ~1 cost unit sooner.  The only place D0 leads is the
+   first 1–3 iterations on z62 (the full-volume update clears that dataset's large
+   low-frequency initial error fastest: iteration-1 error −0.70 vs D1's −0.64/−0.60),
+   and D1 has caught up by iteration 5–10.  Only a ≤3-iteration preview use case would
+   notice.
+2. **The g1×2 coarse start is not better than plain g2×1 in any durable way.**  D2
+   shows a real but transient edge on z62 around iterations 3–5 (e.g. −0.99 vs −0.93
+   at iteration 3, s1.0) that fades to a tie by iteration 10–15, and it pays 1.5u for
+   its parity iteration.  D3 vs D4 (the two-coarse-iteration pair) is a tie within
+   noise everywhere.  Fourth instance of a toy schedule read (F2c's g1×2 > g2×1) not
+   transferring to real data in decision-relevant form.
+3. **Repeating the coarse rung is mildly wasteful**: D3/D4 trail D1 in every cell —
+   spending the extra iteration climbing the ladder beats spending it re-running the
+   same granularity.
+4. **Recommendation: D1 `[2,4,6,7]` is the memory-friendly default candidate.**
+   Under the strict 0.8× displacement rule it "does not displace" (it ties rather than
+   wins big), but the driver here is the memory constraint, not speed — and D1 meets
+   it with zero quality cost at every production-relevant budget, no new machinery,
+   and no parity/kernel dependency.  Feeds the §2 default-sequence decision; the gaxb
+   variants need no further real-data work unless the compact slice-set updater ships
+   for other reasons.
+
 ## Interaction with the GPU-headroom kernel campaign
 
 If parity survives P1, the concrete change to the kernel work is an INTERFACE decision,
