@@ -478,6 +478,38 @@ forward acceleration adds little END-TO-END at 256³ (VCD there is host-dispatch
 the recompile diagnosis confirmed operationally.  Suite: 297 passed (14 pallas gates,
 interpret mode on CPU CI).
 
+## Compile-stall attribution — NOT REPRODUCIBLE, transient (2026-07-13; jobs 13497683/13497717/13497719; `compile_attribution.py`)
+
+Trigger: Greg's cold demo-1 run (kernel_investigation, 1024³, his interactive node,
+06:33) tripped XLA's slow-compile alarm — `_jit_compute_scatter_centers` took
+**2m19s** to compile; the second run was fast (the library's persistent cache).
+Question: is a multi-minute cold compile what a new user sees at production sizes?
+
+Six isolated cold cells (fresh persistent-cache dir each; per-module compile logs on
+a shared clock; H100 batch node), each varying ONE thing vs Greg's run:
+
+| cell | variable tested | cold fwd_project | in-process warm | ⇒ compile cost |
+|---|---|---|---|---|
+| cone_default | (reproduction baseline) | 25.6 s | 24.1 s | **~1.5 s** |
+| cone_autotune0 | autotuning off | 25.5 s | 24.1 s | ~1.4 s |
+| par_default | geometry | 10.3 s | 9.4 s | ~0.9 s |
+| cone_warm | cache-hit control | 25.5 s | 24.1 s | ~1.4 s |
+| ki_default | **Greg's exact code+env** (kernel_investigation, `mbirjax` env) | 25.6 s | 24.1 s | ~1.5 s |
+| cone_2cpu | compile-CPU starvation (taskset 2 CPUs) | 26.4 s | 24.2 s | ~2.3 s |
+| ki_homecache | cache dir on NFS HOME (the library default) | 25.5 s | 24.1 s | ~1.5 s |
+
+No cell tripped any slow-compile alarm; the entire demo-1 projector chain compiles
+cold in **1.5–2.5 s** at 1024³ under every variation (jax 0.10.1 in both envs; Greg's
+interactive allocation has the same 14 CPUs as the batch nodes).  **Verdict: the
+2m19s was a transient stall specific to that node/session at that moment** (most
+plausible: momentary NFS or CPU contention on the shared interactive node during the
+in-compile autotune-cache I/O — this jax pin reads/writes the per-fusion autotune
+cache inside the timed compile), not a property of the library, the branch, or a
+typical first-run cost.  New-user expectation at 1024³: ~1.5–2.5 s of one-time
+compile, then the persistent cache removes even that across processes and sessions.
+If the alarm recurs, capture `myquota`, `uptime`, and `nfsstat` from the node before
+suspecting the code.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
