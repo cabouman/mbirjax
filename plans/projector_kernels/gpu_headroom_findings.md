@@ -829,6 +829,40 @@ driver into `_pallas_kernels.py`, wire cone `back_pallas_band` (n≥2) AND cone 
 through the same driver, gates = the increment-3 pattern + the VCD-trajectory
 check backing the Hessian-gate decision (a).
 
+## inc5 VCD divergence: INTRINSIC edge conditioning, not a kernel defect (2026-07-13; jobs 13518353/13518443/13518498/13519365)
+
+The cone VCD n=2 trajectory gate (rel ≤1e-4, 4 seeded iterations) failed at 8.5e-3.
+The diagnosis chain, each step a single-variable experiment:
+
+1. **Hessian ablation** (cp=2 → XLA, the `_PALLAS_BACK_COEFF_POWERS` policy): rel
+   UNCHANGED (8.47e-3 → 8.52e-3) — the low-Hessian-amplification hypothesis REFUTED
+   (the Hessian-policy cell reads rel 0.0, confirming the policy works).
+2. **Per-call gates at every VCD call shape**: full-grid 6.5e-6 (GPU), subsets
+   sorted AND unsorted ≤4.7e-7 (interpret) — no per-call defect.
+3. **Localization** (iters 1/2/4 + slice/radial profiles): divergence grows
+   ~4×/iteration (1.1e-4 → 4.5e-4 → 8.5e-3), lives ENTIRELY in the outermost radial
+   bin (9e-3 vs ≤4e-4 interior) and seeds in the flash-extension axial zone (iter-1
+   worst slices all ≥952) — the minimal-ray-coverage voxels.  No band-seam period.
+4. **THE CONTROL** (two pure-XLA runs, back_view_batch 512 vs 96 — a legitimate
+   tuning knob, same reordering float class): **rel 1.33e-4 — ALSO FAILS the 1e-4
+   gate**, same signature (interior 1–2e-6, edge bin 1e-4).
+
+**Reading: linear response of ill-conditioned voxels.**  Amplification ≈10³ at
+low-coverage voxels over 4 iterations for BOTH pairs (control per-call ~1e-7-class →
+1.33e-4; pallas per-call 6.5e-6 → 8.5e-3; ratios match at ~64-65×).  The max-norm
+trajectory gate over the full support is passable only by bitwise-identical
+implementations — it is MISCALIBRATED for cone at this scale, not a kernel verdict.
+Interior behavior is likewise linear (pallas interior 2-4e-4 = control interior
+1-2e-6 × the per-call ratio).
+
+**Open decision (Greg): the cone VCD value-gate criterion.**  Options: (a)
+interior-masked rel with a control-calibrated tolerance; (b) convergence-equivalence
+— run off/on to production iterations against a deep reference and require equal
+NRMSE trajectories within the control's noise band (the parity-study methodology),
+plus a visual check; (c) both.  Also decidable: with the intrinsic explanation
+confirmed, the cone cp=2 → XLA policy (worth ~30 s/recon) was based on a
+misattributed signal and can be reverted — or kept as cheap conservatism.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
