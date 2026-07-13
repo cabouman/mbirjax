@@ -22,6 +22,16 @@ ITER_COUNTS = (1, 2, 4)
 OUT_DIR = '/scratch/gautschi/buzzard/w2_inc5_forensics'
 CELLS = [dict(name=f'vcd_i{k}_{cfg}', iters=k, on=cfg == 'on')
          for k in ITER_COUNTS for cfg in ('off', 'on')]
+# THE CONTROL: two pure-XLA runs differing ONLY in back_view_batch (a summation-
+# order perturbation of the same float class as pallas-vs-XLA).  If this pair also
+# diverges to ~1e-2 at the edge after 4 iterations, the divergence is INTRINSIC
+# ill-conditioning of low-coverage voxels, and the trajectory gate needs an
+# interior mask or a convergence metric -- no reordering-different implementation
+# could pass a max-norm gate over the extension zone.
+CELLS += [dict(name='vcd_ctrl_i4_off', iters=4, on=False, ctrl_ref='ctrl'),
+          dict(name='vcd_ctrl_i4_vb96', iters=4, on=False, vb=96, ctrl_ref='ctrl')]
+if os.environ.get('W2F_CTRL_ONLY') == '1':
+    CELLS = [c for c in CELLS if 'ctrl' in c['name']]
 
 
 def worker(cfg):
@@ -46,13 +56,17 @@ def worker(cfg):
     sino = jnp.asarray(rng.random(SINO_SHAPE, dtype=np.float32))
     jax.block_until_ready(sino)
     model.set_params(verbose=0)
+    if cfg.get('vb'):
+        model.tiles = model.tiles._replace(back_view_batch=cfg['vb'])
+        note(f'control: back_view_batch={cfg["vb"]}')
     np.random.seed(0)                        # identical partitions off/on
     out, _ = model.recon(sino, max_iterations=cfg['iters'])
     result = np.asarray(out)
     note(f'RESULT recon done iters={cfg["iters"]}')
 
-    ref_path = os.path.join(OUT_DIR, f"vcd_i{cfg['iters']}_ref.npy")
-    if not cfg['on']:
+    tag = cfg.get('ctrl_ref', f"vcd_i{cfg['iters']}")
+    ref_path = os.path.join(OUT_DIR, f'{tag}_ref.npy')
+    if not cfg['on'] and not cfg.get('vb'):
         np.save(ref_path, result)
         note('RESULT ref=saved')
         return

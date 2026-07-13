@@ -1271,10 +1271,9 @@ class ConeBeamModel(TomographyModel):
                 under 'split_params'.  Defaults to False.
 
         Returns:
-            Tuple[np.ndarray, dict]:
-                - Reconstructed volume (numpy array).
-                - Dictionary of metadata containing recon and model parameters for each half,
-                  plus 'split_params' (the overlaps and any alignment shift used).
+            Tuple[np.ndarray, dict]: the reconstructed volume (numpy array), and a
+                metadata dictionary containing recon and model parameters for each
+                half, plus 'split_params' (the overlaps and any alignment shift used).
 
         Raises:
             ValueError: If inputs are missing or shapes are inconsistent, if half_overlap < 2,
