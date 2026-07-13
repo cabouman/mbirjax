@@ -9,12 +9,15 @@ other branches stage-only).  The local `mbirjax` conda env resolves the MAIN wor
 
 ## Current task
 
-Increment 6: the CONE FORWARD kernel.  Entry point =
-`plans/projector_kernels/gpu_headroom_findings.md`, section
-"Cone forward kernel — DESIGN OPENING" (three candidate architectures; the design
-pass must sharpen the traffic models and pick one — a Greg checkpoint — then the
-established pattern: design → adversarial panel → GPU spike → integrate behind
-TilePolicy flags → gates).
+Increment 6: the CONE FORWARD kernel, architecture (C) — Greg-approved, design
+PANEL-HARDENED (wf_39d30f52).  Entry point = `plans/projector_kernels/
+gpu_headroom_findings.md`, section "Cone forward fused kernel — DESIGN" incl. the
+PANEL AMENDMENTS (tap window = gp.bp_psf_radius — the XLA vfan is itself an
+inverse-affine gather; single-shot gate must be floor-CALIBRATED, ~1e-4-class
+max-rel at 1024 rows, forward has no sqrt-V averaging; dispatch guard bp <= 2;
+register/ack pre-commitments).  NEXT STEP = the E6 spike (e5_cone_fused_back.py is
+the template): bench vs XLA cone fwd 19.4 s full-grid, bar 1.5x, expect 2.2-3.9x;
+then integrate via the inc5 geometry-hook pattern.
 
 ## State (all shipped + gated on this branch, 2026-07-13)
 
