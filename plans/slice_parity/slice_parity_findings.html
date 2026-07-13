@@ -119,12 +119,14 @@ Whether parity helps depends on <i>what error is left to fix</i>, exactly as cav
 predicted:
 </p>
 <table>
-<tr><th>starting condition (toy, 20 iterations)</th><th>default</th><th>parity-all</th><th>verdict</th></tr>
+<tr><th>starting condition (toy, 20 iterations)</th><th>default NRMSE</th><th>parity-all NRMSE</th><th>verdict</th></tr>
 <tr><td>flat-fine sequence from the FDK start</td><td>0.1416</td><td>0.1543</td><td class="lose">parity loses</td></tr>
-<tr><td>standard coarse-to-fine sequence [0,2,4,6,7]</td><td>&minus;1.507</td><td>&minus;1.596</td><td class="win">parity wins</td></tr>
+<tr><td>standard coarse-to-fine sequence [0,2,4,6,7]</td><td>0.0311</td><td>0.0254</td><td class="win">parity wins</td></tr>
 </table>
 <p class="cap">
-(Top row: final NRMSE, lower better.  Bottom row: log10 NRMSE, more negative better.)
+NRMSE (lower is better).  The two rows use different partition sequences, so compare
+default against parity <i>within</i> each row, not across rows &mdash; the coarse-to-fine
+sequence simply converges much further on this toy than the flat one does.
 </p>
 <p>
 From a flat-fine start the dominant remaining error is low-spatial-frequency, where
@@ -138,29 +140,32 @@ where parity is favorable.
 <h2 id="realdata">Finding 3 &mdash; on real data, parity is a quality option that grows along three axes</h2>
 <p>
 Applied to the standard schedule on all three datasets, parity-all consistently reaches
-lower final error than the default at the same iteration count.  How much depends
+a lower NRMSE than the default at the same iteration count.  How much depends
 systematically on three things: it grows with <b>sharpness</b> (a weaker prior leaves
 more of the axial-coupling error for parity to remove), with <b>iteration count</b>
 (the advantage accrues in the tail), and with <b>problem size</b>.
 </p>
-<img src="figs/parity_trend.png" alt="Parity error reduction across datasets, sharpness, and iteration count">
+<img src="figs/parity_trend.png" alt="NRMSE of default vs parity-all across datasets and sharpness">
 <p class="cap">
-Error reduction of parity-all vs default at the same iteration count.  At the realistic
-end (sharpness 1.0) the gain is ~4&ndash;5% at 15 iterations; at the sharpness-2.5
-extreme it reaches 15&ndash;19% at 15 iterations and 24&ndash;35% at 30, largest on the
-biggest dataset (lilly_ds4).
+NRMSE vs the reference at 30 iterations, default vs parity-all (green = parity's error
+reduction).  Absolute NRMSE is lowest on z62 (~2%) and highest on lilly_ds4 (~9&ndash;14%);
+within each pair, parity's reduction grows from ~7&ndash;10% at sharpness 1.0 to
+24&ndash;35% at sharpness 2.5, largest on the biggest dataset.  The same ordering holds
+earlier in the run but smaller &mdash; at 15 iterations the reductions are ~4&ndash;5%
+at sharpness 1.0 and 15&ndash;19% at sharpness 2.5 &mdash; so the advantage accrues with
+iterations.
 </p>
 <p>
 The improvement is <b>distributed across the interior</b>, not a localized fix of the
-center slice: parity lowers the per-slice error at essentially every interior slice.
+center slice: parity lowers the per-slice NRMSE at essentially every interior slice.
 </p>
-<img src="figs/parity_profile.png" alt="Per-slice interior error, default vs parity-all, lilly_ds4 sharpness 2.5">
+<img src="figs/parity_profile.png" alt="Per-slice interior NRMSE, default vs parity-all, lilly_ds4 sharpness 2.5">
 <p class="cap">
-Per-slice interior error at the strongest operating point (lilly_ds4, sharpness 2.5,
-30 iterations).  Parity is lower nearly everywhere; the interior median error is 39%
-lower.  The small bump near z&asymp;330 in the default curve is the fan plane (the
-center-slice effect) &mdash; parity reduces it but does not remove it, consistent with
-the distributed-improvement picture rather than a single-slice cure.
+Per-slice NRMSE at the strongest operating point (lilly_ds4, sharpness 2.5,
+30 iterations).  Parity is lower nearly everywhere; the interior median NRMSE is 41%
+lower (9.0% vs 15.2%).  The small bump near z&asymp;330 in the default curve is the fan
+plane (the center-slice effect) &mdash; parity reduces it but does not remove it,
+consistent with the distributed-improvement picture rather than a single-slice cure.
 </p>
 
 <h2 id="cost">Finding 4 &mdash; a quality gain, not a speed gain, and it is kernel-gated</h2>
