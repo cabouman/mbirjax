@@ -36,9 +36,13 @@ CELLS = [
     # under another env's python (its editable install selects that env's worktree).
     # Round 1 (job 13497683, headroom branch): cone/parallel/autotune0/warm all showed
     # ~1-2 s cold compiles at 1024^3 -- Greg's 2m19s NOT reproduced; cells retired.
-    ('ki_default', 'cone', '', None, None,
-     '/home/buzzard/.conda/envs/mbirjax/bin/python'),     # kernel_investigation code+env
-    ('cone_2cpu',  'cone', '', 2,    None, None),         # compile-CPU-starvation bracket
+    # Round 2 (job 13497717): ki_default (Greg's exact code+env) AND cone_2cpu both
+    # compiled cold in ~1.5-2.3 s -- code delta and CPU starvation refuted; retired.
+    # Round 3: the last config difference vs Greg's run -- the cache dir on NFS HOME
+    # (the library default) instead of scratch; autotune-cache I/O happens INSIDE the
+    # timed compile at this pin.
+    ('ki_homecache', 'cone', '', None, None,
+     '/home/buzzard/.conda/envs/mbirjax/bin/python', os.path.expanduser('~')),
 ]
 
 if os.environ.get('COMPILE_ATTR_SMOKE') == '1':
@@ -112,8 +116,9 @@ def worker():
 def orchestrator():
     """JAX-free parent: fresh cache dir per cold cell, one subprocess per cell."""
     os.makedirs(OUT_DIR, exist_ok=True)
-    for name, geom, xla_flags, cpu_pin, cache_from, python_bin in CELLS:
-        cache_dir = os.path.join(OUT_DIR, f'cache_{cache_from or name}')
+    for name, geom, xla_flags, cpu_pin, cache_from, python_bin, *cache_root in CELLS:
+        cache_dir = os.path.join(cache_root[0] if cache_root else OUT_DIR,
+                                 f'cache_{cache_from or name}')
         if cache_from is None:
             shutil.rmtree(cache_dir, ignore_errors=True)      # guarantee COLD
             os.makedirs(cache_dir)
