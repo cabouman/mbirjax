@@ -76,6 +76,26 @@ def main():
     scale = float(jnp.max(jnp.abs(ref)))
 
     # ── Composed pallas path ──────────────────────────────────────────────────
+    # Weights builder jitted ONCE (module-level-jit structure): the retrace-per-call
+    # hypothesis says the 1.83 s weights cost was host tracing, not device work.
+    gp = pp.geometry_params
+
+    def _weights(view_params, centers, coeff_power):
+        def one_view(single_view_params, cts):
+            n_p, W_p_c, footprint = ParallelBeamModel.compute_proj_data(
+                idx, single_view_params, pp)
+            delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
+            scale = (delta_voxel_row * gp.delta_voxel) / footprint
+            offs = jnp.arange(-gp.psf_radius, gp.psf_radius + 1)
+            n = cts[None, :] + offs[:, None]
+            L_max = jnp.minimum(1.0, W_p_c)
+            A = scale * jnp.clip((W_p_c + 1.0) / 2.0 - jnp.abs(n_p - n), 0.0, L_max)
+            A = A * ((n >= 0) & (n < C))
+            return A ** coeff_power
+        return jax.vmap(one_view)(view_params, centers)
+
+    weights_jit = jax.jit(_weights, static_argnums=2)
+
     n_chunks = num_views // VIEW_CHUNK
     kern = jax.jit(bk.make_back_call(VIEW_CHUNK, C, P, r_pad, RC, NUM_WARPS, psf_radius))
     to_cm = jax.jit(lambda s: jnp.pad(jnp.swapaxes(s, 1, 2),
@@ -94,7 +114,8 @@ def main():
             jax.block_until_ready(n_pc)
             parts['centers'] += time.perf_counter() - t0
             t0 = time.perf_counter()
-            wts = bk.precompute_weights(pp, idx, view_params_all[vsl], n_pc, coeff_power)
+            wts = jax.block_until_ready(
+                weights_jit(view_params_all[vsl], jnp.asarray(n_pc), coeff_power))
             parts['weights'] += time.perf_counter() - t0
             t0 = time.perf_counter()
             sino_cm = jax.block_until_ready(to_cm(sino[vsl]))
