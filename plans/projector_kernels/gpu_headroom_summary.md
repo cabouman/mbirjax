@@ -4,6 +4,56 @@
 `gpu_headroom_findings.md` (the measured record).  Written 2026-07-12 after the E3
 kernel spike; update as milestones land.)
 
+## What a Pallas kernel is (background for everything below)
+
+Pallas is jax's built-in kernel language: GPU kernels written in Python with
+numpy-style syntax, compiled through Triton (NVIDIA's kernel compiler) instead of XLA.
+It ships inside jax — no new dependency, no CUDA build step — and the same kernel runs
+in a slow "interpret mode" on CPU, which is how the correctness tests run in CI
+without a GPU.
+
+**The core inversion.**  With ordinary jax/XLA you write whole-array math and the
+compiler decides the loop structure, the fusion, and how memory is touched.  Pallas
+flips that: you write ONE small program plus a *grid*, the program runs once per grid
+point (thousands of instances concurrently), and *you* decide what each instance
+reads, computes, and writes.  Our back kernel's grid is (row-chunk, pixel): each
+program instance owns one pixel's chunk of output rows, loops over all views and psf
+taps, and writes its result once.  Programs see memory through *refs* (declared views
+into device arrays); indexing a ref is a load, assigning into one is a store, and when
+two programs might write the same location the write must be an *atomic add*
+(hardware-serialized) — which is exactly the collision cost the forward kernel's
+two-phase design minimizes.
+
+**Why it beats XLA here** — not because XLA generates bad code (E0 showed its fusions
+are near-optimal within their model), but because Pallas can express two things the
+whole-array model structurally cannot:
+
+1. *Registers across a reduction.*  The back kernel keeps its accumulator in registers
+   while looping over all views — the view sum never touches memory.  XLA's fusion
+   materializes per-view partials into the reduction.  This is most of the 9×.
+2. *Scheduling for cache residency.*  The grid is ordered so that all
+   concurrently-running programs gather from the same ~33 MB slice of the sinogram,
+   which then lives in L2 — the transaction-bound gathers (the E2a-confirmed limiter)
+   become cache hits.  XLA offers no handle on which programs run near each other.
+
+The forward kernel adds a third trick: restructuring a scatter (colliding atomic adds)
+into a gather over pre-sorted contributor streams, walked segment by segment.
+
+**What it costs.**  Everything is static and explicit.  All shapes are compile-time
+constants — any data-dependent launch shape recompiles per call (the increment-2
+0.68× episode).  The Triton backend at our jax pin has sharp edges: no in-kernel
+gather of block-loaded arrays (ref-level indexing is the one supported idiom),
+power-of-two block shapes, no shared-memory scratch.  Performance is per-architecture
+(constants measured on H100; the allowlist refuses anything unmeasured).  And it is a
+second implementation of physics we already have — hence the update/retire protocol in
+`_pallas_kernels.py`, the float-tolerance and adjoint gates against the XLA path, and
+the XLA path staying compiled-in everywhere as the permanent fallback (inspect what a
+run will actually use via `model.get_compute_config()`).
+
+One-sentence version: XLA is a compiler you trust with the loop structure; Pallas is
+you taking responsibility for the loop structure — worth it precisely where the win
+lives in memory choreography the compiler can't see.
+
 ## Where the campaign stood before E3
 
 The attribution rounds (E0–E2a) reduced the "GPU kernels are ~10× above compute bounds"
