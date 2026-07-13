@@ -58,7 +58,7 @@ from importlib.metadata import version, PackageNotFoundError
 TilePolicy = namedtuple('TilePolicy', ['fwd_view_batch', 'back_view_batch',
                                        'fwd_pixel_batch', 'back_pixel_batch',
                                        'fwd_slice_band', 'back_slice_band',
-                                       'fwd_pallas', 'back_pallas',
+                                       'fwd_pallas', 'back_pallas', 'back_pallas_band',
                                        'sort_by_channel', 'back_stacked_gather'])
 
 # Persistent jit-compilation cache: repeat runs of the same model shapes load
@@ -368,7 +368,8 @@ class TomographyModel(ParameterHandler):
         # Full detail (including WHY pallas is off) via get_compute_config().
         pallas = [name for name, flag in
                   [('back', getattr(self.tiles, 'back_pallas', False)),
-                   ('fwd', getattr(self.tiles, 'fwd_pallas', False))] if flag]
+                   ('fwd', getattr(self.tiles, 'fwd_pallas', False)),
+                   ('band-back', getattr(self.tiles, 'back_pallas_band', False))] if flag]
         if pallas:
             report += ' (pallas: {})'.format('+'.join(pallas))
         return report
@@ -428,7 +429,9 @@ class TomographyModel(ParameterHandler):
             'kernels': {'pallas_available': pallas_ok,
                         'pallas_status': pallas_reason,
                         'back_pallas': bool(getattr(self.tiles, 'back_pallas', False)),
-                        'fwd_pallas': bool(getattr(self.tiles, 'fwd_pallas', False))},
+                        'fwd_pallas': bool(getattr(self.tiles, 'fwd_pallas', False)),
+                        'back_pallas_band': bool(getattr(self.tiles,
+                                                         'back_pallas_band', False))},
             'jit_cache': {'persistent_cache_dir': jax.config.jax_compilation_cache_dir},
         }
         if print_results:
@@ -534,6 +537,7 @@ class TomographyModel(ParameterHandler):
             # pixel counts (no guard -- plans/projector_kernels/fwd_guard_sweep.md).
             fwd_pallas=False,
             back_pallas=False,
+            back_pallas_band=False,
             sort_by_channel=False,
             back_stacked_gather=False,
         )

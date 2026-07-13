@@ -88,6 +88,59 @@ def test_adjoint_identity():
     assert abs(lhs - rhs) / max(abs(lhs), 1e-30) < REL_TOL
 
 
+@pytest.mark.parametrize('coeff_power', [1, 2])
+def test_back_owned_views_band_matches_xla(coeff_power):
+    """The PER-OWNER calling mode (increment 3, the multi-device band path): a view
+    subset's cropped-band back projection through the pallas driver must match the
+    XLA path at the float gate -- global view indices, band-cropped rows, gradient
+    and Hessian."""
+    model = _make_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+    rng = np.random.default_rng(8)
+    sino = jnp.asarray(rng.random(SINO_SHAPE, dtype=np.float32))
+    owned = np.arange(16, 48)                       # one owner's GLOBAL view block
+    g0, g1 = 5, 13                                  # a rows==slices band
+    band = sino[16:48, g0:g1, :]
+
+    ref = model.projector_functions.sparse_back_project(
+        band, idx, owned_view_indices=owned, coeff_power=coeff_power)
+    out = _pallas_kernels.back_project_single_device(
+        model, band, idx, coeff_power=coeff_power, owned_view_indices=owned,
+        interpret=_interpret())
+    assert out.shape == jnp.asarray(ref).shape
+    assert _rel_max_err(out, jnp.asarray(ref)) < REL_TOL
+
+
+def test_band_dispatch_routes_per_owner_calls(monkeypatch):
+    """With back_pallas_band forced on, the parallel per-owner band override must
+    route through the pallas driver with the owner's global view indices and the
+    cropped band (spied so CPU CI can observe the dispatch in interpret mode)."""
+    model = _make_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+    sino = jnp.asarray(np.random.default_rng(9).random(SINO_SHAPE, dtype=np.float32))
+    owned = np.arange(8, 40)
+    ref = model.projector_functions.sparse_back_project(
+        sino[8:40, 3:11, :], idx, owned_view_indices=owned)
+
+    seen = {}
+    real = _pallas_kernels.back_project_single_device
+
+    def spy(tm, s, pix, coeff_power=1, owned_view_indices=()):
+        seen['shape'] = tuple(s.shape)
+        seen['owned'] = np.asarray(owned_view_indices).tolist()
+        return real(tm, s, pix, coeff_power=coeff_power,
+                    owned_view_indices=owned_view_indices, interpret=_interpret())
+
+    monkeypatch.setattr(_pallas_kernels, 'back_project_single_device', spy)
+    model.tiles = model.tiles._replace(back_pallas_band=True)
+    out = model._back_project_view_shard_to_band(sino[8:40], idx, 3, 11, owned, 1)
+    assert seen['shape'] == (32, 8, SINO_SHAPE[2])
+    assert seen['owned'] == list(range(8, 40))
+    assert _rel_max_err(out, jnp.asarray(ref)) < REL_TOL
+
+
 def test_policy_off_on_cpu():
     """On CPU the tile policy must not enable the pallas path (is_available is False),
     so the XLA path serves every call unchanged."""

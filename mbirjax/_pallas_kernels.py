@@ -10,13 +10,14 @@ What lives here, and where it is dispatched from
   ``TomographyModel._sparse_back_project_single_device`` (reached only through the
   GPU n=1 short-circuit -- multi-device recons use the banded XLA path) when
   ``model.tiles.back_pallas`` is set.
-* FORWARD projection, SUBSET-SIZED calls only (the VCD fine tail): ~2.6x at the
-  6,026-pixel cell.  Dispatched from ``projectors.sparse_forward_project_public``
-  when ``model.tiles.fwd_pallas`` is set AND the call fits one pixel batch
-  (``tiles.fwd_pixel_batch``).  Full-grid forward stays on the XLA sorted reduce by
-  policy: its kernel-level win is smaller (~1.5x) and the python view-chunk loop over
-  ~3000 pixel batches would erode it; extending coverage needs the batched-grid
-  (scan) variant, not a bigger guard alone.
+* FORWARD projection, single device, ALL pixel counts: ~2.6x at the 6,026-pixel
+  fine-tail cell, 3.2-3.8x at full grid.  Dispatched from
+  ``projectors.sparse_forward_project_public`` when ``model.tiles.fwd_pallas`` is
+  set.  There is deliberately NO pixel-count guard: the 2026-07-13 P x band sweep
+  (plans/projector_kernels/fwd_guard_sweep.md, 70 value-gated cells) measured pallas
+  faster at EVERY point with no crossover -- past L2 the kernel streams at near the
+  HBM traffic bound while XLA pays the same traffic plus its sort/scatter constant
+  factor.  Do not reintroduce a size guard without new measurements.
 Both flags are set in ``ParallelBeamModel._select_tile_policy`` (GPU only), gated by
 ``availability()`` below.  Inspect a live model with ``model.get_compute_config()``.
 
@@ -88,8 +89,8 @@ ROW_CHUNK = 256
 NUM_WARPS = 2
 # Forward (e3_hfan_pallas_v3.py sweep): segment cap 64 balances the tap walk against
 # split-segment atomics at subset uniformity; num_warps=1 (per-program work is one
-# warp's worth).  The subset-size gate: pallas forward only when the call fits ONE
-# pixel batch (the measured 2.13x shape); larger calls keep the XLA sorted reduce.
+# warp's worth).  All pixel counts route here (no size guard -- see the module
+# docstring and fwd_guard_sweep.md).
 FWD_SEGMENT_CAP = 64
 FWD_NUM_WARPS = 1
 # Device kinds where the kernels have been measured (substring match on device_kind).
@@ -246,13 +247,23 @@ _accumulate = jax.jit(lambda a, b: a + b, donate_argnums=0)
 
 
 def back_project_single_device(model, sinogram, pixel_indices, coeff_power=1,
-                               output_device=None, interpret=False):
+                               output_device=None, interpret=False,
+                               owned_view_indices=()):
     """The pallas single-device back-projection driver (the composed-prototype
     structure, productized): view-chunk loop x [centers, weights, channel-major layout,
     ONE kernel grid over ALL pixels], accumulating across chunks.  No pixel scan, no
     transfer chunking -- the kernel has no scan carry, so the whole pixel set goes in
     one grid.  ``interpret=True`` runs the kernel in pallas interpret mode (CPU-capable;
     used by the correctness tests -- the selection policy never routes here on CPU).
+
+    Two calling modes:
+    * DEFAULT (``owned_view_indices`` empty): the whole-model n=1 path -- the sinogram
+      covers all views and the driver places it via the model.
+    * PER-OWNER (``owned_view_indices`` = the caller's GLOBAL view indices): the
+      multi-device band path's per-view-owner call.  ``sinogram`` is that owner's
+      LOCAL (views, band_rows, channels) block, already resident on its device -- the
+      driver must NOT reshard or re-place anything (view-owners run concurrently, one
+      thread each; every output must stay on its caller's device).
 
     View chunking exists for MEMORY, not speed: the weights are (V, T, P) f32, so a
     full-grid call built for all views at once would hold multi-GB weight arrays;
@@ -262,12 +273,16 @@ def back_project_single_device(model, sinogram, pixel_indices, coeff_power=1,
     # import cycle at package init (tomography_model -> this module -> projectors).
     pf = model.projector_functions
     pp = pf.projector_params
-    sinogram = model._shard_sinogram(sinogram)
+    if len(owned_view_indices) > 0:
+        owned_all = np.asarray(owned_view_indices)
+    else:
+        owned_all = None
+        sinogram = model._shard_sinogram(sinogram)
+        pixel_indices = jax.device_put(pixel_indices, model.sino_placement.devices[0])
     num_views, rows, num_channels = sinogram.shape
     rows_padded = next_pow2(rows)
     psf_radius = pp.geometry_params.psf_radius
     num_pixels = int(pixel_indices.shape[0])
-    pixel_indices = jax.device_put(pixel_indices, model.sino_placement.devices[0])
 
     view_chunk = min(model.tiles.back_view_batch, num_views)
     kern = _make_back_call(view_chunk, num_channels, num_pixels, rows_padded,
@@ -280,7 +295,9 @@ def back_project_single_device(model, sinogram, pixel_indices, coeff_power=1,
             # Ragged tail chunk: fall through with a chunk-sized kernel of its own.
             kern_tail = _make_back_call(v1 - v0, num_channels, num_pixels, rows_padded,
                                         psf_radius, interpret=interpret)
-        owned = jnp.arange(v0, v1)
+        # Chunk view ids: LOCAL positions by default, the caller's GLOBAL ids in
+        # per-owner mode (numpy -- the jitted builders gather view params in-jit).
+        owned = np.arange(v0, v1) if owned_all is None else owned_all[v0:v1]
         centers = _jit_compute_scatter_centers(
             pf.view_params_array, pixel_indices, model.compute_channel_coordinate, pp,
             pixels_major=False, owned_view_indices=owned)
@@ -488,11 +505,11 @@ def _make_fwd_chunk_fn(hfan_data_fn, projector_params, vc, num_channels, n2,
 
 def forward_project_subset(model, voxel_values, pixel_indices, owned_view_indices=(),
                            interpret=False):
-    """The pallas forward driver for SUBSET-SIZED calls (one pixel batch): a view-chunk
-    loop of fused (streams + split + two-phase kernel) jit calls, outputs concatenated
-    to the library orientation (views, band_rows, channels).  values (P, band) is the
-    shared gather tile; band is whatever the caller passes (a slice band or full
-    cylinders)."""
+    """The pallas forward driver (all pixel counts; the name predates the guard drop):
+    a view-chunk loop of fused (streams + split + two-phase kernel) jit calls, outputs
+    concatenated to the library orientation (views, band_rows, channels).  values
+    (P, band) is the shared gather tile; band is whatever the caller passes (a slice
+    band or full cylinders)."""
     pf = model.projector_functions
     pp = pf.projector_params
     num_channels = pp.sinogram_shape[2]

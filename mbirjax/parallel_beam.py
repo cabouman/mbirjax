@@ -79,6 +79,13 @@ class ParallelBeamModel(TomographyModel):
         (the kernel sizes its output slices from the input rows) -- cheaper than the base banded
         path, which would process the full detector rows.  Returns the per-view-owner partial band
         ``(num_pixels, g1 - g0)``."""
+        if getattr(self.tiles, 'back_pallas_band', False):
+            # Pallas register-tile kernel on the cropped band (value-equal to the XLA
+            # path up to summation order; gated in tests/test_pallas_kernels.py).
+            from mbirjax import _pallas_kernels
+            return _pallas_kernels.back_project_single_device(
+                self, view_data[:, g0:g1, :], pixel_indices, coeff_power=coeff_power,
+                owned_view_indices=owned_view_indices)
         return self.projector_functions.sparse_back_project(
             view_data[:, g0:g1, :], pixel_indices,
             owned_view_indices=owned_view_indices, coeff_power=coeff_power)
@@ -127,6 +134,12 @@ class ParallelBeamModel(TomographyModel):
             # ungated flag would only make the pallas token/get_compute_config LIE at
             # n>=2 -- measured: the n>=2 walls are pure XLA band path.
             back_pallas=_pallas_kernels.is_available() and n_devices == 1,
+            # The multi-device band path's per-owner back calls (n>=2 only -- at n=1
+            # the short-circuit takes back_pallas above): the shipped register-tile
+            # kernel measured 8.9x on the per-owner band sweep (w2_band_ab.py, job
+            # 13505309; parallel rows == slices, so the n=1 kernel IS the band
+            # kernel).  Same availability gate; the flag is truthful per reachability.
+            back_pallas_band=_pallas_kernels.is_available() and n_devices > 1,
             # Back kernel: one stacked gather covering every psf tap.  A GPU win because the
             # back kernel is almost entirely gather-bound and parallel beam has no vertical
             # fan behind which the gather latency could hide; measured WORSE on CPU, which

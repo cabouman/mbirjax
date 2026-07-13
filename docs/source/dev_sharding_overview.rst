@@ -212,6 +212,11 @@ the measured record; the ``e3_*``/``e4_*`` scripts under
   silently keeps the XLA path.
 * **Fallback** — the XLA kernels remain compiled-in at every site (they also serve
   CPU, other archs, and the multi-device band path).
+* **Multi-device band adoption (parallel beam)** — at n≥2 the per-owner slice-band
+  back calls route through the same register-tile kernel (``back_pallas_band``;
+  parallel rows ≡ slices, so the single-device kernel IS the band kernel — the
+  driver's per-owner mode takes the owner's global view indices and never re-places
+  data).  The banded reduce-scatter orchestration is unchanged.
 * **Introspection** — because the fallback is silent,
   ``model.get_compute_config(print_results=True)`` reports which kernel paths a run
   will actually use (the full tile policy, plus WHY pallas is unavailable when it
