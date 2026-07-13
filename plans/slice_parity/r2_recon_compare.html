@@ -6,18 +6,36 @@
 <style>
   body{font-family:sans-serif;max-width:1400px;margin:auto;padding:0 1em;line-height:1.45}
   img{max-width:100%}
-  h2{margin-top:2em}
+  h2{margin-top:2em;border-bottom:1px solid #ddd;padding-bottom:0.2em}
+  h3{margin-top:1.6em}
   table{border-collapse:collapse;margin:0.5em 0}
   td,th{border:1px solid #bbb;padding:3px 10px;text-align:right}
   th:first-child,td:first-child{text-align:left}
   .cap{color:#555;font-size:0.9em;margin-top:0.2em}
+  .nav{font-size:0.95em;color:#333}
+  .chip{display:inline-block;padding:2px 12px;border-radius:12px;font-size:0.85em;
+        font-weight:bold;margin-right:8px}
+  .s10{background:#dbeafe;color:#1e40af}   /* sharpness 1.0 = blue */
+  .s20{background:#ffedd5;color:#9a3412}   /* sharpness 2.0 = orange */
+  .i15{background:#e5e7eb;color:#111}
+  .i20{background:#c7ccd4;color:#111}
 </style>
 </head>
 <body>
 
 <h1>Does dropping the first full-volume iteration change the reconstruction?</h1>
 
-<h2>Overview and summary</h2>
+<p class="nav"><b>Contents:</b>
+<a href="#overview">Overview</a> &middot;
+<a href="#methods">Data and methods</a> &middot;
+<a href="#look">What to look for</a> &middot;
+<a href="#lilly_ds8">lilly_ds8</a> &middot;
+<a href="#z62">z62</a> &middot;
+<a href="#lilly_ds4">lilly_ds4</a> &middot;
+<a href="#zoom">Center-slice zoom</a> &middot;
+<a href="#provenance">Provenance</a></p>
+
+<h2 id="overview">Overview and summary</h2>
 <p>
 MBIRJAX's default VCD schedule <b>D0&nbsp;=&nbsp;[0,2,4,6,7]</b> begins with a
 granularity-0 iteration: a single subset containing <i>every</i> voxel cylinder, i.e. a
@@ -36,7 +54,7 @@ and faint bands at the axial ends and at the cone fan plane, all at a few percen
 the display window.  Dropping the granularity-0 iteration is safe.
 </p>
 
-<h2>Data and methods</h2>
+<h2 id="methods">Data and methods</h2>
 <ul>
 <li><b>Datasets.</b> <i>lilly_ds8</i> and <i>lilly_ds4</i>: the NSI D01788
 autoinjector scan preprocessed at downsample (8,8) with view subsample 8 (sinogram
@@ -47,12 +65,12 @@ Z62 cylinder (partition-study cache, 201 views, recon 512&times;512&times;640).<
 sharpness &isin; {1.0, 2.0} set before <code>auto_set_regularization_params</code>
 (auto-regularization then frozen).  Both schedules run the plain library solver with
 the same seed, so subset partitions match.  Volumes were captured at 15, 20, and 30
-iterations in one continuous run per arm.</li>
+iterations in one continuous run per variant.</li>
 <li><b>Reference.</b> Where shown, the leftmost column is a 150-iteration
 default-schedule reconstruction of the same cost function &mdash; effectively the
 converged answer both schedules are heading toward.  (lilly_ds4 at sharpness 2.0 has
 no cached reference; that comparison is image-only.)</li>
-<li><b>Metric.</b> The numbers above each figure group are cropped log10 NRMSE vs the
+<li><b>Metric.</b> The numbers in each dataset's table are cropped log10 NRMSE vs the
 reference &mdash; log10 of the relative RMS difference over the interior (disk of
 0.85&times; the recon radius, 10% of slices excluded at each axial end).  More
 negative = closer to converged; &minus;1.0 means 10% RMS from the reference,
@@ -62,11 +80,16 @@ negative = closer to converged; &minus;1.0 means 10% RMS from the reference,
 <code>refs/</code>) for inspection with <code>slice_viewer</code>.</li>
 </ul>
 
-<h2>What to look for</h2>
+<h2 id="look">What to look for</h2>
 <p>
 Each figure shows an axial mid-slice (top row) and a coronal mid-cut (bottom row).
 Columns: reference (when available) | D0 | D1 | signed difference
-D1&nbsp;&minus;&nbsp;D0.  The grayscale window is shared across the recon columns; the
+D1&nbsp;&minus;&nbsp;D0.  <b>Within</b> a figure, only the schedule differs between the
+D0 and D1 columns.  <b>Between</b> figures, the sharpness setting and iteration count
+change, as labeled by the colored chips in each figure heading
+(<span class="chip s10">sharpness 1.0</span> is blue,
+<span class="chip s20">sharpness 2.0</span> is orange; the gray chip gives the
+iteration count).  The grayscale window is shared across the recon columns; the
 difference panel has its own symmetric limit, printed in its title &mdash; check that
 limit against the window to judge how small the differences are (they peak at a few
 percent of the window everywhere).
@@ -82,53 +105,80 @@ not a structural change.</li>
 cone-beam flash zones, excluded from the metric and addressed separately by the
 flash-remediation work.</li>
 <li><b>A band at mid-height on lilly_ds4 sharpness 2.0:</b> the cone fan plane
-(center slice).  See the zoom section at the bottom &mdash; both schedules have the
-same noise spike there; the difference image highlights it only because the two runs'
-noise realizations diverge most where voxels are least anchored.</li>
+(center slice).  See the <a href="#zoom">zoom section</a> &mdash; both schedules have
+the same noise spike there; the difference image highlights it only because the two
+runs' noise realizations diverge most where voxels are least anchored.</li>
 </ul>
 
-<h2>lilly_ds8</h2>
+<h2 id="lilly_ds8">lilly_ds8</h2>
+<p class="nav"><b>Variants:</b>
+<a href="#lilly_ds8-s10-i15">s1.0 &middot; 15 it</a> &middot;
+<a href="#lilly_ds8-s10-i20">s1.0 &middot; 20 it</a> &middot;
+<a href="#lilly_ds8-s20-i15">s2.0 &middot; 15 it</a> &middot;
+<a href="#lilly_ds8-s20-i20">s2.0 &middot; 20 it</a></p>
 <p class="cap">Cropped log10 NRMSE vs reference (lower = better):</p>
 <table>
-<tr><th>sharpness</th><th>arm</th><th>15 it</th><th>20 it</th><th>30 it</th></tr>
+<tr><th>sharpness</th><th>variant</th><th>15 it</th><th>20 it</th><th>30 it</th></tr>
 <tr><td>1.0</td><td>D0</td><td>&minus;1.153</td><td>&minus;1.203</td><td>&minus;1.287</td></tr>
 <tr><td>1.0</td><td>D1</td><td>&minus;1.163</td><td>&minus;1.211</td><td>&minus;1.294</td></tr>
 <tr><td>2.0</td><td>D0</td><td>&minus;0.953</td><td>&minus;1.006</td><td>&minus;1.092</td></tr>
 <tr><td>2.0</td><td>D1</td><td>&minus;0.965</td><td>&minus;1.015</td><td>&minus;1.100</td></tr>
 </table>
+<h3 id="lilly_ds8-s10-i15"><span class="chip s10">sharpness 1.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds8_s1.0_it15.png">
+<h3 id="lilly_ds8-s10-i20"><span class="chip s10">sharpness 1.0</span><span class="chip i20">20 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds8_s1.0_it20.png">
+<h3 id="lilly_ds8-s20-i15"><span class="chip s20">sharpness 2.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds8_s2.0_it15.png">
+<h3 id="lilly_ds8-s20-i20"><span class="chip s20">sharpness 2.0</span><span class="chip i20">20 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds8_s2.0_it20.png">
 
-<h2>z62</h2>
+<h2 id="z62">z62</h2>
+<p class="nav"><b>Variants:</b>
+<a href="#z62-s10-i15">s1.0 &middot; 15 it</a> &middot;
+<a href="#z62-s10-i20">s1.0 &middot; 20 it</a> &middot;
+<a href="#z62-s20-i15">s2.0 &middot; 15 it</a> &middot;
+<a href="#z62-s20-i20">s2.0 &middot; 20 it</a></p>
 <p class="cap">Cropped log10 NRMSE vs reference (lower = better):</p>
 <table>
-<tr><th>sharpness</th><th>arm</th><th>15 it</th><th>20 it</th><th>30 it</th></tr>
+<tr><th>sharpness</th><th>variant</th><th>15 it</th><th>20 it</th><th>30 it</th></tr>
 <tr><td>1.0</td><td>D0</td><td>&minus;1.507</td><td>&minus;1.566</td><td>&minus;1.665</td></tr>
 <tr><td>1.0</td><td>D1</td><td>&minus;1.518</td><td>&minus;1.577</td><td>&minus;1.675</td></tr>
 <tr><td>2.0</td><td>D0</td><td>&minus;1.495</td><td>&minus;1.551</td><td>&minus;1.644</td></tr>
 <tr><td>2.0</td><td>D1</td><td>&minus;1.503</td><td>&minus;1.561</td><td>&minus;1.653</td></tr>
 </table>
+<h3 id="z62-s10-i15"><span class="chip s10">sharpness 1.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/z62_s1.0_it15.png">
+<h3 id="z62-s10-i20"><span class="chip s10">sharpness 1.0</span><span class="chip i20">20 iterations</span></h3>
 <img src="r2_recon_figs/z62_s1.0_it20.png">
+<h3 id="z62-s20-i15"><span class="chip s20">sharpness 2.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/z62_s2.0_it15.png">
+<h3 id="z62-s20-i20"><span class="chip s20">sharpness 2.0</span><span class="chip i20">20 iterations</span></h3>
 <img src="r2_recon_figs/z62_s2.0_it20.png">
 
-<h2>lilly_ds4</h2>
+<h2 id="lilly_ds4">lilly_ds4</h2>
+<p class="nav"><b>Variants:</b>
+<a href="#lilly_ds4-s10-i15">s1.0 &middot; 15 it</a> &middot;
+<a href="#lilly_ds4-s10-i20">s1.0 &middot; 20 it</a> &middot;
+<a href="#lilly_ds4-s20-i15">s2.0 &middot; 15 it</a> &middot;
+<a href="#lilly_ds4-s20-i20">s2.0 &middot; 20 it</a></p>
 <p class="cap">Cropped log10 NRMSE vs reference at sharpness 1.0 (no reference exists
 for sharpness 2.0 &mdash; image-only there):</p>
 <table>
-<tr><th>sharpness</th><th>arm</th><th>15 it</th><th>20 it</th><th>30 it</th></tr>
+<tr><th>sharpness</th><th>variant</th><th>15 it</th><th>20 it</th><th>30 it</th></tr>
 <tr><td>1.0</td><td>D0</td><td>&minus;0.987</td><td>&minus;1.028</td><td>&minus;1.103</td></tr>
 <tr><td>1.0</td><td>D1</td><td>&minus;0.995</td><td>&minus;1.036</td><td>&minus;1.109</td></tr>
 </table>
+<h3 id="lilly_ds4-s10-i15"><span class="chip s10">sharpness 1.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds4_s1.0_it15.png">
+<h3 id="lilly_ds4-s10-i20"><span class="chip s10">sharpness 1.0</span><span class="chip i20">20 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds4_s1.0_it20.png">
+<h3 id="lilly_ds4-s20-i15"><span class="chip s20">sharpness 2.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds4_s2.0_it15.png">
+<h3 id="lilly_ds4-s20-i20"><span class="chip s20">sharpness 2.0</span><span class="chip i20">20 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds4_s2.0_it20.png">
 
-<h2>Center-slice (fan-plane) zoom &mdash; lilly_ds4 sharpness 2.0</h2>
+<h2 id="zoom">Center-slice (fan-plane) zoom &mdash; lilly_ds4 sharpness 2.0</h2>
 <p>
 The difference band at mid-height in the lilly_ds4 s2.0 coronal cut sits at
 z&nbsp;&asymp;&nbsp;329&ndash;331: the cone fan plane (the volume midpoint is 333; the
@@ -143,15 +193,15 @@ the least-anchored voxels are where two otherwise-equivalent runs diverge most.
 </p>
 <img src="r2_recon_figs/lilly_ds4_s2.0_it15_centerzoom.png">
 
-<h2>Provenance</h2>
+<h2 id="provenance">Provenance</h2>
 <p class="cap">
 Capture: gautschi job 13481068 (branch <code>greg/gpu_headroom</code>), script
 <code>plans/experiments/slice_parity/r2_recon_capture.py</code>; figures by
 <code>r2_recon_figs.py</code>.  Study context and the full schedule-search results:
 <code>plans/slice_parity/slice_parity_plan.md</code> (R2 section).  Note: this capture
-ran each arm continuously (production-like); the instrumented R2 study restarted the
-solver each iteration, and the two differ by ~0.01&ndash;0.02 in log10 NRMSE &mdash;
-the D1&nbsp;&ge;&nbsp;D0 ordering held in all 10 reference-checked cells here.
+ran each variant continuously (production-like); the instrumented R2 study restarted
+the solver each iteration, and the two differ by ~0.01&ndash;0.02 in log10 NRMSE
+&mdash; the D1&nbsp;&ge;&nbsp;D0 ordering held in all 10 reference-checked cells here.
 </p>
 
 </body>

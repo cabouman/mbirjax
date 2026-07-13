@@ -20,6 +20,9 @@ read" section explains the metrics.
    and 30 iterations.  The one visible trace is the first ~3 iterations on data whose
    initial error is dominated by low spatial frequencies (z62), recovered by iteration
    5–10 — only a ≤3-iteration preview would notice.  No new machinery required.
+   **Visual evidence:** side-by-side reconstructions (reference | D0 | D1 | difference,
+   all datasets, 15/20 iterations) in `r2_recon_compare.html` (this directory),
+   published at `/depot/bouman/www/mbirjax/skip_0_results/index.html`.
 2. **Parity (z-phase alternation) is a quality option, not a default ingredient.**
    In the realistic operating envelope (sharpness ≤ 2.0, max_iterations = 15) it buys
    only ~4–5% error reduction, while costing +50% cone projector work per iteration as
@@ -76,7 +79,7 @@ read" section explains the metrics.
   cropped NRMSE, per sharpness.
 - **P1 / F1–F3 / FX / R1** — experiment rounds: P1 = first mask-based A/B,
   F = follow-ups, FX = post-F probes, R1 = real-data schedule protocol.
-- **f1_base / f1_pall** — F1 arms: default sequence plain / with parity-2 at every
+- **f1_base / f1_pall** — F1 variants: default sequence plain / with parity-2 at every
   iteration.
 - **red–black GS** — red–black Gauss–Seidel: update one z-parity class while the other
   stays fixed.
@@ -219,7 +222,7 @@ log10-NRMSE trajectories:
    wider-in-plane × thinner-in-z (S/2 × 2 phases) beat the standard shape.  It leads
    from iteration 1 (−0.675 vs −0.656) and holds ~0.02 log10 through iteration 18.
    Caveat: its tail slope is slightly SHALLOWER (−0.0078 vs −0.0085 log10/iter over
-   iterations 10–18), so the lead may erode in very long runs — needs a longer-run arm.
+   iterations 10–18), so the lead may erode in very long runs — needs a longer-run variant.
 3. **Pure z-refinement at fixed in-plane granularity LOSES**: parity-2/3 are uniformly
    ~0.04 log10 WORSE than baseline per iteration despite 2–3× the sub-updates.
    Interpretation: at flat-128 granularity the overshoot-injection mechanism barely
@@ -253,7 +256,7 @@ F4 — noise + weights + a larger case before any policy conclusion.
 
 All cone, sharpness 3.0.  Final log10 NRMSE at 20 iterations unless noted:
 
-| group | arm | log10 NRMSE | read |
+| group | variant | log10 NRMSE | read |
 |---|---|---|---|
 | F1 (default seq [0,2,4,6,7]) | base | −1.507 | slice-19 BAD STEP reproduced (−0.988→−0.976 rise at iter 2) |
 | | parity-2 at coarse iters only | −1.540 | dip softened (~0.03 log better through the transient), not removed |
@@ -281,7 +284,7 @@ All cone, sharpness 3.0.  Final log10 NRMSE at 20 iterations unless noted:
    small noiseless cube phantom rewards coarse low-frequency corrections; the
    partition-sequence study's real-data evidence for flat tails need not transfer —
    flag for the §2 default-sequence work, do not conclude from a toy.
-4. **Obvious next arm (not yet run): the combined recipe at equal cost** — coarse-start
+4. **Obvious next variant (not yet run): the combined recipe at equal cost** — coarse-start
    sequence with parity everywhere AND a compensated fine tail (e.g. [0,2,4,6,6,...] with
    phases 2 throughout ≈ f1_pall's quality at f1_base's cost), plus the g4×8 probe of
    F2's unreached knee.  Then F4 (noise + weights + larger case, GPU) before any policy
@@ -290,11 +293,11 @@ All cone, sharpness 3.0.  Final log10 NRMSE at 20 iterations unless noted:
 ## FX PROBES (2026-07-12, same setup/deep reference; run during the Greg discussion of
 ## the general state-dependence principle)
 
-| arm | schedule | final log10 NRMSE | read |
+| variant | schedule | final log10 NRMSE | read |
 |---|---|---|---|
 | fx_g4x8 | flat (16 subsets × 8 phases), 128 su/it | −1.033 | flat fine-end trend STILL monotone past stride 8 — the PSF-bandwidth P-cap hypothesis is FALSIFIED as stated; more likely the toy's coarse-in-plane preference in disguise |
 | fx_comb | ramp [0,2,4,6,6…]×P2 (compensated tail, 128 su/it) | −1.467 | compensated tail LOSES to f1_base's (128,1) tail in the ramp context — the flat-context compensated win does NOT carry past a coarse start |
-| fx_comb_g1x2 | ramp [1,3,5,6,6…]×P2 (Greg's (2,2) start) | −1.478 | **best EARLY trajectory of all arms** (iters 1–3: −1.030/−1.078/−1.146, ahead of f1_pall) — g1×2 is a better ramp start than granularity-1; its (64,2) tail then decays slower |
+| fx_comb_g1x2 | ramp [1,3,5,6,6…]×P2 (Greg's (2,2) start) | −1.478 | **best EARLY trajectory of all variants** (iters 1–3: −1.030/−1.078/−1.146, ahead of f1_pall) — g1×2 is a better ramp start than granularity-1; its (64,2) tail then decays slower |
 
 **Third confirmation of state-dependence, now in both directions:** flat-context winners
 (compensated shape) lose in ramp context; parity wins only post-coarse; the flat
@@ -330,7 +333,7 @@ weights, sharpness ∈ {1.0, 2.5} set BEFORE `auto_set_regularization_params` (t
 auto_regularize off) — the production-ish and hard cases.  Wave 2 (after wave-1 reading):
 z62 (radial character) and a ds4 confirmation of the winner (ds8 recons are
 interactive-size, where VCD is host-dispatch-bound — WALL times at ds8 do not transfer;
-see cost accounting).  8 arms + 2 references ≈ under an hour on one H100.
+see cost accounting).  8 variants + 2 references ≈ under an hour on one H100.
 
 **References.**  Per sharpness: 150-iteration default-sequence recon (stop forced off),
 cached in the staging dir.  All candidates target the same MAP objective.
@@ -358,7 +361,7 @@ slice-set-aware forward fans.
 **Decision rule.**  A candidate displaces C0 if it reaches the 1.2× quality mark at
 ≤0.8× C0's idealized cost at BOTH sharpness settings and is never worse at the 2.0×
 mark; C3 is judged by the same rule (it is the §2 candidate).  Ties → prefer the
-simpler schedule.  Runs seeded per call (identical partitions/order across arms).
+simpler schedule.  Runs seeded per call (identical partitions/order across variants).
 
 Script: `plans/experiments/slice_parity/parity_realdata.py` (+ `.slurm`), staging
 `~/parity_lilly` on gautschi.
@@ -370,13 +373,13 @@ Script: `plans/experiments/slice_parity/parity_realdata.py` (+ `.slurm`), stagin
   difference over the interior region.  **More negative = less error = better.**
   Anchors: −1.0 means the recon is 10% RMS away from the converged answer, −1.3 ≈ 5%,
   −1.7 ≈ 2%.
-- **Differences.**  "Arm A is +0.10 log10 better than B" means A's error is 10^0.10 ≈
+- **Differences.**  "Variant A is +0.10 log10 better than B" means A's error is 10^0.10 ≈
   1.26× smaller — a 21% error reduction at the same point in the run.  In this
   document a **+ difference is always an improvement** (error reduction).
 - **Cost units (u).**  1u = the projector work of one ordinary VCD iteration.  A
   parity (P=2) iteration is charged 1.5u, because the cone forward cost scales with
   detector rows and masked phases don't reduce it (glossary "u").  So 30 ordinary
-  iterations cost 30u while 30 parity iterations cost 45u — whenever a parity arm
+  iterations cost 30u while 30 parity iterations cost 45u — whenever a parity variant
   "wins at the same iteration count", it paid 1.5× per iteration to get there.
 - **The displacement rule** asks: to reach a fixed quality level, does the candidate
   need ≤0.8× the cost units C0 needs (and never more at the looser 2.0× level, at both
@@ -386,16 +389,16 @@ Script: `plans/experiments/slice_parity/parity_realdata.py` (+ `.slurm`), stagin
 
 ## R1 WAVE-1 RESULTS (2026-07-12, gautschi 1×H100, Lilly ds8)
 
-Provenance: job 13472514 FAILED (all 8 arms "Unable to get Blas support" — the
-orchestrator generated references in-process and its resident XLA pool starved each arm
+Provenance: job 13472514 FAILED (all 8 variants "Unable to get Blas support" — the
+orchestrator generated references in-process and its resident XLA pool starved each variant
 worker's cuBLAS init; the runner now subprocesses every GPU step, commit e8e4261).
 References from the failed job were valid and cached; rerun job 13473504 COMPLETED,
-all 8 arms ok.  Raw arrays in `~/parity_lilly` on gautschi + local gitignored
+all 8 variants ok.  Raw arrays in `~/parity_lilly` on gautschi + local gitignored
 `results/r1/`; analysis by `r1_analysis.py`.
 
 Final cropped log10 NRMSE at 30 iterations (lower = better) [@ total cost, wall]:
 
-| arm | s1.0 | s2.5 |
+| variant | s1.0 | s2.5 |
 |---|---|---|
 | C0 default | −1.3050 [30.0u, 59.6s] | −1.0303 [30.0u, 58.5s] |
 | C1 parity-all | **−1.3378** [45.0u, 85.9s] | **−1.1467** [45.0u, 83.0s] |
@@ -405,7 +408,7 @@ Final cropped log10 NRMSE at 30 iterations (lower = better) [@ total cost, wall]
 Cost units needed to reach the quality marks (lower = cheaper; marks are 2.0× and 1.2×
 of C0's final error):
 
-| arm | s1.0 2.0× / 1.2× | s2.5 2.0× / 1.2× |
+| variant | s1.0 2.0× / 1.2× | s2.5 2.0× / 1.2× |
 |---|---|---|
 | C0 | 7.0 / 22.0 | 7.0 / 22.0 |
 | C1 | 10.5 / 30.0 | 9.0 / 24.0 |
@@ -452,13 +455,13 @@ cheaper than C0, let alone at ≤0.8× its cost.  C0 stays the default-candidate
 Provenance: job 13474445, both cases sequentially in one job (runner made multi-case,
 commit 943c646).  z62: sino (201, 512, 512) from the partition-study cache, recon
 512×512×640, all four candidates × both sharpness.  Lilly ds4: sino (450, 470, 374),
-recon 374×374×667, C0/C1/C2 only (C3's read was already clear; ds4 arms are ~3× ds8
-wall).  Staging `/scratch/gautschi/buzzard/parity_{z62,lilly_ds4}`; compact per-arm
+recon 374×374×667, C0/C1/C2 only (C3's read was already clear; ds4 variants are ~3× ds8
+wall).  Staging `/scratch/gautschi/buzzard/parity_{z62,lilly_ds4}`; compact per-variant
 arrays mirrored locally to `results/r1_z62/`, `results/r1_lilly_ds4/`.
 
 Final cropped log10 NRMSE at 30 iterations (lower = better) [@ total cost]:
 
-| arm | z62 s1.0 | z62 s2.5 | ds4 s1.0 | ds4 s2.5 |
+| variant | z62 s1.0 | z62 s2.5 | ds4 s1.0 | ds4 s2.5 |
 |---|---|---|---|---|
 | C0 default | −1.680 [30u] | −1.577 [30u] | −1.114 [30u] | −0.860 [30u] |
 | C1 parity-all | **−1.724** [45u] | **−1.711** [45u] | **−1.154** [45u] | **−1.044** [45u] |
@@ -502,10 +505,10 @@ large — but it still loses at s1.0 (27u vs 20u), so the both-settings rule fai
 4. **z62 has a modest interior hotspot** (slice ≈400 at ~4.7× the median slice error,
    s1.0); C1 trims it to ~4.3× and cuts the interior median 46% at s2.5 — same
    distributed-improvement character as Lilly.
-5. Reference-depth caveat: at z62 s1.0 the best arms end within ~2% RMS of the
+5. Reference-depth caveat: at z62 s1.0 the best variants end within ~2% RMS of the
    150-iteration reference, so orderings in the last ~0.05 log10 lean on reference
    quality; the displacement verdicts don't (they're decided at much coarser marks),
-   but per-arm final rankings closer than that should not be over-read.
+   but per-variant final rankings closer than that should not be over-read.
 
 ## R1 synthesis — the decision frame (discussion with Greg, 2026-07-12)
 
@@ -523,7 +526,7 @@ iteration is likely to be dropped for memory reasons.
 2. **Dropping granularity 0 looks ~free on real data** — C2 never used it and tied C0
    on three datasets.  Remaining question for the memory-driven default: does plain
    `[2,4,6,7]` do as well without any parity compensation?  → R2.
-3. **R2 (proposed, pending Greg's go):** arms D0 = `[0,2,4,6,7]` (control),
+3. **R2 (proposed, pending Greg's go):** variants D0 = `[0,2,4,6,7]` (control),
    D1 = `[2,4,6,7]`, D2 = `[g1×2, 4,6,7]`, D3 = `[g1×2, g1×2, 4,6,7]`,
    D4 = `[2,2,4,6,7]` (plain cost-control for D3); sharpness {1.0, 2.0}; ds8 + z62;
    report at 15 AND 30 iterations.  Memory note: in today's mask form a g1×2 update
@@ -536,7 +539,7 @@ iteration is likely to be dropped for memory reasons.
 
 The two questions from the synthesis: (a) does dropping the granularity-0 full-volume
 iteration cost anything on real data?  (b) is a g1×2 coarse start better than the plain
-g2×1 it would replace?  Arms D0 `[0,2,4,6,7]` (control), D1 `[2,4,6,7]`,
+g2×1 it would replace?  Variants D0 `[0,2,4,6,7]` (control), D1 `[2,4,6,7]`,
 D2 `[g1×2, 4,6,7]`, D3 `[g1×2, g1×2, 4,6,7]`, D4 `[2,2,4,6,7]`; sharpness {1.0, 2.0}
 (the realistic band); ds8 + z62; new 150-iteration s2.0 references.  Summaries
 `r2_summary.json` per staging dir, mirrored to `results/r2_{ds8,z62}/`.
@@ -544,7 +547,7 @@ D2 `[g1×2, 4,6,7]`, D3 `[g1×2, g1×2, 4,6,7]`, D4 `[2,2,4,6,7]`; sharpness {1.
 Final cropped log10 NRMSE at 30 iterations (lower = better), and the 15-iteration
 error reduction vs D0 (+ = better):
 
-| arm | ds8 s1.0 | ds8 s2.0 | z62 s1.0 | z62 s2.0 | @15 iters vs D0 (4 cells) |
+| variant | ds8 s1.0 | ds8 s2.0 | z62 s1.0 | z62 s2.0 | @15 iters vs D0 (4 cells) |
 |---|---|---|---|---|---|
 | D0 `[0,2,4,6,7]` | −1.3050 | −1.1199 | −1.6796 | −1.6570 | — |
 | D1 `[2,4,6,7]` | **−1.3128** | **−1.1289** | **−1.6905** | **−1.6645** | +2% / +3% / +3% / +1% |
