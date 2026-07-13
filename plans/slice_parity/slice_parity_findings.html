@@ -48,14 +48,15 @@ a slice's nearest axial neighbors are held fixed while it updates &mdash; decoup
 part of the data Hessian the surrogate gets wrong.
 </p>
 <div class="key">
-<b>Bottom line.</b> Parity behaves exactly as the mechanism predicts, and it does
-reduce error &mdash; but in the realistic operating range (sharpness &le; 2.0, about
-15 iterations) the reduction is only ~4&ndash;5%, while parity costs about 50% more
-cone projector work per iteration.  Its benefit grows with sharpness, with iteration
-count, and with problem size, so it is worth keeping as an optional <b>quality knob</b>
-for high-sharpness, quality-critical reconstructions &mdash; but it is <b>not</b> a
-change to the default schedule, and it only becomes cost-effective if a slice-set-aware
-cone forward kernel removes the extra cost.
+<p style="margin-top:0"><b>Bottom line.</b> Parity behaves exactly as the mechanism
+predicts, and it does reduce error &mdash; but in the realistic operating range
+(sharpness &le; 2.0, about 15 iterations) the reduction is only ~4&ndash;5%, while
+parity costs about 50% more cone projector work per iteration.  Its benefit grows with
+sharpness, with iteration count, and with problem size.</p>
+<p style="margin-bottom:0"><i>Recommendation:</i> keep parity as an optional
+<b>quality knob</b> for high-sharpness, quality-critical reconstructions &mdash; but it
+is <b>not</b> a change to the default schedule, and it only becomes cost-effective if a
+slice-set-aware cone forward kernel removes the extra cost.</p>
 </div>
 
 <h2 id="idea">The idea and why it might work</h2>
