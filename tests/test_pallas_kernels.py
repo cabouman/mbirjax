@@ -166,13 +166,44 @@ def test_pair_adjoint_identity():
     assert abs(lhs - rhs) / max(abs(lhs), 1e-30) < REL_TOL
 
 
+def test_fwd_over_cap_segments_match_xla(monkeypatch):
+    """With the cap forced far below the per-channel tap counts, phase 2 carries REAL
+    remainder segments -- this exercises the pl.when guard on the atomic add with work
+    that must NOT be skipped (the standard test shapes never exceed the shipped cap,
+    so without this test an inverted guard would pass the suite)."""
+    monkeypatch.setattr(_pallas_kernels, 'FWD_SEGMENT_CAP', 4)
+    _pallas_kernels._make_fwd_chunk_fn.cache_clear()      # keys don't include the cap
+    try:
+        model = _make_model()
+        recon_shape = model.get_params('recon_shape')
+        idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+        rng = np.random.default_rng(6)
+        values = jnp.asarray(rng.random((len(idx), recon_shape[2]), dtype=np.float32))
+        ref = model.projector_functions.sparse_forward_project(values, idx)
+        out = _pallas_kernels.forward_project_subset(model, values, idx,
+                                                     interpret=_interpret())
+        assert _rel_max_err(out, jnp.asarray(ref)) < REL_TOL
+        # Self-check: the forced cap really produced remainder segments (else this
+        # test silently degenerates back to the all-pad regime it exists to escape).
+        pf = model.projector_functions
+        _, _, starts = _pallas_kernels._jit_compute_fwd_streams(
+            pf.view_params_array, idx, model.compute_hfan_data,
+            pf.projector_params, owned_view_indices=jnp.arange(1))
+        assert int(jnp.max(jnp.diff(starts[0]))) > 4
+    finally:
+        _pallas_kernels._make_fwd_chunk_fn.cache_clear()
+
+
 def test_fwd_split_two_phase_covers_all_taps():
-    """The host cap-and-split must partition every contributor exactly once: phase-1 +
-    phase-2 segment lengths sum to the per-view tap totals, segments stay in-bounds and
-    below the cap, and phase-2 pads target the scratch channel."""
+    """The device cap-and-split must partition every contributor exactly once: phase-1
+    + phase-2 segment lengths sum to the per-view tap totals, segments stay in-bounds
+    and below the cap, unused bound slots target the scratch channel, and every real
+    segment lies inside its own channel's stream range."""
     starts = np.array([[0, 3, 3, 150, 155], [0, 0, 70, 80, 90]], dtype=np.int32)
-    C = 4
-    seg1, seg2, n2 = _pallas_kernels._split_two_phase_np(starts, cap=64, num_channels=C)
+    C, n2 = 4, 8                                  # n2 well above the real segment count
+    seg1, seg2 = jax.vmap(
+        lambda s: _pallas_kernels._split_two_phase(jnp.asarray(s), 64, n2))(
+        jnp.asarray(starts))
     seg1, seg2 = np.asarray(seg1), np.asarray(seg2)
     for v in range(2):
         covered = (seg1[v, :, 1] - seg1[v, :, 0]).sum() + \
@@ -182,3 +213,6 @@ def test_fwd_split_two_phase_covers_all_taps():
         assert ((seg2[v, :, 1] - seg2[v, :, 0]) <= 64).all()
         pads = seg2[v][seg2[v, :, 1] == seg2[v, :, 0]]
         assert (pads[:, 2] == C).all()
+        real = seg2[v][seg2[v, :, 1] > seg2[v, :, 0]]
+        for a, b, c, _ in real:
+            assert starts[v, c] <= a and b <= starts[v, c + 1]
