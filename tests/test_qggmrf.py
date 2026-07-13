@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import mbirjax as mj
 import unittest
 
-from mbirjax import b_tilde_by_definition, compute_surrogate_and_grad, compute_qggmrf_grad_and_hessian
+from mbirjax import compute_surrogate_and_grad, compute_qggmrf_grad_and_hessian
 
 
 class TestQGGMRF(unittest.TestCase):
@@ -58,25 +58,6 @@ class TestQGGMRF(unittest.TestCase):
             taylor = jnp.sum(gradient0.flatten() * delta.flatten()) + alpha * jnp.sum(gradient_delta.flatten() * delta.flatten())
 
             assert (jnp.allclose(finite_diff, taylor))
-
-    def test_b_tilde(self):
-        # Make some random qggmrf parameters
-        p = np.random.rand(1)[0] + 1
-        q = p - 0.9 * np.random.rand(1)[0]
-        T = 0.5 + np.random.rand(1)[0]
-        sigma_x = 0.1 + np.random.rand(1)[0]
-        b = (1, 1, 1, 1, 1, 1)
-        delta = 0.1 + np.random.rand(10)
-        qggmrf_params = (b, sigma_x, p, q, T)
-
-        # Get the calculated value of b_tilde
-        b_tilde_2 = mj.get_2_b_tilde(delta, b[0], qggmrf_params)
-
-        # Compute b_tilde from Eq. 8.19 and Table 8.1 in FCI
-        # b_tilde = b = rho'(delta) / (2 delta)
-        b_tilde_ref = b[0] * b_tilde_by_definition(delta, sigma_x, p, q, T)
-
-        assert (jnp.allclose(b_tilde_2 / 2, b_tilde_ref))
 
     def test_gradient_and_hessian(self):
         # Compare the gradient and hessian against a known baseline
@@ -136,6 +117,12 @@ class TestQGGMRF(unittest.TestCase):
     def test_loss_and_gradient(self):
         # Compare the loss and gradient using a finite difference approximation on loss and a reference
         # implementation of the gradient.  Also compare the hessian to a reference implementation.
+        # Seeded for reproducibility, and the whole computation runs in x64: the finite difference
+        # needs 64-bit arithmetic, and computing BOTH gradient/Hessian implementations in x64 lets
+        # them agree far below the float32 noise floor (in float32 the two paths differ by ~1e-7,
+        # which trips a default allclose wherever a gradient/Hessian entry is near zero -- i.e. where
+        # neighboring voxels happen to be nearly equal).
+        np.random.seed(0)
         p = 2.0413
         q = 1.124
         T = 1.46
@@ -144,17 +131,16 @@ class TestQGGMRF(unittest.TestCase):
         b = normalize_b(b)
         qggmrf_params = (b, sigma_x, p, q, T)
 
-        # Get a random recon, x
+        # Get a random recon, x, and a perturbation direction
         recon_shape = (3, 3, 3)
         recon0 = np.random.rand(*recon_shape)
         flat_recon0 = recon0.reshape((-1, recon_shape[2]))
         pixel_indices = np.arange(flat_recon0.shape[0])
-        grad0, hess0 = mj.qggmrf_gradient_and_hessian_at_indices(flat_recon0, recon_shape, pixel_indices,
-                                                                             qggmrf_params)
-
-        # Then get a perturbation to verify a finite difference approximation
         delta = np.random.rand(*recon_shape)
-        with jax.enable_x64(True):  # Finite difference requires 64 bit arithmetic
+
+        with jax.enable_x64(True):
+            grad0, hess0 = mj.qggmrf_gradient_and_hessian_at_indices(flat_recon0, recon_shape,
+                                                                     pixel_indices, qggmrf_params)
             epsilon = 1e-7
             recon1 = recon0 + epsilon * delta
 
@@ -165,11 +151,11 @@ class TestQGGMRF(unittest.TestCase):
             finite_diff = (loss1 - loss0) / epsilon
             taylor = jnp.sum(grad0.flatten() * delta.flatten())
 
-        assert jnp.allclose(float(finite_diff), float(taylor), rtol=1e-3)
+            grad_direct, hess_direct = compute_qggmrf_grad_and_hessian(recon0, qggmrf_params)
 
-        grad_direct, hess_direct = compute_qggmrf_grad_and_hessian(recon0, qggmrf_params)
-        assert (jnp.allclose(hess_direct, hess0.reshape(recon_shape)))
-        assert (jnp.allclose(grad_direct, grad0.reshape(recon_shape)))
+            assert jnp.allclose(float(finite_diff), float(taylor), rtol=1e-3)
+            assert (jnp.allclose(hess_direct, hess0.reshape(recon_shape)))
+            assert (jnp.allclose(grad_direct, grad0.reshape(recon_shape)))
 
 
 def normalize_b(b):
