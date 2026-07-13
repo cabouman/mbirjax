@@ -991,6 +991,30 @@ inc5 cone back kernel, interpret mode on CPU CI; VCD composition via the occasio
 convergence gate.  Dispatch (post-spike): cone fwd_pallas / fwd_pallas_band through
 the inc5 geometry-hook pattern, guarded on bp_psf_radius ≤ 2.
 
+## E6 — the cone fused forward kernel: SPIKE BAR CLEARED (2026-07-13; job 13530564; `e6_cone_fused_fwd.py`)
+
+| cell | XLA | E6 (warps=1) | E6 (warps=2) | values (nrmse / max-rel) |
+|---|---|---|---|---|
+| full grid (821,904 px, 1152 slices) | 23.03 s | 10.86 s (2.12x) | **8.85 s (2.60x)** | 1.1e-6 / 8.9e-6 PASS |
+| subset (6,026 px) | 0.189 s | 0.089 s (2.12x) | **0.071 s (2.65x)** | 1.2e-5 / 4.3e-5 PASS |
+| adjoint vs the XLA cone back | — | — | — | 7.6e-8 PASS |
+
+Inside the panel-amended 2.2-3.9x window; the bar (1.5x) cleared at 2.6x.  warps=2
+wins everywhere -- the panel's register-pressure escape hatch was needed exactly as
+predicted.  Values sit comfortably inside the floor-calibrated gates (full-grid
+max-rel 8.9e-6 is far under the ~1.3e-4 measured floor -- the many-view nrmse
+averaging helps more than the single-view analysis assumed).  bp=1 at this geometry
+(3 taps).  Baseline note: 23.0 s here vs the campaign's 19.4 s = the extended
+1152-slice/821.9k-pixel cell, not a regression.
+
+NEXT (increment 6 integration, the inc5 pattern): kernel + driver into
+`_pallas_kernels.py` (the spike file is the transplant source; CONE_FWD_NUM_WARPS=2),
+cone fwd_pallas / fwd_pallas_band via the geometry hooks with the bp_psf_radius <= 2
+dispatch guard, tests mirroring the parallel forward set + a bp>2-fallback test,
+model-level gate (fwd n=1/2/4 off/on + the seeded cone VCD walls; value criterion =
+the calibrated contract), then the occasional convergence gate on the final
+configuration.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
