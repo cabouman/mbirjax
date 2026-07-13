@@ -663,6 +663,49 @@ with 5–9× indicated); candidate increment 4 = per-owner banded FORWARD adopti
 (the guard-sweep session's band-256 column measured the pallas forward driver
 1.7–3.8× at exactly the banded-forward width).
 
+## Increment 4 — parallel multi-device banded FORWARD adoption: SHIPPED AND GATED (2026-07-13; commit 487236a; job 13515398)
+
+The shipped pallas forward kernel now serves the n≥2 per-owner banded-forward calls
+(`fwd_pallas_band`).  The per-owner forward call — previously INLINED in the base
+`_forward_project_band_to_local_views` worker — was extracted into a seam
+`_forward_project_band_to_view_shard` (base = XLA `sparse_forward_project`,
+byte-identical to the old inline call; `ParallelBeamModel` overrides it to route through
+the pallas `forward_project_subset` when the flag is set).  The driver already supported
+the per-owner mode (global view indices, no resharding), so `_pallas_kernels.py` was
+untouched and the band-broadcast orchestration is unchanged.  Final gate, flag-on vs
+kill-switch, values cross-checked on-vs-off, seeded partitions, GPU-filtered per-device
+peaks (1024³, 4-GPU node):
+
+| cell | XLA → pallas | speedup | values | peak memory (per-GPU) |
+|---|---|---|---|---|
+| fwd full-grid n=2 | 4.22 → **1.31 s** | **3.23×** | 5.8e-6 PASS | 11.5 → 18.3 GB (+6.8, ack) |
+| fwd full-grid n=4 | 2.11 → **0.672 s** | **3.14×** | 5.9e-6 PASS | 9.2 → 16.6 GB (+7.4, ack) |
+| VCD n=2 (4 it, 1024³) | 98.9 → **34.9 s** | **2.84×** | 6.7e-6 PASS | 25.0 → 26.8 GB (+1.8) |
+
+**End-to-end VCD n=2 nearly triples with BOTH bands pallas**: 97.9 s (pure XLA, the
+inc3 baseline) → 50.3 s (inc3, back band only, 1.95×) → **34.9 s** (both bands, 2.84×)
+— the forward adoption adds 1.44× on top of increment 3.  The forward already SCALED
+with XLA (n=2 4.22 → n=4 2.11 s = 2.0×; pallas 1.31 → 0.672 s = 1.95×, both near-ideal —
+unlike back, which anti-scaled pre-inc3), so the kernel is a flat ~3.2× on top at every
+device count.
+
+**Value margins** (per the gate instruction): the isolated forward pallas rel is
+5.8–5.9e-6 single-shot, and the VCD rel is **6.7e-6 — identical to inc3's back-only VCD
+rel**, i.e. adopting the forward band did NOT inflate the iterated floor (the review's
+thinner-margin concern did not materialize).  Comfortable headroom below the 1e-4 gate
+and well under the ~3e-5 want-to-know line — routine.
+
+**Memory ack:** the isolated forward pallas adds +6.8 GB (n=2) / +7.4 GB (n=4) per GPU —
+the per-owner weights/streams transient (`forward_project_subset`'s (P, band) gather
+tiles); absolute peaks 18.3 / 16.6 GB, well within the 80 GB H100.  Larger than inc3's
+post-cap back +0.3 GB; the forward analog of the inc3 chunk cap (`fwd_view_batch`, the
+existing per-chunk knob) could bound it if it grows at larger shapes — accepted for now,
+revisit on OOM.  The end-to-end VCD peak moves only +1.8 GB (the sino-shaped updater
+transients set the VCD peak, not the forward band).  These peaks ARE per-GPU (the
+GPU-filtered reader, this diff's response to the inc3 review finding); one benign
+`module: command not found` from `load_conda_cuda.sh` in the non-interactive shell (the
+job ran on GPU, results correct).
+
 ## Cone fused-vfan back kernel — DESIGN DRAFT (2026-07-13; the load-bearing (c) item; discussion-first, no code yet)
 
 **Operation.**  Cone banded back, per (pixel p, band slice l):
