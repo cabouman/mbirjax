@@ -1,9 +1,10 @@
 # Forward-kernel dispatch guard: P × band sweep (fwd_guard)
 
-**Status: sweeps 1–2 COMPLETE (jobs 13497787 / 13497833, 2026-07-13) — no knee
-found ANYWHERE, pallas ≥3.1× through full grid; the band=2048 XLA cliff is NOT the
-2^31 boundary (views ablation refuted it).  Sweep 3 (small-band corner) running.
-Guard proposal drafted below, pending sweep 3 + Greg approval.**
+**Status: MEASUREMENT COMPLETE — sweeps 1–3 (jobs 13497787 / 13497833 / 13500938,
+2026-07-13), 70 cells, all value-gated PASS.  Pallas wins EVERY cell (min 1.34×,
+≥3× everywhere P ≥ 24576, through full grid); no knee, no L2 cap, no regime where
+XLA wins.  Proposal below: drop the pixel-count guard.  AWAITING GREG'S APPROVAL —
+no library code touched.**
 
 ## Question
 
@@ -110,23 +111,41 @@ documented same-executable GPU run-to-run noise (~8e-6); the 1e-5 single-shot ga
 still passes but sits close — iterated/full-pipeline comparisons should use the
 existing 1e-4/1e-3 tiers, as always.
 
-## Sweep 3 (running): the small-band corner + pad path
+## Sweep 3 results (job 13500938): the small-band corner + pad path — all wins
 
-`fwd_guard_sweep3.py`: bands {128, 256} × P {2048, 8192, 24576} (views/channels
-1024 — single-variable vs sweep 1's band=512 column); band=768 at P=8192 (pad to
-1024, 33% wasted columns — every sweep-1/2 band was a power of two, so the driver's
-`vals_pad` path was unmeasured); and a small-problem pair at production aspect,
-sino (256, 256, 256), P ∈ {2048, full≈51k} — the op-level mirror of E4's vcd_guard.
+`fwd_guard_sweep3.py`, 9 pairs, all value-gated PASS (worst rel-max 1.67e-6):
 
-## Proposed guard (draft — pending sweep 3 + Greg approval)
+| cell | XLA → pallas (ms) | speedup |
+|---|---|---|
+| band=128, P=2048 (v=1024, c=1024) | 5.1 → 3.7 | **1.38×** (the global minimum) |
+| band=128, P=8192 | 15.8 → 5.3 | 2.97× |
+| band=128, P=24576 | 52.2 → 12.4 | 4.22× |
+| band=256, P=2048 | 7.5 → 4.5 | 1.70× |
+| band=256, P=8192 | 20.7 → 7.1 | 2.90× |
+| band=256, P=24576 | 66.0 → 17.5 | 3.76× |
+| band=768 (pad→1024), P=8192 | 84.0 → 18.5 | 4.55× |
+| sino (256,256,256), P=2048 | 1.35 → 1.01 | 1.34× |
+| sino (256,256,256), P=full≈51k | 30.5 → 8.7 | 3.52× |
+
+Reads: the pallas fixed cost (~3.5–4 ms/call at views=1024, ~1 ms at views=256 —
+it is per-view-chunk, 8 chunks vs 2) compresses the margin at the smallest calls
+but never inverts it; the pad path is healthy (band=768 padded to 1024 costs
+18.5 ms vs true band=1024's 19.7 — the wasted columns are effectively free, while
+the XLA path at 768 is 84 ms); the production-aspect small problem wins at both the
+fine tail and full grid.  Relevant to wave 2: the multi-device banded forward runs
+band = `fwd_slice_band` = 256 — this column says pallas wins there at ≥1.7×
+(op-level; the per-owner glue is wave 2's own gate to run).
+
+## Proposed guard (final — pending Greg approval)
 
 **Drop the pixel-count clause entirely: dispatch pallas for every single-device GPU
 parallel-beam forward call when `tiles.fwd_pallas` is set.**  Rationale: pallas
-measured ≥3.1× at EVERY point in a 3-decade P range (2048 → full grid) × bands
-512–2048, with the minimum at full grid — there is no measured regime where the XLA
-path wins, so any pixel-count threshold would be an unmeasured complication.  The
-"likely formula" from the task framing (min of an L2 cap and a measured knee) is
-moot: neither the L2 cap nor a knee exists in the data (Read 1).
+measured faster at EVERY one of 70 cells across P ∈ [2048, full grid ≈ 823k] ×
+bands 128–2048 × two problem aspects, minimum 1.34× (the smallest fine-tail call),
+≥3× wherever P ≥ 24576 — there is no measured regime where the XLA path wins, so
+any pixel-count threshold would be an unmeasured complication.  The "likely
+formula" from the task framing (min of an L2 cap and a measured knee) is moot:
+neither the L2 cap nor a knee exists in the data (Read 1).
 
 Concretely (post-approval):
 - `projectors.py sparse_forward_project_public`: the dispatch condition becomes
