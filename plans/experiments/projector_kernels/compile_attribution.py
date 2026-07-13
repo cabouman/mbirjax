@@ -30,12 +30,15 @@ import time
 SINO_SHAPE = (1024, 1024, 1024)            # (views, det rows, det channels) -- Greg's demo edit
 OUT_DIR = '/scratch/gautschi/buzzard/compile_attr'
 CELLS = [
-    # (name, geometry, xla_flags, cpu_pin, cache_from)
-    ('cone_default',   'cone',     '',                              None, None),
-    ('cone_autotune0', 'cone',     '--xla_gpu_autotune_level=0',    None, None),
-    ('cone_2cpu',      'cone',     '',                              '0,1', None),
-    ('par_default',    'parallel', '',                              None, None),
-    ('cone_warm',      'cone',     '',                              None, 'cone_default'),
+    # (name, geometry, xla_flags, cpu_pin, cache_from, python_bin)
+    # cpu_pin: int N -> pin to the first N CPUs of THIS job's affinity mask (a literal
+    # id list fails under slurm cgroups -- round-1 lesson).  python_bin: run the worker
+    # under another env's python (its editable install selects that env's worktree).
+    # Round 1 (job 13497683, headroom branch): cone/parallel/autotune0/warm all showed
+    # ~1-2 s cold compiles at 1024^3 -- Greg's 2m19s NOT reproduced; cells retired.
+    ('ki_default', 'cone', '', None, None,
+     '/home/buzzard/.conda/envs/mbirjax/bin/python'),     # kernel_investigation code+env
+    ('cone_2cpu',  'cone', '', 2,    None, None),         # compile-CPU-starvation bracket
 ]
 
 if os.environ.get('COMPILE_ATTR_SMOKE') == '1':
@@ -109,7 +112,7 @@ def worker():
 def orchestrator():
     """JAX-free parent: fresh cache dir per cold cell, one subprocess per cell."""
     os.makedirs(OUT_DIR, exist_ok=True)
-    for name, geom, xla_flags, cpu_pin, cache_from in CELLS:
+    for name, geom, xla_flags, cpu_pin, cache_from, python_bin in CELLS:
         cache_dir = os.path.join(OUT_DIR, f'cache_{cache_from or name}')
         if cache_from is None:
             shutil.rmtree(cache_dir, ignore_errors=True)      # guarantee COLD
@@ -120,12 +123,16 @@ def orchestrator():
                    MBIRJAX_DISABLE_PALLAS='1')
         if xla_flags:
             env['XLA_FLAGS'] = (env.get('XLA_FLAGS', '') + ' ' + xla_flags).strip()
-        cmd = [sys.executable, os.path.abspath(__file__)]
+        if python_bin and not os.path.exists(python_bin):
+            print(f'[{name}] SKIPPED (no {python_bin} on this host)', flush=True)
+            continue
+        cmd = [python_bin or sys.executable, os.path.abspath(__file__)]
         if cpu_pin:
-            if shutil.which('taskset') is None:           # macOS smoke: no taskset
+            if shutil.which('taskset') is None or not hasattr(os, 'sched_getaffinity'):
                 print(f'[{name}] SKIPPED (no taskset on this platform)', flush=True)
                 continue
-            cmd = ['taskset', '-c', cpu_pin] + cmd
+            pin = ','.join(str(c) for c in sorted(os.sched_getaffinity(0))[:cpu_pin])
+            cmd = ['taskset', '-c', pin] + cmd
         log_path = os.path.join(OUT_DIR, f'{name}.log')
         t = time.perf_counter()
         with open(log_path, 'w') as log:
