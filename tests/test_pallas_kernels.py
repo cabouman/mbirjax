@@ -141,6 +141,59 @@ def test_band_dispatch_routes_per_owner_calls(monkeypatch):
     assert _rel_max_err(out, jnp.asarray(ref)) < REL_TOL
 
 
+def test_forward_owned_views_band_matches_xla():
+    """The PER-OWNER forward calling mode (increment 4, the multi-device banded forward):
+    a view subset's slice-band forward projection through the pallas driver must match
+    the XLA path at the float gate -- global view indices, a slice band (L slices ->
+    L detector rows).  The adjoint of test_back_owned_views_band_matches_xla."""
+    model = _make_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+    rng = np.random.default_rng(10)
+    cyl = jnp.asarray(rng.random((len(idx), recon_shape[2]), dtype=np.float32))
+    owned = np.arange(16, 48)                       # one owner's GLOBAL view block
+    g0, g1 = 5, 13                                  # a slice band (rows == slices)
+    band = cyl[:, g0:g1]                            # (num_pixels, L)
+
+    ref = model.projector_functions.sparse_forward_project(
+        band, idx, owned_view_indices=owned)
+    out = _pallas_kernels.forward_project_subset(
+        model, band, idx, owned_view_indices=owned, interpret=_interpret())
+    assert out.shape == jnp.asarray(ref).shape      # (len(owned), L, num_channels)
+    assert _rel_max_err(out, jnp.asarray(ref)) < REL_TOL
+
+
+def test_fwd_band_dispatch_routes_per_owner_calls(monkeypatch):
+    """With fwd_pallas_band forced on, the parallel per-owner banded forward override
+    must route through the pallas forward driver with the owner's global view indices
+    and the slice band (spied so CPU CI can observe the dispatch in interpret mode)."""
+    model = _make_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+    cyl = jnp.asarray(np.random.default_rng(11).random((len(idx), recon_shape[2]),
+                                                       dtype=np.float32))
+    owned = np.arange(8, 40)
+    band = cyl[:, 3:11]                             # (num_pixels, 8)
+    ref = model.projector_functions.sparse_forward_project(
+        band, idx, owned_view_indices=owned)
+
+    seen = {}
+    real = _pallas_kernels.forward_project_subset
+
+    def spy(tm, vals, pix, owned_view_indices=(), interpret=False):
+        seen['shape'] = tuple(vals.shape)
+        seen['owned'] = np.asarray(owned_view_indices).tolist()
+        return real(tm, vals, pix, owned_view_indices=owned_view_indices,
+                    interpret=_interpret())
+
+    monkeypatch.setattr(_pallas_kernels, 'forward_project_subset', spy)
+    model.tiles = model.tiles._replace(fwd_pallas_band=True)
+    out = model._forward_project_band_to_view_shard(band, idx, owned)
+    assert seen['shape'] == (len(idx), 8)
+    assert seen['owned'] == list(range(8, 40))
+    assert _rel_max_err(out, jnp.asarray(ref)) < REL_TOL
+
+
 def test_policy_off_on_cpu():
     """On CPU the tile policy must not enable the pallas path (is_available is False),
     so the XLA path serves every call unchanged."""

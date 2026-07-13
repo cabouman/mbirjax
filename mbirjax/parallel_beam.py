@@ -90,6 +90,23 @@ class ParallelBeamModel(TomographyModel):
             view_data[:, g0:g1, :], pixel_indices,
             owned_view_indices=owned_view_indices, coeff_power=coeff_power)
 
+    def _forward_project_band_to_view_shard(self, band, pixel_indices, owned_view_indices):
+        """Parallel-beam per-view-owner banded forward (adjoint of the back override).
+
+        The band of ``L`` slices projects to detector rows ``[g0:g1)`` of length ``L``
+        (row r <- slice r), for the caller's GLOBAL views ``owned_view_indices``.  When
+        ``fwd_pallas_band`` is set (n>=2), route through the pallas forward driver on the
+        cropped band (value-equal to the XLA path up to summation order; gated in
+        tests/test_pallas_kernels.py -- the driver already supports the per-owner mode,
+        so the band/broadcast/accumulate orchestration is unchanged).  Otherwise defer to
+        the base XLA forward."""
+        if getattr(self.tiles, 'fwd_pallas_band', False):
+            from mbirjax import _pallas_kernels
+            return _pallas_kernels.forward_project_subset(
+                self, band, pixel_indices, owned_view_indices=owned_view_indices)
+        return super()._forward_project_band_to_view_shard(
+            band, pixel_indices, owned_view_indices)
+
     # Measured GPU forward tiling (band x pixel-batch grid: fwd_band_pixel_sweep.py; results
     # digest in plans/projector_kernels/fwd_back_findings.md).  Model-level forward
     # speedups of 2-3.6x over the inherited defaults.  CPU measured the OPPOSITE direction
@@ -140,6 +157,13 @@ class ParallelBeamModel(TomographyModel):
             # 13505309; parallel rows == slices, so the n=1 kernel IS the band
             # kernel).  Same availability gate; the flag is truthful per reachability.
             back_pallas_band=_pallas_kernels.is_available() and n_devices > 1,
+            # The multi-device band path's per-owner FORWARD calls (n>=2 only -- at n=1
+            # the single-device forward takes fwd_pallas above): the same pallas forward
+            # kernel, measured 1.7-3.8x at exactly the banded-forward width (band 256;
+            # plans/projector_kernels/fwd_guard_sweep.md, the band-256 column).  Same
+            # availability gate; truthful per reachability (mutually exclusive with
+            # fwd_pallas by n_devices).
+            fwd_pallas_band=_pallas_kernels.is_available() and n_devices > 1,
             # Back kernel: one stacked gather covering every psf tap.  A GPU win because the
             # back kernel is almost entirely gather-bound and parallel beam has no vertical
             # fan behind which the gather latency could hide; measured WORSE on CPU, which

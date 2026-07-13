@@ -216,7 +216,11 @@ the measured record; the ``e3_*``/``e4_*`` scripts under
   back calls route through the same register-tile kernel (``back_pallas_band``;
   parallel rows ≡ slices, so the single-device kernel IS the band kernel — the
   driver's per-owner mode takes the owner's global view indices and never re-places
-  data).  The banded reduce-scatter orchestration is unchanged.
+  data).  The banded reduce-scatter orchestration is unchanged.  The per-owner banded
+  FORWARD calls likewise route through the same forward driver (``fwd_pallas_band``;
+  each view-owner forward-projects its broadcast slice band via
+  ``_forward_project_band_to_view_shard``, the driver's per-owner mode again taking the
+  owner's global view indices), the band-broadcast orchestration unchanged.
 * **Introspection** — because the fallback is silent,
   ``model.get_compute_config(print_results=True)`` reports which kernel paths a run
   will actually use (the full tile policy, plus WHY pallas is unavailable when it

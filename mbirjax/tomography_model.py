@@ -59,6 +59,7 @@ TilePolicy = namedtuple('TilePolicy', ['fwd_view_batch', 'back_view_batch',
                                        'fwd_pixel_batch', 'back_pixel_batch',
                                        'fwd_slice_band', 'back_slice_band',
                                        'fwd_pallas', 'back_pallas', 'back_pallas_band',
+                                       'fwd_pallas_band',
                                        'sort_by_channel', 'back_stacked_gather'])
 
 # Persistent jit-compilation cache: repeat runs of the same model shapes load
@@ -369,7 +370,8 @@ class TomographyModel(ParameterHandler):
         pallas = [name for name, flag in
                   [('back', getattr(self.tiles, 'back_pallas', False)),
                    ('fwd', getattr(self.tiles, 'fwd_pallas', False)),
-                   ('band-back', getattr(self.tiles, 'back_pallas_band', False))] if flag]
+                   ('band-back', getattr(self.tiles, 'back_pallas_band', False)),
+                   ('band-fwd', getattr(self.tiles, 'fwd_pallas_band', False))] if flag]
         if pallas:
             report += ' (pallas: {})'.format('+'.join(pallas))
         return report
@@ -431,7 +433,9 @@ class TomographyModel(ParameterHandler):
                         'back_pallas': bool(getattr(self.tiles, 'back_pallas', False)),
                         'fwd_pallas': bool(getattr(self.tiles, 'fwd_pallas', False)),
                         'back_pallas_band': bool(getattr(self.tiles,
-                                                         'back_pallas_band', False))},
+                                                         'back_pallas_band', False)),
+                        'fwd_pallas_band': bool(getattr(self.tiles,
+                                                        'fwd_pallas_band', False))},
             'jit_cache': {'persistent_cache_dir': jax.config.jax_compilation_cache_dir},
         }
         if print_results:
@@ -538,6 +542,7 @@ class TomographyModel(ParameterHandler):
             fwd_pallas=False,
             back_pallas=False,
             back_pallas_band=False,
+            fwd_pallas_band=False,
             sort_by_channel=False,
             back_stacked_gather=False,
         )
@@ -1747,9 +1752,24 @@ class TomographyModel(ParameterHandler):
         """
         def worker(i, device):
             band = band_on_views[device]                       # (num_pixels, L)
-            return self.projector_functions.sparse_forward_project(
-                band, local_pixels[i], owned_view_indices=view_ranges[device])
+            return self._forward_project_band_to_view_shard(
+                band, local_pixels[i], view_ranges[device])
         return mjs.run_per_device(devices, worker, executor=pool)
+
+    def _forward_project_band_to_view_shard(self, band, pixel_indices, owned_view_indices):
+        """Forward-project one broadcast slice-band into one view-owner's row-band.
+
+        The per-view-owner seam of the banded forward (the adjoint of
+        ``_back_project_view_shard_to_band``): ``band`` is that owner's local
+        ``(num_pixels, L)`` slice-band and ``owned_view_indices`` its GLOBAL view
+        indices; the result is ``(len(owned_view_indices), L, num_channels)`` -- detector
+        rows ``[g0:g1)`` for its own views (the kernel sizes its output rows from the L
+        input slices).  Default (geometry-neutral): the geometry's XLA forward.
+        ``ParallelBeamModel`` OVERRIDES this to route through the pallas forward kernel
+        when ``fwd_pallas_band`` is set (n>=2 -- the multi-device band path).
+        """
+        return self.projector_functions.sparse_forward_project(
+            band, pixel_indices, owned_view_indices=owned_view_indices)
 
     def sparse_back_project(self, sinogram, pixel_indices, coeff_power=1):
         """
