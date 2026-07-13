@@ -565,6 +565,29 @@ transpose fusion):
    or invert the loop) — kills all per-(view,band) redundancy but needs the full
    (pixels × slices) partial per owner (+3.4 GB at 1024³ n=2).
 
+**HLO probe verdict (job 13497836): NEITHER — the transposes are the vfan's
+materialized per-view partials.**  The compiled band module shows the two dominant
+fusions each produce `f32[2048, 115, 512]` = (pixel_batch, band_slices, VIEWS) —
+~480 MB apiece — combined by a third and collapsed by `input_reduce_fusion` to
+(2048, 115).  The whole hfan+vfan chain is fused into these: XLA materializes the
+full (P_batch × L × V) stack, transposed view-last, before summing views.  This is
+the same re-materialize-the-reduction weakness the E3b register-tile analysis named
+for n=1 back — pre-transposing inputs would not touch it (option 1 DEAD), and
+hoisting the hfan would leave the materialization in place (option 2 secondary).
+
+**A5, reformulated: scan-over-view-chunks with carry accumulation.**  Restructure the
+banded reduction from vmap-all-views→reduce to `lax.scan` over view CHUNKS (vmap
+within a chunk, chunk partial added into a (P_batch, L) carry): the cross-view
+intermediate shrinks from (P, L, 512) to (P, L, chunk) — bounded, tunable — and the
+view-last transposes disappear (nothing to reorder; the carry add is in place).
+Chunk size trades launch count against intermediate size (sweep {16, 32, 64}).  The
+pallas band register-tile kernel (E3b) remains the deeper fix that eliminates the
+class entirely; per the plan's gates, if this XLA-level form restores n=2 scaling,
+the pallas band kernel's bar rises accordingly.  Next: single-device A/B bench at
+the per-owner shard shape (V=512, L=115, P=823k) — the band kernel cost is
+per-device, so no multi-GPU allocation is needed to gate the kernel itself — then
+the n=1/2/4 model-level curve if it clears ≥1.5×.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
