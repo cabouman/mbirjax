@@ -40,6 +40,17 @@ wrappers, the design makes the lifetime EXPLICIT:
   no global state, donation-safe.
 - The no-eager-array-ops wrapper contract is preserved: plan building is one eager call
   per (subset × direction) per recon, not per projector call.
+- **Weights storage (Greg 2026-07-12).**  Store-central-weight-and-derive-the-taps was
+  considered and declined: recovering the ±1 taps needs the fractional coordinate
+  anyway, so (n_p, W) is the minimal sufficient pair at the same footprint, reuses the
+  verified formula verbatim, and avoids a rederivation that could disagree with the
+  centers at rounding ties.  Better: for PARALLEL beam, W and the weight scale are
+  per-VIEW constants — the per-pixel plan payload is n_p alone (4 B beyond the centers);
+  cone keeps per-pixel (n_p, W, scale) (12 B).  On run_per_device: that parallelizes
+  across DEVICES (the sharded path already builds per-device plans in its per-device
+  drivers); within one device the builder is a single jitted call whose cost was
+  dominated by a bench artifact — see §8 — and production naturally OVERLAPS chunk c+1's
+  build with chunk c's kernel (the timed breakdown serialized them for attribution).
 
 ## 3. Policy: TilePolicy flags + measured guards
 
@@ -72,16 +83,22 @@ Two new TilePolicy fields: `fwd_pallas`, `back_pallas` (int flags like
   hybrid/two-phase call replaces `horizontal_fan_project`'s sorted reduce; the (V,B,C)
   accumulation stays as-is.  (A scan-free fwd is possible later via all-atomic
   accumulation; not needed for the fine-tail policy where batches are single.)
-- Memory transients (from the findings; the memory-gate ack list):
-  - back weights: 1.18 GB chunk-resident full-grid / ~78 MB per VCD subset-call
-    (recomputed per call — no sort, cheap) — or plan-cached per subset.
-  - fwd streams: 2.37 GB chunk-resident full-grid (XLA path by policy anyway) /
-    ~156 MB per subset plan; 128-subset plan cache = ~19 GB device — NOT cached on
-    device; options = host-cache + stream (~6 ms/subset) or rebuild per iteration
-    (~measured in E4 A/B); decision by measurement, recorded in the plan doc.
-  - padding: +1.6% typical (pow-2 row/band axis); pathological counts avoided by
-    pow-2-friendly band choices (parallel) and row-chunk tables (cone), measured in
-    the A/B memory gates.
+- Memory transients, in PER-DEVICE SINO-SHARD multiples (shard = (V/n)·R·C·4 B; all
+  plans scale ∝ V_chunk·P_pixels, so the ratios below are size-independent at fixed
+  detector aspect C≈R and fixed V_chunk/V; they shrink linearly with the pixel
+  fraction):
+  - **back plan (in-kernel weights)**: bytes = V_chunk·P·(4 + payload); payload 4 B
+    parallel (n_p only) / 12 B cone.  Ratio ≈ (1+payload/4)·0.79·(C/R)·(V_chunk/V).
+    At the 1024³ cell, V_chunk=V/8: full grid **0.10 shard parallel / 0.19 cone**
+    (0.39/0.77 GB); a granularity-128 subset **0.6% / 1.3% shard** (26/52 MB, single
+    call all views).  Transient, freed per chunk.
+  - **fwd streams** (fine-tail subsets ONLY by policy — the full-grid 0.58-shard
+    variant never ships): per subset ≈ **3.8% shard** (156 MB at the cell); built
+    lazily per subset, freed or host-cached (device cache of all 128 subsets = 4.6
+    shards — excluded); host-stream cost ~6 ms/subset if cached.
+  - **padding**: +1.6% typical on the padded values/output axes (pow-2 row/band);
+    pathological counts avoided by pow-2-friendly band choices (parallel — the band is
+    our knob) and row-chunk tables (cone); confirmed in the A/B memory gates.
 
 ## 5. Gates (all must pass before the flag defaults on anywhere)
 
@@ -108,8 +125,36 @@ Two new TilePolicy fields: `fwd_pallas`, `back_pallas` (int flags like
 - **VCD dispatch** (pallas skips CUDA graphs by default): the fine-tail policy applies
   pallas where calls are device-bound (E1: ~92–96%); interactive sizes keep XLA via the
   existing size-aware policy knobs if the guard cells flag it.
-- **Maintenance**: kernels live in one module (`_pallas_kernels.py`) with the bench
-  scripts as their reproducible record; every constant traceable to a findings entry.
+- **Maintenance and fragmentation (Greg 2026-07-12: a first-class deliverable, not an
+  afterthought)**: kernels live in ONE module (`_pallas_kernels.py`); every constant
+  traceable to a findings entry; and the code PR MUST include (gate 6) a readable
+  dev-docs section ("Pallas projector kernels", alongside the existing "Projector
+  kernel design" in `docs/source/dev_sharding_overview.rst`) covering: the
+  plan/kernel/policy structure and why each exists; how the two kernel shapes work in
+  words (the forward segment walk; the back register-tile with L2 row-chunk phases);
+  where the fallbacks live and how selection is decided; and THE UPDATE PROTOCOL — what
+  to re-run on a jax bump or new arch (capability probe, the bench scripts as the
+  reproducible record, the gate suite), and how to retire the pallas path wholesale
+  (one env var / one policy line) if maintenance ever outweighs the win.
+
+## 8. Which granularities use the kernels (the break-even question, Greg 2026-07-12)
+
+- **BACK: all granularities, including one-shot coarse.**  Its plan is ~free — the
+  centers are built for the XLA path anyway, and the payload (n_p, +W/scale on cone)
+  comes from the SAME jit at marginal cost.  The measured one-shot composed gain (3.5×,
+  projected 8–9× post-fix) applies at every level.
+- **FWD: break-even per (subset, view-chunk) ≈ build_cost / (t_xla − t_pallas).**  Per
+  8k-pixel chunk the kernel saves ~0.3 ms; the bench builder cost (~145 ms) makes that
+  ~500 reuses — but the builder cost is now attributed to a BENCH ARTIFACT (a fresh
+  jax.jit constructed per call → full retrace each time; the module-level centers jit
+  doing near-identical work costs 6 ms vs the per-call weights jit's 1,828 ms in the
+  composed breakdown — verification job 13486103 in flight).  At the builder's
+  arithmetic floor (~2–5 ms/chunk: one CUB sort of ~3M pairs + the weight formula),
+  break-even ≈ **6–15 reuses**: the fine tail (11–45 iterations at granularity 7) pays
+  clearly; one-shot coarse levels are marginal-to-negative and stay on XLA — which is
+  also where the fwd kernel is weakest (skew), so the policy loses nothing.  If the
+  measured builder lands ≤1 ms, one-shot fwd approaches break-even and the policy can
+  widen; the number gets pinned in the E4 A/B either way.
 
 ## 7. Open items folded into the E4 work
 
