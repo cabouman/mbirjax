@@ -115,6 +115,10 @@ class ParallelBeamModel(TomographyModel):
             fwd_slice_band=self._FWD_SLICE_BAND_GPU,
             fwd_pixel_batch=self._FWD_PIXEL_BATCH_GPU,
             sort_by_channel=balanced_band >= SORTED_CHANNEL_REDUCE_MIN_COLS,
+            # fwd pallas serves single-device subset-sized calls only (the wrapper's
+            # pixel-count guard applies the fine-tail policy; multi-device forward goes
+            # through the banded per-owner path, wave 2).
+            fwd_pallas=_pallas_kernels.is_available() and n_devices == 1,
             back_pallas=_pallas_kernels.is_available(),
             # Back kernel: one stacked gather covering every psf tap.  A GPU win because the
             # back kernel is almost entirely gather-bound and parallel beam has no vertical

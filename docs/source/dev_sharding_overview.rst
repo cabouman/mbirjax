@@ -199,7 +199,11 @@ the measured record; the ``e3_*``/``e4_*`` scripts under
 **Structure — three pieces:**
 
 * ``mbirjax/_pallas_kernels.py`` — ALL kernels and their drivers live in this one
-  module.  Increment 1: the parallel-beam single-device back projection.
+  module.  Increment 1: the parallel-beam single-device back projection.  Increment 2:
+  the parallel-beam forward horizontal fan for SUBSET-SIZED calls (one pixel batch —
+  the VCD fine tail; a channel-sorted segment walk with a two-phase store+atomic
+  launch), gated by a pixel-count guard in the wrapper (``fwd_pallas``); full-grid
+  forward keeps the XLA sorted reduce.
 * **Policy** — a ``TilePolicy`` flag (``back_pallas``), set only by geometries that
   have measured it (``ParallelBeamModel``, GPU) and gated by
   ``_pallas_kernels.is_available()``: an env kill-switch

@@ -110,3 +110,75 @@ def test_weights_match_kernel_formula():
         coeff_power=1, owned_view_indices=jnp.arange(3))
     assert w.shape == (3, 2 * pp.geometry_params.psf_radius + 1, 50)
     assert bool(jnp.all(w >= 0)) and bool(jnp.any(w > 0))
+
+
+# ── Increment 2: the forward subset path ──────────────────────────────────────
+
+@pytest.mark.parametrize('band', ['full', 'slice_band'])
+def test_fwd_subset_matches_xla(band):
+    """The pallas forward driver must match the library XLA forward at the float gate,
+    for full cylinders and slice-band values (the banded caller shape)."""
+    model = _make_model()
+    recon_shape = model.get_params('recon_shape')
+    idx_full = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+    rng = np.random.default_rng(3)
+    idx = jnp.asarray(np.sort(rng.choice(np.asarray(idx_full), size=len(idx_full) // 5,
+                                         replace=False)))
+    n_band = recon_shape[2] if band == 'full' else max(4, recon_shape[2] // 3)
+    values = jnp.asarray(rng.random((len(idx), n_band), dtype=np.float32))
+
+    ref = model.projector_functions.sparse_forward_project(values, idx)
+    out = _pallas_kernels.forward_project_subset(model, values, idx,
+                                                 interpret=_interpret())
+    assert out.shape == ref.shape
+    assert _rel_max_err(out, jnp.asarray(ref)) < REL_TOL
+
+
+def test_fwd_view_chunking_consistent():
+    """Chunked (small fwd_view_batch) and single-chunk forward drivers must agree."""
+    model = _make_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)[:80]
+    values = jnp.asarray(np.random.default_rng(4).random(
+        (len(idx), recon_shape[2]), dtype=np.float32))
+    out_single = _pallas_kernels.forward_project_subset(model, values, idx,
+                                                        interpret=_interpret())
+    model.tiles = model.tiles._replace(fwd_view_batch=13)
+    out_chunked = _pallas_kernels.forward_project_subset(model, values, idx,
+                                                         interpret=_interpret())
+    assert _rel_max_err(out_chunked, out_single) < REL_TOL
+
+
+def test_pair_adjoint_identity():
+    """<A x, y> == <x, B y> with BOTH pallas kernels -- the shipped pair's contract."""
+    model = _make_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+    rng = np.random.default_rng(5)
+    x = jnp.asarray(rng.random((len(idx), recon_shape[2]), dtype=np.float32))
+    y = jnp.asarray(rng.random(SINO_SHAPE, dtype=np.float32))
+
+    ax = _pallas_kernels.forward_project_subset(model, x, idx, interpret=_interpret())
+    by = _pallas_kernels.back_project_single_device(model, y, idx,
+                                                    interpret=_interpret())
+    lhs = float(jnp.vdot(ax, y))
+    rhs = float(jnp.vdot(x, by))
+    assert abs(lhs - rhs) / max(abs(lhs), 1e-30) < REL_TOL
+
+
+def test_fwd_split_two_phase_covers_all_taps():
+    """The host cap-and-split must partition every contributor exactly once: phase-1 +
+    phase-2 segment lengths sum to the per-view tap totals, segments stay in-bounds and
+    below the cap, and phase-2 pads target the scratch channel."""
+    starts = np.array([[0, 3, 3, 150, 155], [0, 0, 70, 80, 90]], dtype=np.int32)
+    C = 4
+    seg1, seg2, n2 = _pallas_kernels._split_two_phase_np(starts, cap=64, num_channels=C)
+    seg1, seg2 = np.asarray(seg1), np.asarray(seg2)
+    for v in range(2):
+        covered = (seg1[v, :, 1] - seg1[v, :, 0]).sum() + \
+                  (seg2[v, :, 1] - seg2[v, :, 0]).sum()
+        assert covered == starts[v, -1] - starts[v, 0]
+        assert ((seg1[v, :, 1] - seg1[v, :, 0]) <= 64).all()
+        assert ((seg2[v, :, 1] - seg2[v, :, 0]) <= 64).all()
+        pads = seg2[v][seg2[v, :, 1] == seg2[v, :, 0]]
+        assert (pads[:, 2] == C).all()

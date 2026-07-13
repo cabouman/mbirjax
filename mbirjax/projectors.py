@@ -510,6 +510,18 @@ class Projectors:
             num_views_owned = num_owned(owned_view_indices)
             view_batch = tm.tiles.fwd_view_batch
 
+            # Pallas custom-kernel path for SUBSET-SIZED calls (one pixel batch -- the
+            # VCD fine tail, the measured 2.13x shape; see _pallas_kernels.py).  Larger
+            # calls keep the XLA sorted reduce below (its full-grid win is smaller and
+            # the python-loop driver overhead would erode it).  Value-equal up to float
+            # summation order (gated in tests/test_pallas_kernels.py).
+            if (getattr(tm.tiles, 'fwd_pallas', False)
+                    and int(pixel_indices.shape[0]) <= tm.tiles.fwd_pixel_batch):
+                from mbirjax import _pallas_kernels
+                return _pallas_kernels.forward_project_subset(
+                    tm, voxel_values, pixel_indices,
+                    owned_view_indices=owned_view_indices)
+
             def one_call(owned_chunk):
                 n_pc = scatter_centers(pixel_indices, pixels_major=True,
                                        owned_view_indices=owned_chunk)

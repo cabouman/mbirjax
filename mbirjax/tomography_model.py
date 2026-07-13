@@ -58,7 +58,7 @@ from importlib.metadata import version, PackageNotFoundError
 TilePolicy = namedtuple('TilePolicy', ['fwd_view_batch', 'back_view_batch',
                                        'fwd_pixel_batch', 'back_pixel_batch',
                                        'fwd_slice_band', 'back_slice_band',
-                                       'back_pallas',
+                                       'fwd_pallas', 'back_pallas',
                                        'sort_by_channel', 'back_stacked_gather'])
 
 # Persistent jit-compilation cache: repeat runs of the same model shapes load
@@ -467,10 +467,12 @@ class TomographyModel(ParameterHandler):
             back_pixel_batch=self._PIXEL_BATCH_DEFAULT,
             fwd_slice_band=None,
             back_slice_band=None,
-            # Pallas custom-kernel path for the single-device back projection (the 2026-07
-            # GPU-headroom campaign; see mbirjax/_pallas_kernels.py).  Off in the base
-            # policy: geometries enable it only where measured (ParallelBeamModel, GPU,
-            # allowlisted arch) -- the platform-conditional-kernel precedent.
+            # Pallas custom-kernel paths (the 2026-07 GPU-headroom campaign; see
+            # mbirjax/_pallas_kernels.py).  Off in the base policy: geometries enable
+            # them only where measured (ParallelBeamModel, GPU, allowlisted arch) --
+            # the platform-conditional-kernel precedent.  fwd applies only to
+            # subset-sized calls (the wrapper's pixel-count guard).
+            fwd_pallas=False,
             back_pallas=False,
             sort_by_channel=False,
             back_stacked_gather=False,

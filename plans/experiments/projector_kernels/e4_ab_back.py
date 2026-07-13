@@ -46,11 +46,27 @@ def worker(cfg):
         rng = np.random.default_rng(0)
         idx = mbirjax.gen_full_indices(recon_shape,
                                        use_ror_mask=model.get_params('use_ror_mask'))
-        if cell == 'back_subset':
+        if cell in ('back_subset', 'fwd_subset'):
             idx = jnp.asarray(np.sort(rng.choice(np.asarray(idx), size=6026,
                                                  replace=False)))
 
-        if cell == 'vcd_guard':
+        if cell in ('fwd_subset', 'fwd_full'):
+            # fwd_full verifies the POLICY: the pixel-count guard must keep full-grid
+            # forward on XLA, so on/off walls should match (and values bitwise-ish).
+            values = jnp.asarray(rng.random((len(idx), recon_shape[2]),
+                                            dtype=np.float32))
+            values = jax.device_put(values, jax.devices()[0])
+            jax.block_until_ready(values)
+            for _ in range(WARMUP):
+                jax.block_until_ready(model.sparse_forward_project(values, idx))
+            ts = []
+            for _ in range(TRIALS):
+                t0 = time.perf_counter()
+                r = jax.block_until_ready(model.sparse_forward_project(values, idx))
+                ts.append(time.perf_counter() - t0)
+            out['wall_s'] = round(float(np.median(ts)), 3)
+            result = np.asarray(r)
+        elif cell == 'vcd_guard':
             phantom = mbirjax.gen_cube_phantom(recon_shape)
             sino = np.asarray(model.forward_project(phantom))
             np.random.seed(7)
@@ -89,7 +105,8 @@ def worker(cfg):
 
 
 def main():
-    cells = ['back_full', 'back_subset', 'hessian_full', 'vcd_guard']
+    cells = ['back_full', 'back_subset', 'hessian_full',
+             'fwd_subset', 'fwd_full', 'vcd_guard']
     results = {}
     for cell in cells:
         for pallas in (False, True):

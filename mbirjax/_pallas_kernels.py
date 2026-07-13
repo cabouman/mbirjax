@@ -3,9 +3,13 @@ campaign (design: plans/projector_kernels/e4_integration_design.md; measured rec
 plans/projector_kernels/gpu_headroom_findings.md; reproducible benches:
 plans/experiments/projector_kernels/e3_*.py, e4_back_composed.py).
 
-Increment 1 (this file): the PARALLEL-BEAM single-device BACK projection.  Measured on
-H100 at the 1024^3 cell: 16-26x kernel-level over the stacked-gather fusion, 9.07x for
-a composed full-grid call (all costs charged), Hessian path (coeff_power=2) the same.
+Increment 1: the PARALLEL-BEAM single-device BACK projection (16-26x kernel-level,
+9.17x composed/gated at the 1024^3 cell; Hessian path the same).
+Increment 2: the PARALLEL-BEAM forward horizontal fan for SUBSET-SIZED calls (the VCD
+fine tail; 2.13x measured) -- the CSR segment-walk with the two-phase store+atomic
+launch.  Full-grid forward stays on the XLA sorted reduce by policy: its measured win
+is smaller (1.59x) and the python-loop driver overhead at ~3000 pixel batches would
+erode it; a batched-grid variant can revisit this later.
 
 How the kernel works (the "register-tile + L2-phase" design)
 -------------------------------------------------------------
@@ -52,6 +56,12 @@ from jax.experimental.pallas import triton as pltriton
 # subset shape.  Revalidate per arch before extending the allowlist.
 ROW_CHUNK = 256
 NUM_WARPS = 2
+# Forward (e3_hfan_pallas_v3.py sweep): segment cap 64 balances the tap walk against
+# split-segment atomics at subset uniformity; num_warps=1 (per-program work is one
+# warp's worth).  The subset-size gate: pallas forward only when the call fits ONE
+# pixel batch (the measured 2.13x shape); larger calls keep the XLA sorted reduce.
+FWD_SEGMENT_CAP = 64
+FWD_NUM_WARPS = 1
 # Device kinds where the kernels have been measured (substring match on device_kind).
 _ARCH_ALLOWLIST = ('H100',)
 
@@ -216,3 +226,170 @@ def back_project_single_device(model, sinogram, pixel_indices, coeff_power=1,
         out = jax.device_put(out, output_device)
     return out
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Increment 2: the forward horizontal fan (subset-sized calls, parallel beam)
+#
+# out[c, :] = sum over taps (t, p) with center[p]+t == c of A[t,p] * values[p, :]
+#
+# The scatter becomes a GATHER over a channel-sorted contributor stream built per
+# (view-chunk) by a module-level jit (sort + searchsorted -- the same ~2-3% sort cost
+# the XLA path pays, paid once per call here), plus a host-side cap-and-split that
+# bounds every program's segment (skew guard).  Two launches (the "two-phase" variant,
+# the measured subset winner): phase 1 STORES every channel's first segment -- each
+# output row written exactly once, no zero-fill, no cross-program race; phase 2
+# atomically adds the few remainder segments of over-cap channels (~empty at subset
+# uniformity).  The values tile (P x band) is shared by ALL views -- L2-hot, which is
+# where the win comes from.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@partial(jax.jit, static_argnames=['hfan_data_fn', 'projector_params'])
+def _jit_compute_fwd_streams(view_params_array, pixel_indices, hfan_data_fn,
+                             projector_params, owned_view_indices=()):
+    """Channel-sorted (weights, pixel-ids) streams + per-channel segment starts, per
+    view: wts (V, T*P) f32, pix (V, T*P) i32, starts (V, C+1) i32.  Module-level jit
+    (traced once -- the retrace lesson, lessons.md section 5)."""
+    if len(owned_view_indices) > 0:
+        view_params_array = view_params_array[jnp.asarray(owned_view_indices)]
+    gp = projector_params.geometry_params
+    num_channels = projector_params.sinogram_shape[2]
+    num_pixels = pixel_indices.shape[0]
+
+    def one_view(single_view_params):
+        n_p, W_p_c, weight_scale = hfan_data_fn(pixel_indices, single_view_params,
+                                                projector_params)
+        centers = jnp.round(n_p).astype(jnp.int32)
+        offs = jnp.arange(-gp.psf_radius, gp.psf_radius + 1)
+        n = centers[None, :] + offs[:, None]
+        L_max = jnp.minimum(1.0, W_p_c)
+        A = weight_scale * jnp.clip((W_p_c + 1.0) / 2.0 - jnp.abs(n_p - n), 0.0, L_max)
+        A = A * ((n >= 0) & (n < num_channels))
+        n = jnp.clip(n, 0, num_channels - 1)
+        flat_n = n.reshape(-1)
+        # sort_key_val returns keys and permutation TOGETHER (the rounding-hazard-safe
+        # form, as in projectors._channel_reduce_sort_segsum).
+        sorted_n, order = jax.lax.sort_key_val(flat_n, jnp.arange(flat_n.shape[0]))
+        pix = (order % num_pixels).astype(jnp.int32)
+        wts = A.reshape(-1)[order]
+        starts = jnp.searchsorted(sorted_n, jnp.arange(num_channels + 1)).astype(jnp.int32)
+        return wts, pix, starts
+    return jax.vmap(one_view)(view_params_array)
+
+
+def _split_two_phase_np(starts_np, cap, num_channels):
+    """Vectorized host-side cap-and-split (numpy; ~ms at subset sizes): phase 1 = the
+    FIRST segment of every channel (empty channels store zero -- the no-zero-fill
+    trick); phase 2 = remainder segments of over-cap channels, padded per view to a
+    common count (pads target the scratch channel row C: atomic add of zero)."""
+    V = starts_np.shape[0]
+    s0, s1 = starts_np[:, :-1], starts_np[:, 1:]                       # (V, C)
+    seg1 = np.zeros((V, num_channels, 4), dtype=np.int32)
+    seg1[:, :, 0] = s0
+    seg1[:, :, 1] = np.minimum(s0 + cap, s1)
+    seg1[:, :, 2] = np.arange(num_channels)[None, :]
+
+    counts = s1 - s0
+    nseg2 = np.maximum(0, -(-counts // cap) - 1)                       # (V, C)
+    n2 = max(1, int(nseg2.sum(axis=1).max()))
+    seg2 = np.zeros((V, n2, 4), dtype=np.int32)
+    seg2[:, :, 2] = num_channels                                       # pad -> scratch row
+    for v in range(V):                                                 # V-loop of vector ops
+        ch = np.repeat(np.arange(num_channels), nseg2[v])
+        if len(ch) == 0:
+            continue
+        # k-th remainder segment of its channel: 1-based within-channel index
+        k = np.arange(len(ch)) - np.repeat(np.cumsum(nseg2[v]) - nseg2[v], nseg2[v]) + 1
+        a = s0[v, ch] + k * cap
+        seg2[v, :len(ch), 0] = a
+        seg2[v, :len(ch), 1] = np.minimum(a + cap, s1[v, ch])
+        seg2[v, :len(ch), 2] = ch
+    return jnp.asarray(seg1), jnp.asarray(seg2), n2
+
+
+def _fwd_kernel(seg_ref, wt_ref, pix_ref, vals_ref, *rest, atomic):
+    """One program per (view, segment): walk the sorted contributor segment,
+    ref-gather pixel rows from the shared values tile, one store (phase 1) or one
+    atomic add (phase 2)."""
+    out_ref = rest[-1]
+    v = pl.program_id(0)
+    start = seg_ref[0, 0, 0]
+    end = seg_ref[0, 0, 1]
+    c = seg_ref[0, 0, 2]
+
+    def body(i, acc):
+        return acc + wt_ref[0, i] * vals_ref[pix_ref[0, i], :]
+    acc = jax.lax.fori_loop(start, end, body,
+                            jnp.zeros((out_ref.shape[-1],), jnp.float32))
+    if atomic:
+        pltriton.atomic_add(out_ref, (v, c, slice(None)), acc)
+    else:
+        out_ref[v, c, :] = acc
+
+
+@functools.cache
+def _make_fwd_phase(num_views, num_channels, n_seg, taps, num_pixels, band_padded,
+                    atomic, interpret=False):
+    # Cached on the static shapes -- see _make_back_call's caching note.
+    kw = ({} if interpret else
+          {'compiler_params': pltriton.CompilerParams(num_warps=FWD_NUM_WARPS)})
+    specs = [pl.BlockSpec((1, 1, 4), lambda v, s: (v, s, 0)),          # segment row
+             pl.BlockSpec((1, taps), lambda v, s: (v, 0)),             # weights stream
+             pl.BlockSpec((1, taps), lambda v, s: (v, 0)),             # pixel-id stream
+             pl.BlockSpec((num_pixels, band_padded), lambda v, s: (0, 0))]  # shared tile
+    alias = {}
+    if atomic:
+        specs.append(pl.BlockSpec((num_views, num_channels + 1, band_padded),
+                                  lambda v, s: (0, 0, 0)))
+        alias = {4: 0}                        # phase-1 result accumulated in place
+    return pl.pallas_call(
+        partial(_fwd_kernel, atomic=atomic),
+        out_shape=jax.ShapeDtypeStruct((num_views, num_channels + 1, band_padded),
+                                       jnp.float32),
+        grid=(num_views, n_seg),
+        in_specs=specs,
+        out_specs=pl.BlockSpec((num_views, num_channels + 1, band_padded),
+                               lambda v, s: (0, 0, 0)),
+        input_output_aliases=alias,
+        interpret=interpret, **kw)
+
+
+def forward_project_subset(model, voxel_values, pixel_indices, owned_view_indices=(),
+                           interpret=False):
+    """The pallas forward driver for SUBSET-SIZED calls (one pixel batch): view-chunk
+    loop x [streams, host cap-split, two-phase kernel], outputs concatenated to the
+    library orientation (views, band_rows, channels).  values (P, band) is the shared
+    gather tile; band is whatever the caller passes (a slice band or full cylinders).
+    """
+    pf = model.projector_functions
+    pp = pf.projector_params
+    num_channels = pp.sinogram_shape[2]
+    num_pixels, band = voxel_values.shape
+    band_padded = next_pow2(band)
+    vals_pad = jnp.pad(voxel_values, ((0, 0), (0, band_padded - band)))
+
+    if len(owned_view_indices) > 0:
+        owned_all = jnp.asarray(owned_view_indices)
+    else:
+        owned_all = jnp.arange(pf.view_params_array.shape[0])
+    num_views = int(owned_all.shape[0])
+    view_chunk = min(model.tiles.fwd_view_batch, num_views)
+
+    chunks = []
+    for v0 in range(0, num_views, view_chunk):
+        owned = owned_all[v0:min(v0 + view_chunk, num_views)]
+        vc = int(owned.shape[0])
+        wts, pix, starts = _jit_compute_fwd_streams(
+            pf.view_params_array, pixel_indices, model.compute_hfan_data, pp,
+            owned_view_indices=owned)
+        seg1, seg2, n2 = _split_two_phase_np(np.asarray(starts), FWD_SEGMENT_CAP,
+                                             num_channels)
+        taps = int(wts.shape[1])
+        p1 = _make_fwd_phase(vc, num_channels, num_channels, taps, num_pixels,
+                             band_padded, atomic=False, interpret=interpret)
+        p2 = _make_fwd_phase(vc, num_channels, n2, taps, num_pixels,
+                             band_padded, atomic=True, interpret=interpret)
+        out = p2(seg2, wts, pix, vals_pad, p1(seg1, wts, pix, vals_pad))
+        chunks.append(out[:, :num_channels, :band])       # drop scratch row + padding
+    full = chunks[0] if len(chunks) == 1 else jnp.concatenate(chunks, axis=0)
+    return jnp.swapaxes(full, 1, 2)                       # -> (views, band_rows, channels)
