@@ -650,10 +650,20 @@ one chunk, size- and n-independent — fixed by capping the driver's chunk at 12
 (`BACK_VIEW_CHUNK_CAP`; chunking measured ~free), which cut it to +0.3 GB for 5.6%
 of wall.  The n=4 +3.1 GB residual is accepted (18.4 GB absolute) and unattributed —
 revisit if it grows at larger shapes.  **CORRECTION (2026-07-13, increment-4
-review finding): these peak numbers are UNVERIFIED — the harness maxed
-`peak_bytes_in_use` over `get_memory_stats`' trailing 'CPU' entry, which is
-process RSS and can exceed small per-GPU peaks; the reader is fixed (GPU entries
-only) and the memory columns will be re-measured in a rerun.**  One environmental rerun (both n=4 cells
+review finding): these peak numbers were RSS-contaminated — the harness maxed
+`peak_bytes_in_use` over `get_memory_stats`' trailing 'CPU' entry (process RSS).
+RE-MEASURED with the per-GPU reader (job 13515412, on the branch WITH increment 4,
+so the on-cells exercise both band adoptions):**
+
+| cell | off → on (true per-GPU peak) | delta |
+|---|---|---|
+| back n=2 | 13.96 → 13.72 GB | **−0.2 GB** (the chunk cap over-delivers) |
+| back n=4 | 10.87 → 11.90 GB | +1.0 GB (was misreported +3.1) |
+| VCD n=2 (inc3+inc4 both on) | 25.01 → 26.71 GB | **+1.7 GB for the 2.83× speedup** (99.5 → 35.2 s) |
+
+The composed-workload memory cost is modest: the large fwd acks (+6.8/+7.4 GB)
+appear only at dedicated full-grid forward cells; in VCD the forward calls are
+subset-sized and the net footprint is +1.7 GB.  One environmental rerun (both n=4 cells
 SIGABRT in XLA GPU-client init immediately after the `ai`-partition outage; clean on
 the healthy partition).
 
