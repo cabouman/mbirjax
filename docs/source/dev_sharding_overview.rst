@@ -212,6 +212,12 @@ the measured record; the ``e3_*``/``e4_*`` scripts under
   silently keeps the XLA path.
 * **Fallback** — the XLA kernels remain compiled-in at every site (they also serve
   CPU, other archs, and the multi-device band path).
+* **Introspection** — because the fallback is silent,
+  ``model.get_compute_config(print_results=True)`` reports which kernel paths a run
+  will actually use (the full tile policy, plus WHY pallas is unavailable when it
+  is), and the ``Reconstruction devices:`` log line appends ``(pallas: back+fwd)``
+  when a custom-kernel path is active — check one of these before trusting any
+  cross-machine timing comparison.
 
 **How the back kernel works** (the register-tile + L2-phase design): one small GPU
 program per (row-chunk, pixel) holds its output row-chunk in registers and loops over
