@@ -40,7 +40,7 @@ ARM_LABELS = {'D0_default': 'default [0,2,4,6,7]',
 DIFF_LABELS = {'D0_default': 'default − reference',
                'D1_g2start': 'skip 0 − reference'}
 WINDOW_PCT = (1, 99)                # fixed per-dataset window percentiles
-DIFF_PCT = 99                       # per-dataset diff scale = this pct of |axial diff|
+DIFF_PCT = 99                       # per-dataset diff scale = this pct of whole-vol |diff|
 AXIAL, CORONAL = 'axial (z mid)', 'coronal (y mid)'
 
 
@@ -62,37 +62,30 @@ def mid_slices(vol):
             CORONAL: vol[:, vol.shape[1] // 2, :].T.copy()}   # (slices, rows): z vert
 
 
-def load_mids(case):
-    """Load every needed volume ONCE, keeping only its 2-D mid-slices (NFS-friendly).
+def load_case_data(case):
+    """Load every needed volume ONCE, keeping only its 2-D mid-slices (NFS-friendly),
+    and derive one per-dataset diff color limit.
 
-    Returns recon[(s, it, arm)] -> {view: 2-D} and ref[s] -> {view: 2-D} or None.
+    Returns recon[(s, it, arm)] -> {view: 2-D}, ref[s] -> {view: 2-D} or None, and
+    difflim = the symmetric limit for the (recon − reference) images: the 99th
+    percentile of |recon − reference| over the WHOLE volume (max over ref-having
+    combos).  Whole-volume rather than the axial mid-slice, because the central axial
+    slice can be anomalously well converged (e.g. ds4 z=333 is ~35x below the volume
+    error) and would set an unrepresentatively tiny scale.  The 99th percentile clips
+    the extreme axial-end flash so the interior stays visible.
     """
-    recon = {}
+    recon, ref, diffvals = {}, {}, []
     for s in SHARPNESS_LIST:
+        p = os.path.join(REF_DIRS[case], f'ref_sharp{s}.npy')
+        refvol = np.load(p) if os.path.exists(p) else None
+        ref[s] = mid_slices(refvol) if refvol is not None else None
         for it in FIG_ITERS:
             for arm in ARMS:
                 vol = np.load(os.path.join(STAGE, f'{case}_{arm}_s{s}_it{it}.npy'))
                 recon[(s, it, arm)] = mid_slices(vol)
-    ref = {}
-    for s in SHARPNESS_LIST:
-        p = os.path.join(REF_DIRS[case], f'ref_sharp{s}.npy')
-        ref[s] = mid_slices(np.load(p)) if os.path.exists(p) else None
-    return recon, ref
-
-
-def dataset_diff_limit(recon, ref):
-    """One symmetric color limit per dataset for the (recon − reference) images, set
-    from the interior axial mid-slices (so the axial-end flash zones, which are much
-    larger, may clip rather than wash out the interior)."""
-    vals = []
-    for s in SHARPNESS_LIST:
-        if ref[s] is None:
-            continue
-        for it in FIG_ITERS:
-            for arm in ARMS:
-                d = recon[(s, it, arm)][AXIAL] - ref[s][AXIAL]
-                vals.append(np.percentile(np.abs(d), DIFF_PCT))
-    return max(vals) if vals else 1e-6
+                if refvol is not None:
+                    diffvals.append(np.percentile(np.abs(vol - refvol), DIFF_PCT))
+    return recon, ref, (max(diffvals) if diffvals else 1e-6)
 
 
 def _coronal_ratio(mids):
@@ -206,8 +199,7 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     for case in CASES:
         window = dataset_window(case)
-        recon, ref = load_mids(case)
-        difflim = dataset_diff_limit(recon, ref)
+        recon, ref, difflim = load_case_data(case)
         print(f'{case}: window [1%,99%] = [{window[0]:.4g}, {window[1]:.4g}], '
               f'range [{window[2]:.4g}, {window[3]:.4g}], diff scale ±{difflim:.4g}',
               flush=True)
