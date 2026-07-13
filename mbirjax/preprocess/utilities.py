@@ -889,8 +889,10 @@ def auto_crop_sino_conebeam(sino, cone_beam_params, optional_params, safety_buff
 
             * **sino** (*np.ndarray*): Cropped sinogram with updated shape.
             * **cone_beam_params** (*dict*): Updated parameters with adjusted ``'sinogram_shape'``.
-            * **optional_params** (*dict*): Updated parameters with adjusted ``'det_row_offset'``,
-              ``'det_channel_offset'``, and ``'recon_slice_offset'``.
+            * **optional_params** (*dict*): Updated parameters with adjusted ``'det_row_offset'``
+              and ``'det_channel_offset'``.  (Any other entries pass through untouched; call
+              ``auto_set_recon_geometry()`` after applying the parameters so the recon grid
+              tracks the adjusted offsets.)
     """
     crop_pixels_top, crop_pixels_bottom, crop_pixels_left, crop_pixels_right = est_crop_width(sino, safety_buffer)
 
@@ -907,16 +909,6 @@ def auto_crop_sino_conebeam(sino, cone_beam_params, optional_params, safety_buff
     delta_det_row, delta_det_channel = optional_params['delta_det_row'], optional_params['delta_det_channel']
     optional_params['det_row_offset'] += (crop_pixels_bottom - crop_pixels_top)/2 * delta_det_row
     optional_params['det_channel_offset'] += (crop_pixels_right - crop_pixels_left)/2 * delta_det_channel
-
-    # Correct geometry parameter recon_slice_offset
-    recon_slice_offset = optional_params['recon_slice_offset']
-    source_detector_dist = cone_beam_params["source_detector_dist"]
-    source_iso_dist = cone_beam_params["source_iso_dist"]
-    magnification = source_detector_dist / source_iso_dist
-
-    # Sign convention: positive recon_slice_offset reconstructs below the iso, vice versa
-    recon_slice_offset -= (crop_pixels_bottom - crop_pixels_top)/2 * delta_det_row / magnification
-    optional_params['recon_slice_offset'] = recon_slice_offset
 
     return sino, cone_beam_params, optional_params
 
@@ -1509,8 +1501,9 @@ def load_preprocessing(file_path):
     Returns:
         tuple: ``(sinogram, cone_beam_params, optional_params, weights)`` -- a host NumPy sinogram, the
         two parameter dicts (ready for ``ConeBeamModel(**cone_beam_params)`` +
-        ``set_params(**optional_params)``), and ``weights`` (a host NumPy array if custom weights were
-        saved, else ``None`` -- in which case the recon should regenerate them with ``gen_weights``).
+        ``set_params(**optional_params)`` + ``auto_set_recon_geometry()``), and ``weights`` (a host
+        NumPy array if custom weights were saved, else ``None`` -- in which case the recon should
+        regenerate them with ``gen_weights``).
     """
     import json
     params = {'cone_beam_params': {}, 'optional_params': {}}

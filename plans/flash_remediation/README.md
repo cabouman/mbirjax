@@ -3,12 +3,19 @@
 The FoV-truncation "flash" remediation program (source item: `plans/current_plans.md` §2).
 
 - **`index.html`** — the project overview page; links every report below.
-- **`flash_remediation_plan.md`** — the plan of record: mechanism analysis, phase plans,
-  findings, and the decisions log.  Start here for the working record.
+- **`flash_remediation_plan.md`** — the plan of record: mechanism analysis, findings,
+  the implementation record, and the decisions log.  Start here for the working record.
 - **`phase_1_results.html`** — the illustrated Phase 1 characterization report.
 - **`phase_2a_axial_results.html`** — Phase 2a: the axial taper-vs-padding story (complete).
-- **`phase_2b_radial_results.html`** — Phase 2b: the radial padding-knee story (in progress;
-  sweeps run as sbatch jobs on gautschi via `radial_pad_sweep.py`).
+- **`phase_2b_radial_results.html`** — Phase 2b: the radial padding-knee story (complete).
+- **`phase_2c_split_results.html`** — Phase 2c: the split seam — stripes, cause, fix (complete).
+- **`phase_2d_remedies.html`** — Phase 2d: the recommended remedies (the implementation's
+  design record).
+- **`phase_3_results.html`** — Phase 3: the implemented remedies validated on the real
+  scans (SiC, Lilly, BGA; complete).  Its figures are rendered ON GAUTSCHI by the
+  `p3a_*`/`p3b_*`/`p3e_*` analysis scripts from the volumes under
+  `/depot/bouman/data/mbirjax_metrics/padding/`, then copied into `figures/` locally
+  before running the embed script.
 
 The reports are **self-contained**: every figure is embedded as a base64 data URI, because
 the repo gitignores PNGs (`*.png` in the top-level `.gitignore`) — the reports survive a

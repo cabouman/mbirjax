@@ -195,5 +195,27 @@ class TestExportReconHostResidence(unittest.TestCase):
             np.testing.assert_array_equal(loaded, recon)
 
 
+class TestIsOomClassifier(unittest.TestCase):
+    """is_oom scans the FULL traceback, whose file paths can embed a marker as a substring: a
+    checkout named "mbirjax_headroom" put "oom" in every traceback and classified every error as
+    an OOM.  These tests are path-independent (the sharding-hooks non-OOM test only catches the
+    bug when the checkout path itself contains "oom")."""
+
+    def test_real_oom_signatures_classify_true(self):
+        for message in ('XLA: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 1073741824 bytes',
+                        'OOM when allocating tensor with shape[1024,1024,1024]',
+                        'Failed to create cuFFT batched plan with scratch allocator',
+                        'Failed to allocate work area',
+                        'MemoryError: std::bad_alloc'):
+            self.assertTrue(mj._utils.is_oom(message), message)
+
+    def test_marker_inside_path_word_does_not_classify(self):
+        fake_traceback = ('Traceback (most recent call last):\n'
+                          '  File "/home/user/mbirjax_headroom/mbirjax/tomography_model.py", line 1\n'
+                          '  File "/home/user/tests/test_non_oom_error.py", line 2\n'
+                          'jax.errors.JaxRuntimeError: XLA computation has a shape mismatch')
+        self.assertFalse(mj._utils.is_oom(fake_traceback))
+
+
 if __name__ == '__main__':
     unittest.main()

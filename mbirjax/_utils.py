@@ -6,24 +6,31 @@ import copy
 
 FILE_FORMAT_NUMBER = 1.0  # The format number should be changed if the file format changes.
 
-# Substrings (matched case-insensitively) that mark a caught error as an out-of-memory (OOM)
-# failure.  Beyond the clean allocator tokens, GPU FBP hits cuFFT OOM, which XLA surfaces as
-# "Failed to create cuFFT batched plan with scratch allocator" / "Failed to allocate work area" --
-# none of the usual OOM tokens (confirmed on H100 at 1624^3 / 1 device).
+# Tokens (matched case-insensitively, on word boundaries) that mark a caught error as an
+# out-of-memory (OOM) failure.  Beyond the clean allocator tokens, GPU FBP hits cuFFT OOM, which
+# XLA surfaces as "Failed to create cuFFT batched plan with scratch allocator" / "Failed to
+# allocate work area" -- none of the usual OOM tokens (confirmed on H100 at 1624^3 / 1 device).
 OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
                "FAILED TO ALLOCATE", "WORK AREA", "SCRATCH ALLOCATOR",
                "FAILED TO CREATE CUFFT")
 
+# Word boundaries are required, not decoration: the classified text is a full traceback whose
+# file paths can embed a marker as a substring (a checkout named "mbirjax_headroom" put "oom"
+# in every traceback and turned every error into an OOM).
+_OOM_MARKER_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(marker) for marker in OOM_MARKERS) + r")\b",
+    re.IGNORECASE,
+)
+
 
 def is_oom(text):
-    """Return True if ``text`` contains a known out-of-memory marker.
+    """Return True if ``text`` contains a known out-of-memory marker as a whole word.
 
     Prefer passing the full traceback rather than ``str(e)``: an OOM often surfaces as an
     unrelated-looking error (e.g. a numpy "setting an array element with a sequence") with the
     real RESOURCE_EXHAUSTED only visible deeper in the stack.
     """
-    up = text.upper()
-    return any(marker in up for marker in OOM_MARKERS)
+    return _OOM_MARKER_RE.search(text) is not None
 
 
 def log_oom_guidance(logger, on_gpu):

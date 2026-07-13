@@ -1,14 +1,19 @@
 # Flash remediation — recon-support padding for FoV truncation
 
-**Status (2026-07-11): investigation COMPLETE (Phases 1–2d); implementation IN PROGRESS
-with real-data validation after each step.  Step A (cone per-end axial extension) is
-in-tree at commit `a872695` and validated on the real SiC scan at two scales; the BGA
-axial-only check is running; steps B (split) and C (lateral warn) are next.**
+**Status (2026-07-12): investigation COMPLETE (Phases 1–2d); implementation COMPLETE and
+VALIDATED on real scans, step by step — A: cone per-end axial extension (`a872695`;
+SiC at two scales + BGA axial-only), B: split_sino_recon geometry overlap + taper
+retirement (`fcc0e9e`; Lilly 4×/8×), C: lateral detect-and-warn (`41ecbc2`; BGA/z62/
+SiC/Lilly scorecard + the axial+lateral BGA comparison), D: NSI auto-geometry cleanup
+(`dbc9c3b`; Lilly shape/values/seam).  The illustrated validation report is
+`phase_3_results.html` (published).  Step E (re-baseline records + Lilly cache rebuild)
+is in progress — see the implementation record below.**
 
 Source item: `plans/current_plans.md` §1.  The per-case remedy spec — equations, code
-sketches, pros/cons including do-nothing — is **`phase_2d_remedies.html`** (published at
-`/depot/bouman/www/mbirjax/flash_remediation/`); the illustrated evidence pages per phase
-are listed in `README.md`; scripts live in `plans/experiments/flash_remediation/`.
+sketches, pros/cons including do-nothing — is **`phase_2d_remedies.html`**; the
+illustrated evidence pages per phase are listed in `README.md` and published at
+`/depot/bouman/www/mbirjax/flash_remediation/`; scripts live in
+`plans/experiments/flash_remediation/`.
 
 *This file was reorganized 2026-07-11 (Greg's request) into the settled story.  The full
 chronological record — the announce-and-retract chains, per-round build-up narratives, and
@@ -288,25 +293,120 @@ Two findings beyond the pass/fail:
   14 channels total against its 20-pixel buffer).  The Lilly recons therefore carry a
   mild one-sided lateral flash contribution — worth remembering when reading Lilly
   metrics.
-- **D. NSI pipeline auto-geometry cleanup — NEAR-TERM PRIORITY; must land before the
-  re-baseline (or the NSI-scan baselines churn twice).**  The NSI flow (and any
-  set-params-after-construction pipeline) computes the axial extension at model
-  construction with DEFAULT detector pitches and offsets, so the extension is wrong in
-  two ways: the PITCH face inflates R/SID by 1/δ_ch — measured 2× over-extension on
-  Lilly ds4 (667 slices vs the intended ~569; ~8× at full resolution; ds8's δ_ch = 1.016
-  is coincidentally near-correct), harmless for correctness (the extra slices are
-  provably inert) but real memory — and the OFFSET face mis-centers by
-  |det_row_offset|·R/SDD (sub-slice on Lilly).  Fix: the pipeline re-runs
-  `auto_set_recon_geometry()` after setting the real detector params and drops its
-  hand-set `recon_slice_offset = -det_row_offset/mag` compensation (`nsi.py:390`; the
-  per-end extension now handles offsets correctly and better).  Touches the NSI usage
-  flow + docs/demos; validate on Lilly (shape shrinks to the intended extension,
-  seam/end behavior unchanged).
-- **E. Re-baseline** the regression dashboards + release note (after C and D; default
-  shapes grow and values shift, for the better); record the regime change both as an
-  `annotations.yaml` marker and a policy-block padding flag.
+
+### Step C follow-up — lateral+axial padding on the warned scans (DONE 2026-07-12, `p3e_*`)
+
+The missing arm of the comparison: the warning's own remedy applied on top of the new
+default (no-pad and axial-only already measured under steps A/B).  Lateral scaling grows
+R and hence the axial bound, so the experiment applies the compensating slice growth
+explicitly (`extend_axially_to_bound`, measured against the CURRENT slab — the concrete
+form of the planned cone `scale_recon_shape` warning's advice; Lilly's NSI-inflated slab
+already covered 1.25×R so it got +0 slices, while BGA needed +50/+100 per end at
+s = 1.5/2.0).
+
+- **BGA at s = 1.5 (1149², iter 50): cover reached — and it fixes what axial could not.**
+  The axial-only run has a 3.2× ring at the old FoV boundary (radial peak 0.049 vs
+  interior 0.015); the padded run erases it (old-boundary region at interior level) and
+  shows NO ring at its own boundary (peak 0.006 vs inner 0.010 — natural decay).  By the
+  P2b asymmetry, s = 1.5 is at/past cover, so the OOM'd s = 2.0 run is unnecessary — the
+  knee question is answered from the s = 1.5 volume itself (the single-H100 limit sits
+  between 1149²×784 and 1532²×884).  The center slice now reconstructs the actual board
+  continuing past the old FoV.  Interior speckle drops (center-40 noise 0.043 → 0.035,
+  off-center median 0.017 → 0.013), though the localized center-slice spike persists
+  (the separate artifact).  Convergence: change-% at iter 50 drops 1.62 → 0.92 — better,
+  but still far from the 0.2% stop, consistent with P2b's severe-overshoot caveat (the
+  interior-tomography DC ambiguity keeps converging slowly; an air anchor remains the
+  only fix for that residual).
+- **Lilly at s = 1.25 (467², iter 15): a null result, honestly.**  The mild one-sided
+  truncation (16% of view-rows) produces NO measurable ring at the central slab in
+  either variant (annulus means ~1e-4 at all shared radii) — the warning correctly
+  describes the DATA, while the reconstruction impact at ds4 is below noise at the
+  probed slices.  (A slice-resolved hunt at the specific rows with edge support is
+  possible if ever needed.)
+
+Volumes/logs/figures: `padding/p3e_*`; the radial-profile and three-way center-slice
+figures are the keepers for the results page.
+
+### Step D — NSI pipeline auto-geometry cleanup (DONE 2026-07-12, commit `dbc9c3b`)
+
+The NSI flow computed the axial extension at model construction with DEFAULT detector
+pitches and offsets: the pitch face inflated R/SID by 1/δ_ch (measured 2× over-extension
+on Lilly ds4; would be ~8× at full resolution), and the offset face mis-centered by
+|det_row_offset|·R/SDD.  The fix aligns NSI with the zeiss convention — **construct →
+`set_params(**optional_params)` → `auto_set_recon_geometry()`** — and
+`nsi.compute_sino_and_params` no longer hand-sets `recon_slice_offset` (the per-end
+extension places the slab from `det_row_offset` directly).  Design call (Greg): NO
+backward compatibility and no deprecation warning — `recon_slice_offset` is a legitimate
+`set_params` parameter, so loaders don't police it; a stale entry in an old parameter
+dict simply passes through (and is overwritten by the auto call under the new
+convention).  Companion changes: all `mbirjax_applications/nsi` scripts gained the auto
+call (the split demo also lost a stray `recon_slice_offset = 0.0` override), and the
+metrics `build_cache.py` NSI sidecar flipped to `auto_set_recon_geometry: True` for
+future cache builds.
+
+### Step D validation — Lilly, new flow (DONE 2026-07-12, job 13454976, `p3f_*`)
+
+- **Shape/offset exactly as derived**: ds4 recon (374, 374, **572**) vs the inflated 667
+  (95 slices ≈ 14% recovered; base 471 + per-end 55/46 from det_row_offset = −3.9 rows),
+  offset +4.50 slices (the per-end value; the old hand compensation was +3.90).
+- **Values preserved**: old-flow vs new-flow 15-iter recons agree on physically z-aligned
+  interior profiles to **max rel 0.62%** over the whole shared z-range (the level set by
+  the sub-slice grid difference + trajectory noise at 15 iterations).
+- **Split seam still fixed under the new flow**: ds8 seam max RMS **5.6e-4** (background
+  2.4e-5), formula still choosing h_recon = 9 at a near-worst-case sub-slice mismatch
+  (−0.45) — at or better than the step-B validated level (9.5e-4 under the old flow).
+
+### Step E — re-baseline and release record (IN PROGRESS 2026-07-12)
+
+Landed in `mbirjax_metrics` (staged): the engine's policy block now records
+`axial_extension` (capability-probed via `get_support_radius`, so the dashboard
+auto-marks the cone-cell shape/value/memory step in every chart when a tracked branch
+crosses the padding commits), the dashboard diffs it (`_POLICY_FIELDS`), and
+`annotations.yaml` carries the narrative marker.  Timing: the nightly last measured
+`401ad311` (2026-07-09, pre-padding), so these records land before the first
+post-padding measurement.  Remaining operational actions (each needs a go-ahead):
+
+1. **First post-padding nightly review + ack**: when the nightly measures `dbc9c3b`+,
+   review the correctness divergences (expected: cone-family shapes/values step in the
+   padded direction; split cells change with the taper retirement; memory up ~R/SID in
+   cone recon cells), then bump the reviewed-through watermark via
+   `action_scripts/clear_correctness.sh`.
+2. **Rebuild the five Lilly caches — DONE 2026-07-12** (job 13459660; the old caches are
+   parked in `cache/superseded_2026-07-12_pre_padding/`, MANIFEST regenerated).  All
+   five rebuilt with identical sinograms, sidecar `auto_set_recon_geometry: True`, and
+   offset-free `optional_params`; loaded per the sidecar they produce the lean new-flow
+   grids — d4x tags (470, 470, 427) with the per-end offset +0.82 ALU, v3x_d2x
+   (940, 940, 828).  (These caches use the `Autoinjector_HighRes_Horizontal` source with
+   auto-crop — landscape, 470 channels — not the portrait D01788 copy the p3c/p3f
+   validations loaded, hence the different numbers; both are the same new-flow
+   machinery.)  The existing partition-sequence reference recons/floors correspond to
+   the OLD grids and stay as historical records.
+
+**Release note (draft, for the next release's PR/notes):**
+
+- Cone-beam automatic reconstruction shapes now extend the slab, per end, to the
+  cone-beam visibility bound: material a ray crosses near the slab ends is representable
+  instead of flashing into the end slices.  Default shapes grow by ~R/SID
+  (geometry-dependent, typically 10–40% more slices); truncated scans lose the end-slice
+  flash/ringing, reconstruct the real out-of-slab continuation, and reach the stopping
+  threshold in fewer iterations (SiC: ~iteration 20 vs ~49).  Offset detectors and
+  helical travel are handled per end.  Setting `recon_shape` explicitly overrides, as
+  before.
+- `split_sino_recon` derives its reconstruction overlap from the same geometry
+  (`ceil(h_sino·(1+R/SID)·ρ) + 2`); the sine weight taper is retired (it failed at
+  coarse downsampling; the matched extension fixes the seam in every regime tested).
+  New: `align_split_grid` opt-in (sub-slice grid alignment; not registration-identical
+  to `recon()`), and `recon_dict['split_params']` reports the overlaps used.
+- Lateral FoV truncation is now detected from the existing sinogram support indicator
+  and warned with the remedy (`scale_recon_shape(s, s)`, round UP); deliberately no
+  auto-padding (the required cover is not derivable from truncated data).
+- NSI preprocessing: call `auto_set_recon_geometry()` after
+  `set_params(**optional_params)` (as the zeiss flow does); `optional_params` no longer
+  carries a hand-set `recon_slice_offset`.
 - Later: analogous per-end bounds for translation and multiaxis-parallel; a cone
-  `scale_recon_shape` override warning on uncompensated lateral growth.
+  `scale_recon_shape` override warning on uncompensated lateral growth (the p3e
+  `extend_axially_to_bound` helper is the prototype); the z62 RoR-boundary-ring open
+  question (decoupled from truncation by the step-C validation).
 
 ## Method lessons (durable)
 

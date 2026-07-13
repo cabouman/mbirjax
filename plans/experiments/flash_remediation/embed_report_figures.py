@@ -17,6 +17,14 @@ import re
 # Map: report file -> { <img> alt text -> figure filename in figures/ }.
 # When a script adds a NEW figure to a report, add its alt -> png entry here.
 FIG_MAP = {
+    'phase_3_results.html': {
+        'P3 SiC x-z: old default vs extended, iter 50': 'p3a_sic_v4x_d4x_nv401_nch512_xz_iter50.png',
+        'P3 SiC convergence: old vs extended slab': 'p3a_sic_v4x_d4x_nv401_nch512_convergence.png',
+        'P3 BGA per-slice noise: axial extension leaves the center-slice spike': 'p3b_bga_normal_v2x_d2x_noise_profile.png',
+        'P3 BGA center slices: no pad vs axial vs axial+lateral': 'p3e_bga_xy_center.png',
+        'P3 BGA radial profiles: ring at each grid boundary': 'p3e_bga_radial.png',
+        'P3 BGA convergence: no pad vs axial vs axial+lateral': 'p3e_bga_convergence.png',
+    },
     'phase_1_results.html': {
         'Lateral truncation: center slice montage': 'lateral_center_slice.png',
         'Lateral truncation: radial profile': 'lateral_radial_profile.png',
