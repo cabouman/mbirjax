@@ -791,6 +791,34 @@ weights) + the adjoint pair check; then E4-style integration behind
 `back_pallas_band` for ConeBeamModel (the dispatch plumbing from increment 3 is
 geometry-generic already).
 
+## E5 — the cone fused-vfan back kernel: SPIKE BAR SMASHED (2026-07-13; jobs 13515406 fail → 13515407; `e5_cone_fused_back.py`)
+
+Best config **lc=128, warps=1: 2.97 s for the full 11-band per-owner sweep vs 27.8 s
+XLA (9.4×; 7.1× vs the best-XLA vb16 form)** — inside the panel's honest 2.5–4.5 s
+window, 6× above the ≥1.5× bar.  Gates: gradient rel 6.5e-6 (≤1e-5 ✓), **Hessian
+2.04e-5 (≤1e-4 ✓ — and inside the panel's predicted 1.5–3.4e-5 window for the
+affine-m ULP effect; the numerical forecast was exact)**, adjoint vs the XLA cone
+forward 0.0e+00.  The sweep matched every panel prediction: lc=128 best (per-(v,p)
+scalar re-stream amortization — the rc=256 lesson again), warps=1 dominant, the
+lc=16→128 curve monotone.
+
+Two spike lessons: (1) a bare `pallas_call` (no compiler_params) selects the MOSAIC
+backend on Hopper — warpgroup-divisible-copy errors; Triton `compiler_params` are
+backend SELECTION, not tuning (probe round 1 failed on its own scaffolding);
+(2) the interpret smoke caught an inverted cos-φ divisor pre-GPU via the residual's
+magnitude ((v_p/sdd)²/2 ≈ the observed 7e-3).
+
+Projection for integration: cone back n=2 per-owner work 27.8 → ~3 s; the trace's
+MemcpyD2D (14 s/call self-time at n=2) overlaps compute rather than serializing —
+parallel's gate proved that (its trace showed 3.7 s/call of D2D yet gated at
+0.716 s) — so integrated cone back n=2 should land in the 3–4 s class vs today's
+27.5 s, ending the anti-scaling.  Integration increment (next): promote
+`cone_hfan_data` to `ConeBeamModel.compute_hfan_data`, move the fused kernel +
+driver into `_pallas_kernels.py`, wire cone `back_pallas_band` (n≥2) AND cone n=1
+`back_pallas` (full rows = one band — the (a)-track bonus, ~18.9 → ~2 s class)
+through the same driver, gates = the increment-3 pattern + the VCD-trajectory
+check backing the Hessian-gate decision (a).
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
