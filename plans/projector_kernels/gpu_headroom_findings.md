@@ -432,6 +432,52 @@ log just stops.
 policy, ProjectorPlan for the streams), same rails; then the model-level pair A/B and
 the nightly soak.**
 
+## E4 increment 2 — forward subset path: first gate FAILED, fixed, RE-GATED CLEAN (2026-07-12; commits 6268ba4 + 541b0b3; jobs 13486271 → 13487918)
+
+The pallas forward horizontal fan is in the library for SUBSET-SIZED calls only
+(TilePolicy `fwd_pallas` + the pixel-count guard in `sparse_forward_project_public`;
+full-grid forward keeps the XLA sorted reduce by design — the python view-chunk loop
+at ~3000 pixel batches would erode the win).  No ProjectorPlan object was needed:
+post-retrace-fix the streams build in-call at ~ms cost.
+
+**First gate (6268ba4, job 13486271): the fwd cells FAILED on speed** — values passed
+everywhere, but fwd_subset measured **0.68×** (73 → 108 ms) and the VCD guard fell to
+a 0.99× wash.  Diagnosis (code inspection, confirmed by the fix): the driver synced
+`starts` to host **per view chunk** (`np.asarray` → 8 pipeline stalls per call) for a
+host-numpy cap-and-split, and phase 2 was sized by the **data-dependent** segment
+count, so every distinct VCD subset changed a pallas cache key → Triton recompiles
+inside the timed loop.  The spike's 2.13× was kernel-only timing; the driver around it
+is part of what gates.
+
+**Fix (541b0b3), reviewed pre-gate by a 3-lens adversarial pass** (split-bound math
+brute-forced over 4,481 adversarial + 200k random cases; jit/caching-trap audit;
+GPU-perf audit): the split runs ON DEVICE under the static bound n2 = (T·P)//cap
+(provably sufficient; shapes only, never data), each view chunk is ONE cached fused
+jit (streams → split → both phases → trim+reorient), pad-slot atomics are
+`pl.when`-guarded (the reviewers estimated 5–15 ms of same-address adds-of-zero at the
+gate shape), and view bookkeeping stays in numpy (zero-eager-ops contract; ~1 eager
+dispatch per call remains, the multi-chunk concat).  A new test forces an over-cap
+regime so the guard is exercised on segments that must NOT be skipped.
+
+Re-gate, same six cells, flag-on vs kill-switch, fresh subprocesses:
+
+| cell | XLA → pallas | speedup | peak memory | values |
+|---|---|---|---|---|
+| back full-grid (1024³) | 10.48 → 1.15 s | **9.10×** | −1.3 GB | 5.5e-7 PASS |
+| back subset (6,026 px) | 198 → 24 ms | **8.25×** | +0.49 GB (acked) | 4.4e-7 PASS |
+| Hessian full-grid | 10.48 → 1.15 s | **9.09×** | −1.3 GB | 5.1e-7 PASS |
+| **fwd subset (6,026 px)** | 72 → 28 ms | **2.57×** | equal | 2.5e-7 PASS |
+| fwd full-grid (policy check) | 7.97 → 7.97 s | 1.00× | equal | **rel 0 (bitwise)** PASS |
+| VCD guard (both paths, 5 it) | 17.33 → 16.34 s | **1.06×** | −0.03 GB | 7.6e-7 PASS |
+
+Reads: the gated fwd subset (2.57×) now EXCEEDS the kernel-only spike number (2.13×)
+— the fused chunk jit is cheaper glue than the spike harness's; fwd_full at rel 0
+proves the guard keeps full-grid calls bitwise on XLA; the VCD guard's 1.06× shows the
+forward acceleration adds little END-TO-END at 256³ (VCD there is host-dispatch-bound
+— the §3 pool-1 story, not a kernel problem).  Job wall fell 18:24 → 5:38, which is
+the recompile diagnosis confirmed operationally.  Suite: 297 passed (14 pallas gates,
+interpret mode on CPU CI).
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).

@@ -6,10 +6,10 @@ plans/experiments/projector_kernels/e3_*.py, e4_back_composed.py).
 Increment 1: the PARALLEL-BEAM single-device BACK projection (16-26x kernel-level,
 9.17x composed/gated at the 1024^3 cell; Hessian path the same).
 Increment 2: the PARALLEL-BEAM forward horizontal fan for SUBSET-SIZED calls (the VCD
-fine tail; 2.13x measured) -- the CSR segment-walk with the two-phase store+atomic
-launch.  Full-grid forward stays on the XLA sorted reduce by policy: its measured win
-is smaller (1.59x) and the python-loop driver overhead at ~3000 pixel batches would
-erode it; a batched-grid variant can revisit this later.
+fine tail; 2.57x composed/gated at the 6,026-pixel cell) -- the CSR segment-walk with
+the two-phase store+atomic launch.  Full-grid forward stays on the XLA sorted reduce
+by policy: its measured win is smaller (1.59x) and the python-loop driver overhead at
+~3000 pixel batches would erode it; a batched-grid variant can revisit this later.
 
 How the kernel works (the "register-tile + L2-phase" design)
 -------------------------------------------------------------

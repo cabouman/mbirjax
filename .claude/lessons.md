@@ -219,6 +219,15 @@ as suspect — and note small phantoms can never reproduce these (size-dependent
   to module level (or cache the jitted callable) before timing anything; suspect any "expensive
   precompute" measured through a locally-constructed jit.  Full record:
   `plans/projector_kernels/gpu_headroom_findings.md` (the composed-preview sections).
+- **A kernel spike's speedup is NOT the driver's; the two driver killers are host syncs and
+  data-dependent launch shapes.**  E4 increment 2: a kernel that spiked 2.13× gated 0.68× in the
+  library because the driver (a) pulled a device array to host per view chunk (`np.asarray` — a
+  pipeline stall, strictly worse than an eager dispatch) and (b) sized a pallas grid from DATA, so
+  every distinct VCD subset changed a cache key → Triton recompile inside the loop (invisible to
+  a warm same-input bench; the tell was the JOB wall, 18 vs 6 min).  Rule: derive kernel/launch
+  shapes from array SHAPES only (static bounds, padded slots made no-ops), keep the whole per-call
+  chain in one cached jit, and gate the LIBRARY path at production shapes — the spike harness's
+  glue is not the driver's glue.  Fixed form gated 2.57×; same file, sections above.
 
 ## 6. Performance expectations
 
