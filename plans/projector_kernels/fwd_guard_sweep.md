@@ -1,10 +1,10 @@
 # Forward-kernel dispatch guard: P × band sweep (fwd_guard)
 
-**Status: MEASUREMENT COMPLETE — sweeps 1–3 (jobs 13497787 / 13497833 / 13500938,
-2026-07-13), 70 cells, all value-gated PASS.  Pallas wins EVERY cell (min 1.34×,
-≥3× everywhere P ≥ 24576, through full grid); no knee, no L2 cap, no regime where
-XLA wins.  Proposal below: drop the pixel-count guard.  AWAITING GREG'S APPROVAL —
-no library code touched.**
+**Status: SHIPPED (Greg approved 2026-07-13; commit 8ea8f7a).  Sweeps 1–3 (jobs
+13497787 / 13497833 / 13500938), 70 cells, all value-gated PASS: pallas wins EVERY
+cell (min 1.34×, ≥3× everywhere P ≥ 24576, through full grid); no knee, no L2 cap.
+The pixel-count guard is REMOVED; full CPU suite green (299 passed, 2 skipped, 72
+subtests); GPU validation = the E4 six-cell A/B rerun (job 13504454), table below.**
 
 ## Question
 
@@ -136,7 +136,39 @@ fine tail and full grid.  Relevant to wave 2: the multi-device banded forward ru
 band = `fwd_slice_band` = 256 — this column says pallas wins there at ≥1.7×
 (op-level; the per-owner glue is wave 2's own gate to run).
 
-## Proposed guard (final — pending Greg approval)
+## Implementation + GPU validation (2026-07-13, commit 8ea8f7a, job 13504454)
+
+The diff (approved by Greg): `projectors.py sparse_forward_project_public` dispatches
+on `fwd_pallas` alone (pixel-count clause deleted; `fwd_pixel_batch` remains the XLA
+fallback's batching); comment updates in `parallel_beam._select_tile_policy` and the
+base policy; `get_compute_config` drops the now-meaningless `fwd_pallas_max_pixels`
+key (and its `test_tile_policy` assertion); new
+`test_pallas_kernels.test_wrapper_dispatches_pallas_above_pixel_batch` forces a call
+above a lowered `fwd_pixel_batch` and asserts both the dispatch and the 1e-5 value
+gate (driver spied to run interpret mode on CPU CI).  The kernel session aligned
+`_pallas_kernels.py`'s docstrings in the same tree (its own commit).  Full CPU suite:
+299 passed, 2 skipped, 72 subtests.
+
+E4 six-cell A/B rerun (flag-on vs kill-switch, fresh subprocesses, H100):
+
+| cell | XLA → pallas | speedup | vs pre-change | values |
+|---|---|---|---|---|
+| back full-grid | 10.48 → 1.16 s | 9.08× | unchanged | 5.5e-7 PASS |
+| back subset | 198 → 24 ms | 8.25× | unchanged | 4.4e-7 PASS |
+| Hessian full-grid | 10.48 → 1.16 s | 9.08× | unchanged | 5.1e-7 PASS |
+| fwd subset (6,026 px) | 72 → 28 ms | 2.57× | unchanged | 2.5e-7 PASS |
+| **fwd full-grid** | 7.99 → 2.35 s | **3.39×** | was 1.00× (guard kept XLA, bitwise) | 5.5e-6 PASS |
+| VCD guard (5 it, 256³) | 17.16 → 16.13 s | 1.06× | unchanged | 2.0e-6 PASS |
+
+Reads: fwd_full lands inside the sweep-2 prediction band (3.2–3.8×) with the
+predicted atomics-level rel (~5e-6, under the 1e-5 gate — the cell's meaning has
+permanently flipped from "guard keeps XLA, rel 0" to "pallas, value-gated"; +4.2 GB
+peak, the acked streams/values transients).  vcd_guard holds at 1.06× — at 256³ VCD
+is host-dispatch-bound (current_plans §3 pool 1), so the added coverage pays off at
+LARGE sizes (full-grid forward is the 3.39× itself), not in the interactive cell.
+Every pre-existing cell is unchanged, confirming the diff touched nothing else.
+
+## The approved guard decision (record)
 
 **Drop the pixel-count clause entirely: dispatch pallas for every single-device GPU
 parallel-beam forward call when `tiles.fwd_pallas` is set.**  Rationale: pallas
