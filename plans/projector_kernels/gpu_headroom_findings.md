@@ -863,6 +863,29 @@ plus a visual check; (c) both.  Also decidable: with the intrinsic explanation
 confirmed, the cone cp=2 → XLA policy (worth ~30 s/recon) was based on a
 misattributed signal and can be reverted — or kept as cheap conservatism.
 
+## Increment 5 CLOSED: the convergence-equivalence gate PASSES on the full configuration (2026-07-13; job 13520862; `w2_inc5_convergence.py`)
+
+Real data + the parity study's 150-iteration depot references (Greg's design: an
+occasional gate, never nightly); off / on / XLA-control × iters {8, 15} at n=2,
+seeded; cropped log10 NRMSE per the parity conventions; PASS = |on−off| ≤ 3× the
+control band.  Cone cp=2 was REVERTED to the fused kernel first (convert-then-gate,
+bisect only on failure — Greg):
+
+| case, iters | NRMSE off | NRMSE on | \|on−off\| | control band | Δlog10 |
+|---|---|---|---|---|---|
+| lilly_ds8, 8 | 0.145033 | 0.145033 | 6.0e-8 | 4.4e-5 | −0.0000 PASS |
+| lilly_ds8, 15 | 0.111308 | 0.111308 | 8.2e-8 | 3.3e-5 | −0.0000 PASS |
+| z62, 8 | 0.043103 | 0.043103 | 0.0 | 1.3e-5 | +0.0000 PASS |
+| z62, 15 | 0.032022 | 0.032022 | 3.7e-9 | 9.6e-6 | −0.0000 PASS |
+
+Vacuity check: the on-cells' device lines read `(pallas: band-back)`, the off-cells'
+don't.  Reading: at the reconstruction level the paths are equivalent to ~8 digits of
+interior NRMSE — the edge-voxel pointwise noise (the intrinsic-conditioning story)
+contributes nothing to converged quality.  The Hessian revert stands validated; no
+bisect needed.  **Increment 5 is complete**: cone back 3.9×/9.9×/6.0× at n=1/2/4,
+both coeff powers through the fused kernel, cone anti-scaling dead, value equivalence
+gated at the level that matters.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
