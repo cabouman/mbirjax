@@ -9,8 +9,10 @@
 #SBATCH -J compile-attr
 #SBATCH -o /home/buzzard/headroom/logs/compileattr-%j.log
 
+set -u
 source ~/load_conda_cuda.sh
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate mbirjax_headroom
 cd ~/PycharmProjects/mbirjax_headroom
 git log --oneline -1
-python plans/experiments/projector_kernels/compile_attribution.py
+python -u plans/experiments/projector_kernels/compile_attribution.py
