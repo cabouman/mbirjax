@@ -46,13 +46,25 @@ ProjectorParams = namedtuple('ProjectorParams', ['sinogram_shape', 'recon_shape'
 #     collision-free, 2-3x faster than the atomic scatter, same values.
 # channel_scatter_reduce below implements both; ProjectorParams.sort_by_channel selects.
 #
-# The three constants below guard WHEN the sorted form actually wins.  Each encodes a
+# The four constants below guard WHEN the sorted form actually wins.  Each encodes a
 # measured crossover; the named scripts in plans/experiments/projector_kernels/ reproduce them.
 #
-# The sort's cost is per-call and nearly independent of the reduction's COLUMN count, while
-# the scatter's grows with it -- so narrow slice bands favor the scatter.  End-to-end
-# anchors: sorted loses at band length 24, wins at 63; 48 sits between them.
+# The sorted form wins only inside a COLUMN-count WINDOW [MIN_COLS, MAX_COLS]:
+#  * The sort's cost is per-call and nearly independent of the reduction's column count, while
+#    the scatter's grows with it -- so NARROW slice bands favor the scatter.  End-to-end
+#    anchors: sorted loses at band length 24, wins at 63; 48 sits between them.
+#  * At WIDE column counts the segment-sum lowering hits a register/vectorization ceiling and
+#    collapses (~1300-1500 columns): a categorical cliff, NOT materialization (peak memory is
+#    unchanged), measured 18x per-column at 1536 rising to 59x at 4096 while the scatter stays
+#    perfectly linear (fwd_guard_cliff.py; plans/projector_kernels/fwd_guard_sweep.md).  1280 is
+#    the last measured-safe point, so it caps the window (the unmeasured 1281-1535 gap falls to
+#    the scatter, which is only ~2.7x slower there vs the sorted form's up-to-20x cliff above).
+#    Exposure this closes: single-device XLA forward (pallas off -- non-allowlisted GPU or the
+#    kill switch) on a >=~1536-slice recon, which feeds the reduce its full slice count as
+#    columns; shipped hot paths pass fewer columns (H100 forward is pallas; the multi-device
+#    banded forward feeds <=256).
 SORTED_CHANNEL_REDUCE_MIN_COLS = 48
+SORTED_CHANNEL_REDUCE_MAX_COLS = 1280
 # The sorted form also loses at WIDE psf (point-spread function: how many detector channels
 # one voxel projects onto): full-kernel speedup 1.27x at psf_width 3, 1.02x at 5, 0.85x at 7
 # (translation_fwd_psf_ab.py).  Radius 2 (width 5, the measured neutral point) is the
@@ -91,7 +103,13 @@ def channel_scatter_reduce(n, A, values, num_out, use_sorted=0):
     Returns:
         array of shape (num_out, num_cols).
     """
-    if use_sorted:
+    # The sorted form is used only inside the measured column-count window: above
+    # MAX_COLS the segment-sum lowering collapses (see the constant's note).  num_cols
+    # (values.shape[1]) is static at trace time, so this is a compile-time branch, and
+    # both reductions are value-equal, so falling back to the scatter never changes
+    # results -- only speed.  Callers that pass a wide-enough band get the fallback
+    # automatically, whatever their baked sort_by_channel flag.
+    if use_sorted and values.shape[1] <= SORTED_CHANNEL_REDUCE_MAX_COLS:
         return _channel_reduce_sort_segsum(n, A, values, num_out)
     return _channel_reduce_scatter_add(n, A, values, num_out)
 
