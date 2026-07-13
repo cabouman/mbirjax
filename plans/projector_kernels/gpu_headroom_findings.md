@@ -943,20 +943,53 @@ static taps of {vector ref-gather x[pix, l_c+tl] × trapezoid(m_p(l_c+tl) − m)
 cos φ divisor matching the XLA forward vfan}.  Precompute = exactly inc5's
 builders: {c0, Wchan(T)} + {m0, W_p_r}.  No coeff_power axis (forward has none).
 
-**The static inverse-tap bound** (the panel's primary target): contributions need
-|m_p(l) − m| ≤ (W_p_r+1)/2 ⇒ |l − (m−m0)/W_p_r| ≤ (W_p_r+1)/(2·W_p_r), so
-T_l = ceil of that at the MODEL-MINIMUM W_p_r — a per-model static python float
-(from geometry scalars at builder time; cache-stable), conservative for all (v,p),
-with out-of-support taps zero-weighted.  Typical W_p_r ≈ 0.9–1.4 ⇒ T_l ∈ {1, 2}
-(3–5 taps).
+**PANEL AMENDMENTS (wf_39d30f52; two blockers, both fixed by simplifications).**
 
-**Model and bar**: per-element ≈ T_l× the parallel forward's loads + the inverse
-ALU; anchors: parallel pallas fwd full-grid 2.78 s, XLA cone fwd 19.4 s ⇒ expected
-**2–3× (7–9 s full-grid)**; bar ≥1.5×.  Gates: rel ≤1e-5 vs the XLA cone forward
-(single-shot, both full-grid and subset+band shapes), the PAIR adjoint against the
-inc5 cone back kernel, interpret mode on CPU CI; VCD composition equivalence via
-the occasional convergence gate.  Dispatch (post-spike): cone fwd_pallas /
-fwd_pallas_band through the same geometry-hook pattern as inc5.
+*Tap window = ``gp.bp_psf_radius``, not the derived T_l formula.*  The panel's
+central discovery: the XLA forward vfan is ITSELF an inverse-affine gather
+(``create_det_column_rows``, k_offset ∈ ±bp_psf_radius) — the fused kernel is a
+transplant of XLA's own structure, and using XLA's own window is gate-safe BY
+CONSTRUCTION: it matches XLA window-for-window (verified 3.2–6.6e-6 nrmse across
+geometries incl. helical + offsets), is support-complete exactly when XLA is
+(bp ≥ ceil(1/(2W)) verified over 5000-point isotropic sweeps), and inherits XLA's
+own truncation on anisotropic-pixel pathologies (ddc < ddr, W ≲ 0.5 — a
+pre-existing XLA approximation, ~8% of a stress scan, none with square pixels) so
+user-visible values never change.  It is also SMALLER: bp=1 (3 taps) in the default
+geometry where my formula took 5 — restoring the upper end of the model.  Dispatch
+guard: fall back to XLA when bp_psf_radius > 2 (the MAX_PSF_RADIUS precedent).
+
+*The 1e-5 single-shot gate is below the f32 noise floor and must be calibrated.*
+At 1024 detector rows, two CORRECT f32 implementations of the same vfan differ by
+~1.3e-4 max-rel (the trapezoid arguments are differences of O(1024)-scale values;
+ulp(1024) = 1.2e-4); f64-vs-f64 agrees to 2e-13.  The E5 back precedent does not
+transfer: back outputs average over ~all views (~√V noise reduction), forward's
+single-view outputs do not.  The spike measures the floor (f64-truth two-sided
+and/or an XLA-reorder control) and sets the calibrated single-shot contract
+(~1e-4-class max-rel at production rows; nrmse lands ~5e-6-class).
+
+*Feasibility notes to pre-commit*: register budget at bp=1 ≈ 5–6 live rows-length
+vectors (~160–192 regs/thread, inside the ceiling); if the spike spills, sweep
+num_warps ∈ {1,2,4} and add an optional row-chunk grid dim (the lc pattern, ~1–2%
+stream re-walk cost) BEFORE reading it as an architecture failure.  Acks to
+pre-register: +2×(V_chunk × P) f32 m0/W_p_r refs (~0.8 GB per full-grid chunk, the
+mid-size-fwd ack class); the padded row tail computes real garbage made inert only
+by the chunk-fn trim — the same "not zeroed here" contract note as the cone back
+driver.  The zero-weight slice mask ((l ≥ 0) & (l < num_slices) on the WEIGHT, with
+a clamped gather index) is load-bearing — omitting it measured order-1 errors.
+
+*Verified clean*: the inverse gather is an exact summation reorder of the XLA vfan
+(f64 agreement ≤2.6e-14 across flat/curved/helical/offset configs; the per-tap cos φ
+divisor placement confirmed), tap coverage never misses a contributor, negative/
+clamped inverse indices safe, two-phase machinery carries verbatim (stream counts
+still sum to exactly T·P).
+
+**Model and bar (amended)**: per-element ≈ (2·bp+1)/3 × the parallel forward's
+loads + inverse ALU; anchors: parallel pallas fwd full-grid 2.78 s, XLA cone fwd
+19.4 s ⇒ expected **2.2–3.9× at bp=1**; bar ≥1.5×.  Gates: calibrated single-shot
+contract (above) at full-grid and subset+band shapes, the PAIR adjoint against the
+inc5 cone back kernel, interpret mode on CPU CI; VCD composition via the occasional
+convergence gate.  Dispatch (post-spike): cone fwd_pallas / fwd_pallas_band through
+the inc5 geometry-hook pattern, guarded on bp_psf_radius ≤ 2.
 
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
