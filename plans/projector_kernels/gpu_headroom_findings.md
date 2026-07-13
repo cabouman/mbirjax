@@ -649,7 +649,11 @@ weights/shard = T·(P/(rows·C))·(chunk/(V/n)) ≈ T·π/4 ≈ 2.4 when the who
 one chunk, size- and n-independent — fixed by capping the driver's chunk at 128
 (`BACK_VIEW_CHUNK_CAP`; chunking measured ~free), which cut it to +0.3 GB for 5.6%
 of wall.  The n=4 +3.1 GB residual is accepted (18.4 GB absolute) and unattributed —
-revisit if it grows at larger shapes.  One environmental rerun (both n=4 cells
+revisit if it grows at larger shapes.  **CORRECTION (2026-07-13, increment-4
+review finding): these peak numbers are UNVERIFIED — the harness maxed
+`peak_bytes_in_use` over `get_memory_stats`' trailing 'CPU' entry, which is
+process RSS and can exceed small per-GPU peaks; the reader is fixed (GPU entries
+only) and the memory columns will be re-measured in a rerun.**  One environmental rerun (both n=4 cells
 SIGABRT in XLA GPU-client init immediately after the `ai`-partition outage; clean on
 the healthy partition).
 
@@ -727,6 +731,10 @@ gradient; (b) dispatch coeff_power=2 to the XLA band path (Hessian is computed o
 per recon — costs one XLA-speed pass per recon, zero accuracy questions);
 (c) reproduce the exact f32 op sequence in-kernel — fragile across XLA/Triton FMA
 contraction, rejected.
+
+**DECIDED (Greg, 2026-07-13): option (a)** — the Hessian is a preconditioner, a
+little error is acceptable; gates are rel ≤1e-5 for the gradient, ≤1e-4 for the
+Hessian, with a VCD-trajectory comparison in the spike as the empirical check.
 
 **Fallback variant (record, not first):** two-stage in pallas (the existing hfan
 spike kernel → HBM cylinder → a vfan register-tile) — fewer in-kernel loads but pays

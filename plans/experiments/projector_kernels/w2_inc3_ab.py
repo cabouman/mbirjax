@@ -90,7 +90,10 @@ def worker(cfg):
         rel = float(np.max(np.abs(result - ref)) / np.max(np.abs(ref)))
         note(f'RESULT rel={rel:.2e} {"PASS" if rel < tol else "FAIL"} (tol {tol:g})')
     stats = mbirjax.get_memory_stats(print_results=False)
-    peak = max(s['peak_bytes_in_use'] for s in stats) / 2**30 if stats else 0.0
+    # Per-DEVICE peak only: the trailing 'CPU' entry is process RSS, which can exceed
+    # small GPU peaks and masquerade as the device number (inc4 review finding).
+    gpu_peaks = [s['peak_bytes_in_use'] for s in stats if s['id'].startswith('GPU')]
+    peak = max(gpu_peaks) / 2**30 if gpu_peaks else 0.0
     note(f'RESULT peak_gb={peak:.2f}')
 
 
