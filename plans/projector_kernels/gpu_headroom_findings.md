@@ -510,6 +510,33 @@ compile, then the persistent cache removes even that across processes and sessio
 If the alarm recurs, capture `myquota`, `uptime`, and `nfsstat` from the node before
 suspecting the code.
 
+## Wave-2 baseline — the n=1/2/4 scaling curve, post-campaign (2026-07-13; job 13497778; `w2_scaling_baseline.py`)
+
+The (c)-target gap, re-measured on the current branch (1024³ cell, H100 node, median
+of 3 warm trials; VCD = 4 iterations including compile):
+
+| cell | n=1 | n=2 | n=4 | reading |
+|---|---|---|---|---|
+| cone back_full | 18.95 s | **27.51 s** | 14.35 s | **n=2 ANTI-SCALES (1.45× slower)**; 4 GPUs buy only 1.32× |
+| cone VCD (4 it) | 262 s | **276 s** | 181 s | same shape end-to-end: n=2 loses, n=4 = 1.45× |
+| cone peak/GPU | 53.8 GB | 27.2 GB | 23.0 GB | capacity story intact — sharding is doing its memory job |
+| parallel back (shipped) | **1.57 s** (pallas) | 5.39 s | 3.29 s | **one pallas GPU beats FOUR XLA-band GPUs (2.1×)** |
+| parallel back (XLA n=1 ref) | 10.90 s | — | — | band path scales 10.9 → 5.4 → 3.3 (≈2×/≈3.3×, normal) |
+
+Readings: (1) the June cone-back n=2 anti-scaling fully reproduces post-campaign —
+the band-path restructure is still THE (c) blocker; (2) the parallel row reframes the
+prize: the register-tile kernel on ONE device already beats the 4-GPU band path, so a
+band-capable pallas kernel converts added GPUs into real wall-clock instead of
+overhead; (3) parallel's XLA band path scales normally (2.02×/3.31×) while cone's
+collapses — the cone-specific vertical-fan/transpose structure is implicated, matching
+the June ncu attribution (to be re-confirmed by an n≥2 trace before A5).
+
+Bench side-catch: the device-line pallas token (added the same day) read "(pallas:
+back)" at n≥2 while the walls prove the pallas kernel never runs there (the dispatch
+lives in the n=1 short-circuit).  Fixed: `back_pallas` is now n=1-gated in the policy
+like `fwd_pallas`, so the token and `get_compute_config` report reachability, not
+wishfulness.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).

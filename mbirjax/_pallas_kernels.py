@@ -3,16 +3,25 @@ campaign (design: plans/projector_kernels/e4_integration_design.md; measured rec
 plans/projector_kernels/gpu_headroom_findings.md; reproducible benches:
 plans/experiments/projector_kernels/e3_*.py, e4_back_composed.py).
 
-Increment 1: the PARALLEL-BEAM single-device BACK projection (16-26x kernel-level,
-9.17x composed/gated at the 1024^3 cell; Hessian path the same).
-Increment 2: the PARALLEL-BEAM forward horizontal fan for SUBSET-SIZED calls (the VCD
-fine tail; 2.57x composed/gated at the 6,026-pixel cell) -- the CSR segment-walk with
-the two-phase store+atomic launch.  Full-grid forward stays on the XLA sorted reduce
-by policy: its measured win is smaller (1.59x) and the python-loop driver overhead at
-~3000 pixel batches would erode it; a batched-grid variant can revisit this later.
+What lives here, and where it is dispatched from
+------------------------------------------------
+* BACK projection (gradient and Hessian), single device: ~9x the XLA path at the
+  1024^3 cell, all pixel-batch sizes.  Dispatched from
+  ``TomographyModel._sparse_back_project_single_device`` (reached only through the
+  GPU n=1 short-circuit -- multi-device recons use the banded XLA path) when
+  ``model.tiles.back_pallas`` is set.
+* FORWARD projection, SUBSET-SIZED calls only (the VCD fine tail): ~2.6x at the
+  6,026-pixel cell.  Dispatched from ``projectors.sparse_forward_project_public``
+  when ``model.tiles.fwd_pallas`` is set AND the call fits one pixel batch
+  (``tiles.fwd_pixel_batch``).  Full-grid forward stays on the XLA sorted reduce by
+  policy: its kernel-level win is smaller (~1.5x) and the python view-chunk loop over
+  ~3000 pixel batches would erode it; extending coverage needs the batched-grid
+  (scan) variant, not a bigger guard alone.
+Both flags are set in ``ParallelBeamModel._select_tile_policy`` (GPU only), gated by
+``availability()`` below.  Inspect a live model with ``model.get_compute_config()``.
 
-How the kernel works (the "register-tile + L2-phase" design)
--------------------------------------------------------------
+How the back kernel works (the "register-tile + L2-phase" design)
+-----------------------------------------------------------------
 Back projection is, per pixel p and detector row r:
 
     out[p, r] = sum over views v and psf taps t of  A[v,t,p] * sino[v, center[v,p]+t, r]
@@ -21,25 +30,46 @@ The XLA path evaluates this per-view and sums; its cost is transaction-bound row
 gathers.  This kernel instead runs ONE small GPU program per (row-chunk, pixel):
 
   * the program holds out[p, r0:r0+RC] in REGISTERS and loops over ALL views x taps,
-    so the view sum never touches memory (the "register tile");
+    so the view sum never touches memory (the "register tile") -- the main thing the
+    whole-array XLA model cannot express;
   * the row-chunk grid dimension is SLOWEST, so every concurrently-running program
     gathers from the same (views, channels, RC) slice of the channel-major sinogram --
-    ~130 MB at the production shape, mostly L2-resident (the "L2 phase");
+    mostly L2-resident (the "L2 phase");
   * work is perfectly uniform (every pixel has exactly psf_width taps): no sort, no
     atomics, each output cell written exactly once.
+
+The forward kernel is described at its own section divider below.
 
 Weights are the SAME trapezoid formula as the XLA kernels (adjointness is preserved by
 construction; only the summation ORDER differs, so results agree to float reordering
 noise and are gated at the standard relative tolerance).  The integer channel centers
 are the existing concrete-centers arrays (the rounding-bug contract carries over).
 
+Constraints that must hold (violations measured as large regressions)
+---------------------------------------------------------------------
+* Every launch/grid/block shape derives from ARRAY SHAPES only, never from data.  A
+  data-dependent shape changes a cache key per VCD subset and triggers a Triton
+  recompile inside the recon loop.
+* No host<->device synchronization in any per-call path (no ``np.asarray`` /
+  ``device_get`` of a device array): one sync per view chunk stalls the pipeline and
+  flips the forward kernel's win into a loss.
+* ``pl.pallas_call`` objects and jitted wrappers are constructed ONCE per static
+  shape (functools.cache) -- per-call construction re-lowers/re-traces every call.
+* In-kernel gather of a block-LOADED array does not lower on either pallas backend at
+  the pinned jax version; gathers must be REF-LEVEL indexing (``ref[idx, :]``), which
+  is what every kernel here does.  Whole-array BlockSpecs are pointer refs on the
+  Triton backend, not materialized copies (interpret mode does materialize them --
+  acceptable for tests only).
+
 Updating / retiring this path
 -----------------------------
-Constants (ROW_CHUNK, NUM_WARPS, the arch allowlist) come from the bench scripts named
-above -- rerun those to revalidate on a new architecture or jax version, then extend
-_ARCH_ALLOWLIST.  `is_available()` probes an actual tiny-kernel compile once per
-process, so an incompatible toolchain falls back to the XLA path silently.  The env
-variable MBIRJAX_DISABLE_PALLAS=1 forces the XLA path everywhere (the escape hatch).
+Constants (ROW_CHUNK, NUM_WARPS, FWD_SEGMENT_CAP, the arch allowlist) come from the
+bench scripts named above -- rerun those to revalidate on a new architecture or jax
+version, then extend _ARCH_ALLOWLIST.  ``availability()`` probes an actual tiny-kernel
+compile once per process, so an incompatible toolchain falls back to the XLA path
+silently.  The env variable MBIRJAX_DISABLE_PALLAS=1 forces the XLA path everywhere
+(the escape hatch).  Retiring a kernel = removing its TilePolicy flag line; every call
+site keeps the XLA fallback compiled-in.
 """
 import functools
 import os
@@ -143,11 +173,21 @@ def _jit_compute_back_weights(view_params_array, pixel_indices, hfan_data_fn,
 
 def _back_kernel(centers_ref, w_ref, sino_ref, out_ref, *, rc, num_views, num_channels,
                  psf_radius, psf_width):
-    """One program per (row-chunk, pixel); see the module docstring."""
+    """One program per (row-chunk, pixel); see the module docstring.
+
+    The refs are the per-program BLOCKS declared in _make_back_call: this program's
+    pixel column of centers/weights, the full (V, C, rc) sinogram row-chunk slice, and
+    its own (1, rc) output row.  ``acc`` lives in registers for the whole view loop --
+    the kernel's entire point -- so rc (x psf_width live sino reads) must stay small
+    enough to avoid register spills; revalidate ROW_CHUNK if psf_width grows.
+    """
     def vbody(v, acc):
         c0 = centers_ref[v, 0]
         for t in range(psf_width):                     # static unroll (psf_width taps)
-            cc = jnp.clip(c0 + (t - psf_radius), 0, num_channels - 1)  # weights 0 OOR
+            # Out-of-range taps have weight EXACTLY zero (the weight builder masks
+            # them), so clamping the channel index only redirects reads that
+            # contribute nothing -- it exists to keep the ref access in bounds.
+            cc = jnp.clip(c0 + (t - psf_radius), 0, num_channels - 1)
             acc = acc + w_ref[v, t, 0] * sino_ref[v, cc, :]
         return acc
     acc = jax.lax.fori_loop(0, num_views, vbody, jnp.zeros((rc,), jnp.float32))
@@ -166,21 +206,33 @@ def _make_back_call(num_views, num_channels, num_pixels, rows_padded, psf_radius
     rc = min(ROW_CHUNK, rows_padded)
     kw = ({} if interpret else
           {'compiler_params': pltriton.CompilerParams(num_warps=NUM_WARPS)})
+    # BlockSpec semantics (the recurring trap): the index_map returns BLOCK indices,
+    # in units of the block shape -- (0, p) with block (num_views, 1) means "all
+    # views, pixel column p", NOT an element offset.  On the Triton backend a block is
+    # a POINTER into the operand (loads happen only at ref-indexing sites in the
+    # kernel), so the (num_views, num_channels, rc) sinogram block below is not a
+    # copy; concurrently-running programs share it through L2.  The grid is iterated
+    # LAST-dimension-fastest, so putting the row-chunk FIRST makes it slowest -- all
+    # pixels of one row-chunk run before the next chunk begins (the L2 phase).
     return pl.pallas_call(
         partial(_back_kernel, rc=rc, num_views=num_views,
                 num_channels=num_channels, psf_radius=psf_radius, psf_width=psf_width),
         out_shape=jax.ShapeDtypeStruct((num_pixels, rows_padded), jnp.float32),
         grid=(rows_padded // rc, num_pixels),          # row-chunk SLOWEST: the L2 phase
         in_specs=[
-            pl.BlockSpec((num_views, 1), lambda r, p: (0, p)),
-            pl.BlockSpec((num_views, psf_width, 1), lambda r, p: (0, 0, p)),
-            pl.BlockSpec((num_views, num_channels, rc), lambda r, p: (0, 0, r)),
+            pl.BlockSpec((num_views, 1), lambda r, p: (0, p)),             # centers col
+            pl.BlockSpec((num_views, psf_width, 1), lambda r, p: (0, 0, p)),  # weights col
+            pl.BlockSpec((num_views, num_channels, rc), lambda r, p: (0, 0, r)),  # sino chunk
         ],
         out_specs=pl.BlockSpec((1, rc), lambda r, p: (p, r)),
         interpret=interpret, **kw)
 
 
 # Channel-major + row-padded view chunk; jitted once (shapes static per chunk size).
+# The kernel reads sino[v, channel, row_chunk]: channel-major puts each (view,
+# channel)'s row run CONTIGUOUS, so one tap's rc-float read is one coalesced load.
+# This copy is the back path's extra memory (~one sino chunk); a transpose-free
+# gather variant could reclaim it at the cost of strided kernel reads.
 @partial(jax.jit, static_argnames=['rows_padded'])
 def _to_channel_major(sino_chunk, rows_padded):
     rows = sino_chunk.shape[1]
@@ -188,6 +240,8 @@ def _to_channel_major(sino_chunk, rows_padded):
                                                     (0, rows_padded - rows)))
 
 
+# Donated add: the accumulator's buffer is reused, so cross-chunk accumulation holds
+# two (num_pixels, rows_padded) arrays live, not three.
 _accumulate = jax.jit(lambda a, b: a + b, donate_argnums=0)
 
 
@@ -199,6 +253,10 @@ def back_project_single_device(model, sinogram, pixel_indices, coeff_power=1,
     transfer chunking -- the kernel has no scan carry, so the whole pixel set goes in
     one grid.  ``interpret=True`` runs the kernel in pallas interpret mode (CPU-capable;
     used by the correctness tests -- the selection policy never routes here on CPU).
+
+    View chunking exists for MEMORY, not speed: the weights are (V, T, P) f32, so a
+    full-grid call built for all views at once would hold multi-GB weight arrays;
+    back_view_batch bounds that (and the sino_cm copy) per chunk.
     """
     from mbirjax.projectors import _jit_compute_scatter_centers   # lazy: avoids an
     # import cycle at package init (tomography_model -> this module -> projectors).
@@ -242,27 +300,32 @@ def back_project_single_device(model, sinogram, pixel_indices, coeff_power=1,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Increment 2: the forward horizontal fan (subset-sized calls, parallel beam)
+# The forward horizontal fan (subset-sized calls, parallel beam)
 #
 # out[c, :] = sum over taps (t, p) with center[p]+t == c of A[t,p] * values[p, :]
 #
 # The scatter becomes a GATHER over a channel-sorted contributor stream (sort +
 # searchsorted -- the same ~2-3% sort cost the XLA path pays, paid once per call
-# here), plus a cap-and-split that bounds every program's segment (skew guard).  Two
-# launches (the "two-phase" variant, the measured subset winner): phase 1 STORES every
-# channel's first segment -- each output row written exactly once, no zero-fill, no
-# cross-program race; phase 2 atomically adds the few remainder segments of over-cap
-# channels (~empty at subset uniformity).  The values tile (P x band) is shared by ALL
-# views -- L2-hot, which is where the win comes from.
+# here), plus a cap-and-split that bounds every program's segment (skew guard: one
+# hot channel must not stall a whole launch).  Two launches (the "two-phase"
+# variant, the measured subset winner): phase 1 STORES every channel's first
+# segment -- each output row written exactly once, no zero-fill, no cross-program
+# race; phase 2 atomically adds the few remainder segments of over-cap channels
+# (~empty at subset uniformity).  The values tile (P x band) is shared by ALL views
+# -- L2-hot, which is where the win comes from (and why the dispatch guard is a
+# PIXEL-COUNT limit: the tile is P*band*4 bytes against ~50 MB of L2 on H100).
 #
-# The split runs ON DEVICE with a static segment bound n2 = (T*P) // cap (shapes only,
-# never data), and the whole per-chunk computation -- streams, split, both kernel
-# phases -- is ONE cached jit.  The first library version synced starts to host per
-# chunk and sized phase 2 by the data-dependent segment count; at the subset gate
-# shape the 8 pipeline stalls plus per-subset Triton recompiles made the driver 0.68x
-# XLA even though the kernel wins.  Unused bound slots are (start == end) rows aimed
-# at the scratch channel: a zero-trip loop, and the atomic is pl.when-guarded so a pad
-# program touches nothing but its own 4-int segment row (launch-only cost).
+# The split runs ON DEVICE with a static segment bound n2 = (T*P) // cap, and the
+# whole per-chunk computation -- streams, split, both kernel phases -- is ONE cached
+# jit.  Do NOT "simplify" back toward the obvious alternatives; both were measured
+# to flip the win into a 0.68x loss:
+#   * sizing phase 2 by the actual (data-dependent) segment count -- every VCD subset
+#     then has its own kernel shape, a Triton recompile per subset inside the loop;
+#   * splitting on host (pulling `starts` off-device) -- one pipeline stall per view
+#     chunk.
+# Unused bound slots are (start == end) rows aimed at the scratch channel: a
+# zero-trip loop, and the atomic is pl.when-guarded so a pad program touches nothing
+# but its own 4-int segment row (launch-only cost).
 # ══════════════════════════════════════════════════════════════════════════════
 
 @partial(jax.jit, static_argnames=['hfan_data_fn', 'projector_params'])
@@ -286,6 +349,9 @@ def _jit_compute_fwd_streams(view_params_array, pixel_indices, hfan_data_fn,
         L_max = jnp.minimum(1.0, W_p_c)
         A = weight_scale * jnp.clip((W_p_c + 1.0) / 2.0 - jnp.abs(n_p - n), 0.0, L_max)
         A = A * ((n >= 0) & (n < num_channels))
+        # Out-of-range taps are NOT dropped: their weights are zeroed but their
+        # stream slots remain (channel clipped to a boundary).  _split_two_phase's
+        # static bound relies on this -- counts sum to EXACTLY T*P every view.
         n = jnp.clip(n, 0, num_channels - 1)
         flat_n = n.reshape(-1)
         # sort_key_val returns keys and permutation TOGETHER (the rounding-hazard-safe
@@ -370,9 +436,12 @@ def _make_fwd_phase(num_views, num_channels, n_seg, taps, num_pixels, band_padde
              pl.BlockSpec((num_pixels, band_padded), lambda v, s: (0, 0))]  # shared tile
     alias = {}
     if atomic:
+        # Phase 2 accumulates IN PLACE on phase 1's output (operand 4 aliases the
+        # result).  The alias also gives XLA the data dependency that orders the two
+        # launches -- nothing else forces p1 to finish before p2's atomics begin.
         specs.append(pl.BlockSpec((num_views, num_channels + 1, band_padded),
                                   lambda v, s: (0, 0, 0)))
-        alias = {4: 0}                        # phase-1 result accumulated in place
+        alias = {4: 0}
     return pl.pallas_call(
         partial(_fwd_kernel, atomic=atomic),
         out_shape=jax.ShapeDtypeStruct((num_views, num_channels + 1, band_padded),
@@ -391,7 +460,13 @@ def _make_fwd_chunk_fn(hfan_data_fn, projector_params, vc, num_channels, n2,
     """One jitted function per static shape key covering a whole view chunk: streams,
     device split, both kernel phases, scratch/pad trim.  Cached so repeated calls (every
     VCD subset iteration at a given granularity) reuse ONE traced program -- no host
-    sync and no retrace anywhere in the loop (lessons.md sections 3 and 5)."""
+    sync and no retrace anywhere in the loop (lessons.md sections 3 and 5).
+
+    Cache-key note: ``hfan_data_fn`` must be a plain function or @staticmethod (stable
+    object identity across accesses).  Passing a BOUND method would fragment this
+    cache per model instance and pin every model in memory for the process lifetime.
+    ``projector_params`` is a hashable NamedTuple (the established static-arg pattern).
+    """
     taps = (2 * projector_params.geometry_params.psf_radius + 1) * num_pixels
     p1 = _make_fwd_phase(vc, num_channels, num_channels, taps, num_pixels,
                          band_padded, atomic=False, interpret=interpret)

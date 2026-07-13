@@ -119,7 +119,11 @@ class ParallelBeamModel(TomographyModel):
             # pixel-count guard applies the fine-tail policy; multi-device forward goes
             # through the banded per-owner path, wave 2).
             fwd_pallas=_pallas_kernels.is_available() and n_devices == 1,
-            back_pallas=_pallas_kernels.is_available(),
+            # Also n=1-gated: the back dispatch lives in the single-device driver,
+            # which multi-device recons never reach (they use the banded path), so an
+            # ungated flag would only make the pallas token/get_compute_config LIE at
+            # n>=2 -- measured: the n>=2 walls are pure XLA band path.
+            back_pallas=_pallas_kernels.is_available() and n_devices == 1,
             # Back kernel: one stacked gather covering every psf tap.  A GPU win because the
             # back kernel is almost entirely gather-bound and parallel beam has no vertical
             # fan behind which the gather latency could hide; measured WORSE on CPU, which
