@@ -659,6 +659,57 @@ with 5–9× indicated); candidate increment 4 = per-owner banded FORWARD adopti
 (the guard-sweep session's band-256 column measured the pallas forward driver
 1.7–3.8× at exactly the banded-forward width).
 
+## Cone fused-vfan back kernel — DESIGN DRAFT (2026-07-13; the load-bearing (c) item; discussion-first, no code yet)
+
+**Operation.**  Cone banded back, per (pixel p, band slice l):
+`out[p, l] = Σ_v Σ_tr Σ_tc  Wrow[v,p,l,tr] · Wchan[v,p,tc] · sino[v, m(v,p,l)+tr−r, c(v,p)+tc−r]`
+— the horizontal fan's 3 channel taps × the vertical fan's 3 row taps.
+
+**The geometry fact that enables fusion** (verified in `cone_beam.py`
+recon_ijk_to_xyz → geometry_xyz_to_uv_mag → detector_uv_to_mn): z is affine in slice
+index k; `v = pixel_mag(x,y) · z` with pixel_mag per-(view,pixel); `m` affine in v —
+so **m(v,p,l) = m0(v,p) + slope(v,p)·l EXACTLY, flat and curved detectors alike**
+(only u differs by detector type), and `W_p_r = pixel_mag·Δslice/Δrow` is
+l-independent.  The l-dependent weight divisor cos φ = sdd/hypot(sdd, v_p) is 3 ALU
+ops from the same affine.  Consequence: the vertical fan needs NO per-(v,p,l)
+precompute — 3 scalars per (view, pixel) beyond the parallel kernel's existing
+{c0, 3 channel weights}: {m0, slope, W_p_r}.
+
+**Kernel (register-tile, extending increment 1's design):** grid = (slice-chunk,
+pixel); the program holds out[p, l0:l0+LC] in registers and loops all views: load the
+per-(v,p) scalars (ref-level), then per l: compute m(l), round to the row center,
+form the 3 trapezoid row weights (÷ cos φ), and accumulate the 3×3 tap products from
+the channel-major (V, C, rows) sinogram.  In-kernel row rounding matches the XLA
+vfan's own behavior (m_p_center = round(m_p) INSIDE its jit — row centers were never
+part of the Phase-D concrete-centers contract, which is channel-only; a boundary
+rounding flip moves a tap whose trapezoid weight is →0 there, so it is
+value-gate-safe by the same continuity argument the XLA path relies on).
+
+**Traffic/flop model vs the two-stage XLA form:** two-stage ≈ 3·V·P·(rows + L_total)
+fused ≈ 9·V·P·L_total → ~1.6× the flops at the 1024³ shapes — irrelevant (the XLA
+path runs at ~1% of arithmetic peak; access patterns dominate).  Per output element
+the fused kernel gathers 9 taps × V from a row-window slice (the window spans
+~LC·slope + spread rows — L2-resident like the parallel kernel's row-chunk phase),
+i.e. ~3× parallel-back's per-element loads → expected ~3× its wall class: **~2–3 s
+per-owner band sweep vs 21–27 s XLA (≈7–10×), far above the ≥1.5× bar**.
+
+**Precompute:** one builder jit mirroring `_jit_compute_back_weights`: hfan
+{c0, Wchan(T)} (identical math) + vfan {m0, slope, W_p_r} — per view chunk
+(BACK_VIEW_CHUNK_CAP), transient ≈ (6/3)× the parallel weights ≈ 2.5 GB class at
+full grid, bounded by the same cap.
+
+**Fallback variant (record, not first):** two-stage in pallas (the existing hfan
+spike kernel → HBM cylinder → a vfan register-tile) — fewer in-kernel loads but pays
+the cylinder materialization; the plan's E0 finding (cone hfan hides behind the
+vfan) argues the fused form first.
+
+**Spike plan:** e3-style standalone bench at the per-owner shard shape (512 views,
+1024×1024, L=115): fused kernel vs the XLA band call; sweeps LC ∈ {16, 32, 64} ×
+num_warps ∈ {1, 2}; gates = rel ≤1e-5 vs XLA (gradient + Hessian via squared
+weights) + the adjoint pair check; then E4-style integration behind
+`back_pallas_band` for ConeBeamModel (the dispatch plumbing from increment 3 is
+geometry-generic already).
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
