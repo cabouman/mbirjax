@@ -15,9 +15,14 @@ gpu_headroom_findings.md`, section "Cone forward fused kernel — DESIGN" incl. 
 PANEL AMENDMENTS (tap window = gp.bp_psf_radius — the XLA vfan is itself an
 inverse-affine gather; single-shot gate must be floor-CALIBRATED, ~1e-4-class
 max-rel at 1024 rows, forward has no sqrt-V averaging; dispatch guard bp <= 2;
-register/ack pre-commitments).  NEXT STEP = the E6 spike (e5_cone_fused_back.py is
-the template): bench vs XLA cone fwd 19.4 s full-grid, bar 1.5x, expect 2.2-3.9x;
-then integrate via the inc5 geometry-hook pattern.
+register/ack pre-commitments).  E6 SPIKE PASSED (job 13530564): full-grid 23.0 -> 8.85 s (2.60x, warps=2),
+subset 2.65x, adjoint 7.6e-8, values inside the calibrated gates.  NEXT STEP =
+increment 6 INTEGRATION via the inc5 pattern: transplant e6_cone_fused_fwd.py's
+kernel+driver into _pallas_kernels.py (CONE_FWD_NUM_WARPS=2), cone fwd_pallas /
+fwd_pallas_band geometry hooks + the bp_psf_radius <= 2 dispatch guard, tests
+(mirror the parallel fwd set + bp>2 fallback), model-level gate harness
+(w2_inc6_ab from the inc5 one), occasional convergence gate on the final config.
+Findings section "E6 — the cone fused forward kernel" has the full record.
 
 ## State (all shipped + gated on this branch, 2026-07-13)
 
