@@ -366,6 +366,23 @@ kernel-level win can survive composition.  The E4 model-level A/B remains the ga
 2.13× (fine-tail), parallel back 16–26× + Hessian — the pair is ready for the E4
 integration design.
 
+## E4 preview — composed back projection (2026-07-12; job 13484992; `e4_back_composed.py`)
+
+Full production shape (771k ROR pixels × 1024 views, 8 view-chunks, every cost charged)
+vs the warm library `sparse_back_project`:
+
+**Composed 3.54× (10.56 s → 2.98 s), rel 5.5e-7; Hessian 3.53×.**  Breakdown: kernel
+1.11 s, **weights precompute 1.83 s (61% — the new limiter)**, centers 6 ms, layout
+13 ms, accumulation 22 ms.  Verdicts: (1) the simplified no-scan driver COMPOSES — the
+94-step scan and transfer chunks deleted at ~zero cost; (2) the 16–26× kernel win is
+real in composition but currently capped by building the (V, T, P) weights array; (3)
+the fix is designed, not speculative: **compute weights IN-KERNEL** from (n_p, W, scale)
+— the plan shrinks from 3 arrays of taps to 2 per-pixel floats (2/3 the bytes), the
+1.8 s becomes ~6 ALU ops per (view, tap) reused across the row chunk, and the projected
+composed time ≈ 1.2–1.3 s ≈ **8–9×**.  For VCD the point is already moot in the good
+direction: plans amortize across iterations, so fine-tail subset calls see
+near-kernel-level gains regardless — 3.54× is the ONE-SHOT floor, not the ceiling.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).

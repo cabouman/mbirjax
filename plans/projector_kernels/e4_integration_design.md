@@ -113,7 +113,13 @@ Two new TilePolicy fields: `fwd_pallas`, `back_pallas` (int flags like
 
 ## 7. Open items folded into the E4 work
 
-- The composed-back preview number (in flight) calibrates §4's driver design.
+- **Composed-back preview (measured, job 13484992): 3.54× one-shot (10.56 → 2.98 s),
+  Hessian 3.53×, values pass.**  The simplified driver composes (scan/chunk overheads
+  ~zero); the limiter is the (V, T, P) weights build (1.83 s of 2.98).  DESIGN CHANGE
+  ADOPTED: the back kernel computes weights IN-KERNEL from per-pixel (n_p, W) + the
+  per-view scale — the plan shrinks to 2 f32 per (view, pixel) (emitted by the same jit
+  that already computes centers), projected composed ≈ 8–9× one-shot; VCD fine-tail
+  calls amortize the plan regardless and see near-kernel-level gains.
 - The H100 precompute slowness (145 ms vs 63 ms on M3) — profile once during
   integration; suspected sort-path detail, amortized away in VCD regardless.
 - Wave 2: cone back (fused hfan+vfan register-tile — required for cone back gains, per
