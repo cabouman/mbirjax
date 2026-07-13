@@ -70,6 +70,11 @@ def worker(cfg):
         result, tol = np.asarray(r), 1e-5
     else:
         model.set_params(verbose=0)
+        # Identical partition subsets in the off and on cells (the load-bearing VCD
+        # reproducibility gotcha: partitions draw from the numpy global RNG, which
+        # seeds from OS entropy per process -- unseeded off/on cells would compare
+        # DIFFERENT recon trajectories and fail the value gate spuriously).
+        np.random.seed(0)
         t = time.perf_counter()
         out, _ = model.recon(sino, max_iterations=VCD_ITERS)
         ts = [time.perf_counter() - t]
