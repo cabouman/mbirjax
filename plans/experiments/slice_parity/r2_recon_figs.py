@@ -7,7 +7,10 @@ Grayscale window shared across columns from the reference's (or D0@30's) percent
 the difference panel is symmetric with its own limit printed in the title.
 
 Outputs: PNGs in OUT_DIR + an HTML page (OUT_HTML) with <img> tags pointing at
-HTML_IMG_PREFIX<name>.png — scp the figs dir + page into plans/slice_parity/ locally.
+HTML_IMG_PREFIX<name>.png.  NOTE: the generated page was superseded 2026-07-12 by the
+hand-authored narrative `plans/slice_parity/r2_recon_compare.html` (also published at
+/depot/bouman/www/mbirjax/skip_0_results/) — rerun this script for the FIGURES only;
+do not overwrite the committed/published page with OUT_HTML.
 
 Run:  python -u plans/experiments/slice_parity/r2_recon_figs.py   (login node is fine)
 """
