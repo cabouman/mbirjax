@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Skip-0 schedule: D0 vs D1 reconstruction comparison</title>
+<title>Skip-0 schedule: default vs skip-0 reconstruction comparison</title>
+<!-- Page SOURCE only: the figures are not in the repo.  The complete page (with
+     images) is published at /depot/bouman/www/mbirjax/skip_0_results/ and the
+     figures live in that directory's r2_recon_figs/. -->
 <style>
   body{font-family:sans-serif;max-width:1400px;margin:auto;padding:0 1em;line-height:1.45}
   img{max-width:100%}
@@ -37,21 +40,22 @@
 
 <h2 id="overview">Overview and summary</h2>
 <p>
-MBIRJAX's default VCD schedule <b>D0&nbsp;=&nbsp;[0,2,4,6,7]</b> begins with a
-granularity-0 iteration: a single subset containing <i>every</i> voxel cylinder, i.e. a
-full-volume update.  That first iteration is the memory high-water mark of the whole
-reconstruction, and we would like to drop it.  The candidate schedule
-<b>D1&nbsp;=&nbsp;[2,4,6,7]</b> simply starts at granularity&nbsp;2 (4&nbsp;subsets)
-instead.  This page shows head-to-head reconstructions &mdash; same data, same
-regularization, same iteration count; the <i>only</i> difference is the schedule.
+MBIRJAX's <b>default</b> VCD schedule ([0,2,4,6,7]) begins with a granularity-0
+iteration: a single subset containing <i>every</i> voxel cylinder, i.e. a full-volume
+update.  That first iteration is the memory high-water mark of the whole
+reconstruction, and we would like to drop it.  The <b>skip&nbsp;0</b> candidate
+([2,4,6,7]) simply starts at granularity&nbsp;2 (4&nbsp;subsets) instead.  This page
+shows head-to-head reconstructions &mdash; same data, same regularization, same
+iteration count; the <i>only</i> difference is the schedule.
 </p>
 <p>
-<b>Bottom line:</b> on three real datasets at two sharpness settings, D0 and D1 are
-visually indistinguishable at 15 and 20 iterations, and the quantitative metrics agree
-(D1 ties or very slightly leads D0 in every measured cell).  The signed difference
-images contain no coherent structure inside the object &mdash; only boundary speckle
-and faint bands at the axial ends and at the cone fan plane, all at a few percent of
-the display window.  Dropping the granularity-0 iteration is safe.
+<b>Bottom line:</b> on three real datasets at two sharpness settings, default and
+skip&nbsp;0 are visually indistinguishable at 15 and 20 iterations, and the
+quantitative metrics agree (skip&nbsp;0 ties or very slightly leads in every measured
+cell).  The difference images contain no coherent structure inside the object &mdash;
+only boundary speckle and faint bands at the axial ends and at the cone fan plane,
+all small relative to the image intensity scale.  Dropping the granularity-0
+iteration is safe.
 </p>
 
 <h2 id="methods">Data and methods</h2>
@@ -70,11 +74,13 @@ iterations in one continuous run per variant.</li>
 default-schedule reconstruction of the same cost function &mdash; effectively the
 converged answer both schedules are heading toward.  (lilly_ds4 at sharpness 2.0 has
 no cached reference; that comparison is image-only.)</li>
-<li><b>Metric.</b> The numbers in each dataset's table are cropped log10 NRMSE vs the
-reference &mdash; log10 of the relative RMS difference over the interior (disk of
-0.85&times; the recon radius, 10% of slices excluded at each axial end).  More
-negative = closer to converged; &minus;1.0 means 10% RMS from the reference,
-&minus;1.3 &asymp; 5%.</li>
+<li><b>Metric.</b> The tables give NRMSE vs the reference <b>in percent</b> &mdash;
+the relative RMS difference from the converged answer over the interior (disk of
+0.85&times; the recon radius, 10% of slices excluded at each axial end).  Lower =
+closer to converged; 5% means the reconstruction differs from the reference by 5% RMS.</li>
+<li><b>Display window.</b> Every figure of a dataset uses the SAME grayscale window:
+the 5th&ndash;95th percentile of that dataset's sharpness-1.0 reference volume.  Each
+figure title shows the window and the full data min/max.</li>
 <li><b>Volumes.</b> All captured volumes and references are in depot at
 <code>/depot/bouman/data/mbirjax_metrics/slice_parity/</code> (<code>recons/</code>,
 <code>refs/</code>) for inspection with <code>slice_viewer</code>.</li>
@@ -83,21 +89,22 @@ negative = closer to converged; &minus;1.0 means 10% RMS from the reference,
 <h2 id="look">What to look for</h2>
 <p>
 Each figure shows an axial mid-slice (top row) and a coronal mid-cut (bottom row).
-Columns: reference (when available) | D0 | D1 | signed difference
-D1&nbsp;&minus;&nbsp;D0.  <b>Within</b> a figure, only the schedule differs between the
-D0 and D1 columns.  <b>Between</b> figures, the sharpness setting and iteration count
-change, as labeled by the colored chips in each figure heading
-(<span class="chip s10">sharpness 1.0</span> is blue,
+Columns: reference (when available) | default | skip&nbsp;0 | difference
+(skip&nbsp;0&nbsp;&minus;&nbsp;default).  <b>Within</b> a figure, only the schedule
+differs between the default and skip&nbsp;0 columns.  <b>Between</b> figures, the
+sharpness setting and iteration count change, as labeled by the colored chips in each
+figure heading (<span class="chip s10">sharpness 1.0</span> is blue,
 <span class="chip s20">sharpness 2.0</span> is orange; the gray chip gives the
-iteration count).  The grayscale window is shared across the recon columns; the
-difference panel has its own symmetric limit, printed in its title &mdash; check that
-limit against the window to judge how small the differences are (they peak at a few
-percent of the window everywhere).
+iteration count).  The grayscale window is fixed across all figures of a dataset (see
+Methods).  The difference panel has its own symmetric limit, printed in its title both
+absolutely and <b>as a percent of the dataset's 95% intensity value</b> &mdash; that
+percentage is the honest size of the disagreement (it stays in the single digits
+everywhere).
 </p>
 <ul>
 <li><b>Interior structure:</b> the decision-relevant question.  Any coherent
-structural difference between D0 and D1 inside the object would argue against
-dropping the iteration.  None appears in any panel.</li>
+structural difference between default and skip&nbsp;0 inside the object would argue
+against dropping the iteration.  None appears in any panel.</li>
 <li><b>Boundary speckle</b> in the difference images (e.g. rings at the syringe
 barrel): the two runs' subset-noise realizations differing at high-contrast edges,
 not a structural change.</li>
@@ -112,17 +119,17 @@ runs' noise realizations diverge most where voxels are least anchored.</li>
 
 <h2 id="lilly_ds8">lilly_ds8</h2>
 <p class="nav"><b>Variants:</b>
-<a href="#lilly_ds8-s10-i15">s1.0 &middot; 15 it</a> &middot;
-<a href="#lilly_ds8-s10-i20">s1.0 &middot; 20 it</a> &middot;
-<a href="#lilly_ds8-s20-i15">s2.0 &middot; 15 it</a> &middot;
-<a href="#lilly_ds8-s20-i20">s2.0 &middot; 20 it</a></p>
-<p class="cap">Cropped log10 NRMSE vs reference (lower = better):</p>
+<a href="#lilly_ds8-s10-i15">sharpness=1.0 &middot; 15 it</a> &middot;
+<a href="#lilly_ds8-s10-i20">sharpness=1.0 &middot; 20 it</a> &middot;
+<a href="#lilly_ds8-s20-i15">sharpness=2.0 &middot; 15 it</a> &middot;
+<a href="#lilly_ds8-s20-i20">sharpness=2.0 &middot; 20 it</a></p>
+<p class="cap">NRMSE vs reference, percent (lower = better):</p>
 <table>
 <tr><th>sharpness</th><th>variant</th><th>15 it</th><th>20 it</th><th>30 it</th></tr>
-<tr><td>1.0</td><td>D0</td><td>&minus;1.153</td><td>&minus;1.203</td><td>&minus;1.287</td></tr>
-<tr><td>1.0</td><td>D1</td><td>&minus;1.163</td><td>&minus;1.211</td><td>&minus;1.294</td></tr>
-<tr><td>2.0</td><td>D0</td><td>&minus;0.953</td><td>&minus;1.006</td><td>&minus;1.092</td></tr>
-<tr><td>2.0</td><td>D1</td><td>&minus;0.965</td><td>&minus;1.015</td><td>&minus;1.100</td></tr>
+<tr><td>1.0</td><td>default</td><td>7.04%</td><td>6.27%</td><td>5.17%</td></tr>
+<tr><td>1.0</td><td>skip 0</td><td>6.87%</td><td>6.15%</td><td>5.09%</td></tr>
+<tr><td>2.0</td><td>default</td><td>11.14%</td><td>9.86%</td><td>8.09%</td></tr>
+<tr><td>2.0</td><td>skip 0</td><td>10.85%</td><td>9.65%</td><td>7.95%</td></tr>
 </table>
 <h3 id="lilly_ds8-s10-i15"><span class="chip s10">sharpness 1.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds8_s1.0_it15.png">
@@ -135,17 +142,17 @@ runs' noise realizations diverge most where voxels are least anchored.</li>
 
 <h2 id="z62">z62</h2>
 <p class="nav"><b>Variants:</b>
-<a href="#z62-s10-i15">s1.0 &middot; 15 it</a> &middot;
-<a href="#z62-s10-i20">s1.0 &middot; 20 it</a> &middot;
-<a href="#z62-s20-i15">s2.0 &middot; 15 it</a> &middot;
-<a href="#z62-s20-i20">s2.0 &middot; 20 it</a></p>
-<p class="cap">Cropped log10 NRMSE vs reference (lower = better):</p>
+<a href="#z62-s10-i15">sharpness=1.0 &middot; 15 it</a> &middot;
+<a href="#z62-s10-i20">sharpness=1.0 &middot; 20 it</a> &middot;
+<a href="#z62-s20-i15">sharpness=2.0 &middot; 15 it</a> &middot;
+<a href="#z62-s20-i20">sharpness=2.0 &middot; 20 it</a></p>
+<p class="cap">NRMSE vs reference, percent (lower = better):</p>
 <table>
 <tr><th>sharpness</th><th>variant</th><th>15 it</th><th>20 it</th><th>30 it</th></tr>
-<tr><td>1.0</td><td>D0</td><td>&minus;1.507</td><td>&minus;1.566</td><td>&minus;1.665</td></tr>
-<tr><td>1.0</td><td>D1</td><td>&minus;1.518</td><td>&minus;1.577</td><td>&minus;1.675</td></tr>
-<tr><td>2.0</td><td>D0</td><td>&minus;1.495</td><td>&minus;1.551</td><td>&minus;1.644</td></tr>
-<tr><td>2.0</td><td>D1</td><td>&minus;1.503</td><td>&minus;1.561</td><td>&minus;1.653</td></tr>
+<tr><td>1.0</td><td>default</td><td>3.11%</td><td>2.72%</td><td>2.17%</td></tr>
+<tr><td>1.0</td><td>skip 0</td><td>3.03%</td><td>2.65%</td><td>2.11%</td></tr>
+<tr><td>2.0</td><td>default</td><td>3.20%</td><td>2.81%</td><td>2.27%</td></tr>
+<tr><td>2.0</td><td>skip 0</td><td>3.14%</td><td>2.75%</td><td>2.22%</td></tr>
 </table>
 <h3 id="z62-s10-i15"><span class="chip s10">sharpness 1.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/z62_s1.0_it15.png">
@@ -158,16 +165,16 @@ runs' noise realizations diverge most where voxels are least anchored.</li>
 
 <h2 id="lilly_ds4">lilly_ds4</h2>
 <p class="nav"><b>Variants:</b>
-<a href="#lilly_ds4-s10-i15">s1.0 &middot; 15 it</a> &middot;
-<a href="#lilly_ds4-s10-i20">s1.0 &middot; 20 it</a> &middot;
-<a href="#lilly_ds4-s20-i15">s2.0 &middot; 15 it</a> &middot;
-<a href="#lilly_ds4-s20-i20">s2.0 &middot; 20 it</a></p>
-<p class="cap">Cropped log10 NRMSE vs reference at sharpness 1.0 (no reference exists
-for sharpness 2.0 &mdash; image-only there):</p>
+<a href="#lilly_ds4-s10-i15">sharpness=1.0 &middot; 15 it</a> &middot;
+<a href="#lilly_ds4-s10-i20">sharpness=1.0 &middot; 20 it</a> &middot;
+<a href="#lilly_ds4-s20-i15">sharpness=2.0 &middot; 15 it</a> &middot;
+<a href="#lilly_ds4-s20-i20">sharpness=2.0 &middot; 20 it</a></p>
+<p class="cap">NRMSE vs reference at sharpness 1.0, percent (no reference exists for
+sharpness 2.0 &mdash; image-only there):</p>
 <table>
 <tr><th>sharpness</th><th>variant</th><th>15 it</th><th>20 it</th><th>30 it</th></tr>
-<tr><td>1.0</td><td>D0</td><td>&minus;0.987</td><td>&minus;1.028</td><td>&minus;1.103</td></tr>
-<tr><td>1.0</td><td>D1</td><td>&minus;0.995</td><td>&minus;1.036</td><td>&minus;1.109</td></tr>
+<tr><td>1.0</td><td>default</td><td>10.31%</td><td>9.37%</td><td>7.90%</td></tr>
+<tr><td>1.0</td><td>skip 0</td><td>10.11%</td><td>9.21%</td><td>7.78%</td></tr>
 </table>
 <h3 id="lilly_ds4-s10-i15"><span class="chip s10">sharpness 1.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds4_s1.0_it15.png">
@@ -180,16 +187,18 @@ for sharpness 2.0 &mdash; image-only there):</p>
 
 <h2 id="zoom">Center-slice (fan-plane) zoom &mdash; lilly_ds4 sharpness 2.0</h2>
 <p>
-The difference band at mid-height in the lilly_ds4 s2.0 coronal cut sits at
+The difference band at mid-height in the lilly_ds4 sharpness-2.0 coronal cut sits at
 z&nbsp;&asymp;&nbsp;329&ndash;331: the cone fan plane (the volume midpoint is 333; the
 offset matches the detector row offset).  The rightmost panel below plots per-slice
 axial second-difference RMS &mdash; the "slice decoupled from its neighbors" noise
 signature &mdash; for both schedules.  Both show the same sharp spike at the fan
-plane, and the two curves essentially coincide: D1 is higher by less than 1% at 15
-iterations and less than 0.1% at 30, against a &plusmn;20% slice-to-slice variation of
-the same metric.  The center-slice effect is a property of the surrogate and the cone
-geometry, not of the schedule; the difference image highlights that band only because
-the least-anchored voxels are where two otherwise-equivalent runs diverge most.
+plane, and the two curves essentially coincide: skip&nbsp;0 is higher by less than 1%
+at 15 iterations and less than 0.1% at 30, against a &plusmn;20% slice-to-slice
+variation of the same metric.  The center-slice effect is a property of the surrogate
+and the cone geometry, not of the schedule; the difference image highlights that band
+only because the least-anchored voxels are where two otherwise-equivalent runs
+diverge most.  (This figure deliberately uses a much tighter window than the main
+figures, to make the noise texture visible.)
 </p>
 <img src="r2_recon_figs/lilly_ds4_s2.0_it15_centerzoom.png">
 
@@ -200,8 +209,9 @@ Capture: gautschi job 13481068 (branch <code>greg/gpu_headroom</code>), script
 <code>r2_recon_figs.py</code>.  Study context and the full schedule-search results:
 <code>plans/slice_parity/slice_parity_plan.md</code> (R2 section).  Note: this capture
 ran each variant continuously (production-like); the instrumented R2 study restarted
-the solver each iteration, and the two differ by ~0.01&ndash;0.02 in log10 NRMSE
-&mdash; the D1&nbsp;&ge;&nbsp;D0 ordering held in all 10 reference-checked cells here.
+the solver each iteration, and the NRMSE values differ by a few percent (relative)
+between the two harnesses &mdash; the skip-0&nbsp;&le;&nbsp;default ordering held in
+all 10 reference-checked cells here.
 </p>
 
 </body>

@@ -20,9 +20,11 @@ read" section explains the metrics.
    and 30 iterations.  The one visible trace is the first ~3 iterations on data whose
    initial error is dominated by low spatial frequencies (z62), recovered by iteration
    5–10 — only a ≤3-iteration preview would notice.  No new machinery required.
-   **Visual evidence:** side-by-side reconstructions (reference | D0 | D1 | difference,
-   all datasets, 15/20 iterations) in `r2_recon_compare.html` (this directory),
-   published at `/depot/bouman/www/mbirjax/skip_0_results/index.html`.
+   **Visual evidence:** side-by-side reconstructions (reference | default | skip 0 |
+   difference, all datasets, 15/20 iterations) published at
+   `/depot/bouman/www/mbirjax/skip_0_results/index.html` (page source =
+   `r2_recon_compare.html` in this directory; figures live on depot only — no PNGs in
+   the repo, per Greg).
 2. **Parity (z-phase alternation) is a quality option, not a default ingredient.**
    In the realistic operating envelope (sharpness ≤ 2.0, max_iterations = 15) it buys
    only ~4–5% error reduction, while costing +50% cone projector work per iteration as
