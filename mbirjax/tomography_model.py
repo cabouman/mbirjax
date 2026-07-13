@@ -1756,6 +1756,15 @@ class TomographyModel(ParameterHandler):
                 band, local_pixels[i], view_ranges[device])
         return mjs.run_per_device(devices, worker, executor=pool)
 
+    def _pallas_back_project_single_device(self, sinogram, pixel_indices,
+                                           coeff_power=1, output_device=None):
+        """The geometry's pallas n=1 back driver (see _pallas_kernels.py).  Defined
+        only by geometries whose tile policy can set ``back_pallas``; the base raises
+        so a policy/hook mismatch fails loudly rather than silently misprojecting."""
+        raise NotImplementedError(
+            'back_pallas is set but {} defines no pallas back driver'.format(
+                type(self).__name__))
+
     def _forward_project_band_to_view_shard(self, band, pixel_indices, owned_view_indices):
         """Forward-project one broadcast slice-band into one view-owner's row-band.
 
@@ -1815,10 +1824,15 @@ class TomographyModel(ParameterHandler):
         # Pallas custom-kernel path (GPU, measured archs only; see _pallas_kernels.py).
         # Value-equal to the XLA path up to float summation order (gated in
         # tests/test_pallas_kernels.py); falls through to the XLA loop everywhere else.
-        if getattr(self.tiles, 'back_pallas', False):
-            from mbirjax import _pallas_kernels
-            return _pallas_kernels.back_project_single_device(
-                self, sinogram, pixel_indices, coeff_power=coeff_power,
+        # The DRIVER is geometry-specific (parallel: register-tile rows; cone: the
+        # fused vertical fan), so the flag routes through a geometry hook -- only
+        # geometries that define the hook set the flag in their tile policy.
+        # coeff_power guard: the pallas kernels implement powers {1, 2} only (the
+        # cone row factor is squared, not general-powered); any other power keeps
+        # the XLA path, which handles arbitrary integer powers.
+        if getattr(self.tiles, 'back_pallas', False) and coeff_power in (1, 2):
+            return self._pallas_back_project_single_device(
+                sinogram, pixel_indices, coeff_power=coeff_power,
                 output_device=output_device)
 
         # Shard at entry so every sinogram slice below is already on the model's single device.

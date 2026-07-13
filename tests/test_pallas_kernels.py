@@ -48,6 +48,9 @@ def test_back_matches_xla(coeff_power, subset):
                                              replace=False)))
     sino = jnp.asarray(rng.random(SINO_SHAPE, dtype=np.float32))
 
+    # Flag-cleared reference: on allowlisted GPUs the model call would otherwise
+    # route through the same pallas hook under test (review wf_2678466d).
+    model.tiles = model.tiles._replace(back_pallas=False)
     ref = model.sparse_back_project(sino, idx, coeff_power=coeff_power)
     out = _pallas_kernels.back_project_single_device(
         model, sino, idx, coeff_power=coeff_power, interpret=_interpret())
@@ -356,3 +359,141 @@ def test_fwd_split_two_phase_covers_all_taps():
         real = seg2[v][seg2[v, :, 1] > seg2[v, :, 0]]
         for a, b, c, _ in real:
             assert starts[v, c] <= a and b <= starts[v, c + 1]
+
+
+# ── The cone fused-vfan back path ─────────────────────────────────────────────
+
+CONE_TOL = {1: 1e-5, 2: 1e-4}   # gradient / Hessian gates (the affine-m ULP note)
+
+
+def _make_cone_model():
+    angles = np.linspace(0, 2 * np.pi, SINO_SHAPE[0], endpoint=False)
+    model = mbirjax.ConeBeamModel(SINO_SHAPE, angles,
+                                  source_detector_dist=4 * SINO_SHAPE[2],
+                                  source_iso_dist=4 * SINO_SHAPE[2])
+    model.configure_devices(1)
+    return model
+
+
+@pytest.mark.parametrize('coeff_power', [1, 2])
+@pytest.mark.parametrize('subset', [False, True])
+def test_cone_back_matches_xla(coeff_power, subset):
+    """The cone fused-vfan n=1 driver must match the XLA back projection at the
+    per-power gates, full-grid and subset pixel sets."""
+    model = _make_cone_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+    rng = np.random.default_rng(11)
+    if subset:
+        idx = jnp.asarray(np.sort(rng.choice(np.asarray(idx), size=len(idx) // 7,
+                                             replace=False)))
+    sino = jnp.asarray(rng.random(SINO_SHAPE, dtype=np.float32))
+
+    # Flag-cleared reference (see the parallel test's note).
+    model.tiles = model.tiles._replace(back_pallas=False)
+    ref = model.sparse_back_project(sino, idx, coeff_power=coeff_power)
+    out = _pallas_kernels.cone_back_project_single_device(
+        model, sino, idx, coeff_power=coeff_power, interpret=_interpret())
+    assert out.shape == jnp.asarray(ref).shape
+    assert _rel_max_err(out, jnp.asarray(ref)) < CONE_TOL[coeff_power]
+
+
+@pytest.mark.parametrize('coeff_power', [1, 2])
+def test_cone_band_matches_xla(coeff_power):
+    """The cone per-owner band driver (global view indices, FULL rows, a slice band)
+    must match the XLA banded path at the per-power gates."""
+    model = _make_cone_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+    rng = np.random.default_rng(12)
+    sino = jnp.asarray(rng.random(SINO_SHAPE, dtype=np.float32))
+    owned = np.arange(16, 48)
+    g0, length = 5, 9
+
+    ref = model.projector_functions.sparse_back_project_band(
+        sino[16:48], idx, g0, length, owned_view_indices=owned,
+        coeff_power=coeff_power)
+    out = _pallas_kernels.cone_back_project_band(
+        model, sino[16:48], idx, g0, length, owned_view_indices=owned,
+        coeff_power=coeff_power, interpret=_interpret())
+    assert out.shape == jnp.asarray(ref).shape
+    assert _rel_max_err(out, jnp.asarray(ref)) < CONE_TOL[coeff_power]
+
+
+def test_cone_adjoint_identity():
+    """<A x, y> == <x, B y> with the XLA cone forward and the fused-vfan back."""
+    model = _make_cone_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+    rng = np.random.default_rng(13)
+    x = jnp.asarray(rng.random((len(idx), recon_shape[2]), dtype=np.float32))
+    y = jnp.asarray(rng.random(SINO_SHAPE, dtype=np.float32))
+
+    ax = jnp.asarray(model.sparse_forward_project(x, idx))
+    by = _pallas_kernels.cone_back_project_single_device(model, y, idx,
+                                                         interpret=_interpret())
+    lhs = float(jnp.vdot(ax, y))
+    rhs = float(jnp.vdot(x, by))
+    assert abs(lhs - rhs) / max(abs(lhs), 1e-30) < REL_TOL
+
+
+def test_cone_dispatch_routes(monkeypatch):
+    """Both cone dispatch sites must route to the cone drivers when flagged: the n=1
+    short-circuit hook and the per-owner band override (spied, interpret-capable)."""
+    model = _make_cone_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)[:60]
+    sino = jnp.asarray(np.random.default_rng(14).random(SINO_SHAPE, dtype=np.float32))
+
+    seen = {}
+    real_band = _pallas_kernels.cone_back_project_band
+
+    def spy_band(tm, s, pix, g0, L, owned_view_indices=(), coeff_power=1,
+                 interpret=False):
+        seen['band'] = (tuple(s.shape), int(g0), int(L),
+                        np.asarray(owned_view_indices).tolist() if
+                        len(owned_view_indices) else [])
+        return real_band(tm, s, pix, g0, L, owned_view_indices=owned_view_indices,
+                         coeff_power=coeff_power, interpret=_interpret())
+
+    monkeypatch.setattr(_pallas_kernels, 'cone_back_project_band', spy_band)
+    owned = np.arange(8, 24)
+    model.tiles = model.tiles._replace(back_pallas_band=True)
+    out = model._back_project_view_shard_to_band(sino[8:24], idx, 3, 12, owned, 1)
+    assert seen['band'] == ((16, SINO_SHAPE[1], SINO_SHAPE[2]), 3, 9,
+                            list(range(8, 24)))
+    ref = model.projector_functions.sparse_back_project_band(
+        sino[8:24], idx, 3, 9, owned_view_indices=owned)
+    assert _rel_max_err(out, jnp.asarray(ref)) < REL_TOL
+
+    # The n=1 chain: flag -> geometry hook -> the cone n=1 driver (spied so the
+    # wiring is asserted on CPU CI, delegating in interpret mode).
+    real_n1 = _pallas_kernels.cone_back_project_single_device
+
+    def spy_n1(tm, s, pix, coeff_power=1, output_device=None, interpret=False):
+        seen['n1'] = tuple(s.shape)
+        return real_n1(tm, s, pix, coeff_power=coeff_power,
+                       output_device=output_device, interpret=_interpret())
+
+    monkeypatch.setattr(_pallas_kernels, 'cone_back_project_single_device', spy_n1)
+    model.tiles = model.tiles._replace(back_pallas=True)
+    out_n1 = model._sparse_back_project_single_device(sino, idx)
+    assert seen['n1'] == SINO_SHAPE
+    model.tiles = model.tiles._replace(back_pallas=False)
+    ref_n1 = model._sparse_back_project_single_device(sino, idx)
+    assert _rel_max_err(out_n1, jnp.asarray(ref_n1)) < REL_TOL
+
+
+def test_cone_band_view_chunking_consistent():
+    """Chunked (small back_view_batch) and single-chunk cone band drivers must agree
+    -- exercises the multi-chunk accumulate + ragged tail on CPU CI."""
+    model = _make_cone_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)[:80]
+    sino = jnp.asarray(np.random.default_rng(15).random(SINO_SHAPE, dtype=np.float32))
+    out_single = _pallas_kernels.cone_back_project_band(
+        model, sino, idx, 2, 10, interpret=_interpret())
+    model.tiles = model.tiles._replace(back_view_batch=17)
+    out_chunked = _pallas_kernels.cone_back_project_band(
+        model, sino, idx, 2, 10, interpret=_interpret())
+    assert _rel_max_err(out_chunked, out_single) < REL_TOL

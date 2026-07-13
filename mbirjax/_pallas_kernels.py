@@ -547,3 +547,186 @@ def forward_project_subset(model, voxel_values, pixel_indices, owned_view_indice
         chunks.append(fn(pf.view_params_array, pixel_indices, vals_pad, owned))
     # Chunk outputs are already (views, band_rows, channels).
     return chunks[0] if len(chunks) == 1 else jnp.concatenate(chunks, axis=0)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# The cone fused-vfan back projection (single device AND the n>=2 band path)
+#
+# out[p, l] = sum over views v, row taps tr, channel taps tc of
+#             Wrow[v,p,l,tr] * Wchan[v,p,tc] * sino[v, m(v,p,l)+tr-r, c(v,p)+tc-r]
+#
+# The enabling geometry fact (verified analytically + numerically, design section in
+# gpu_headroom_findings.md): the projected detector-row center is EXACTLY affine in
+# the slice index, m(v,p,l) = m0(v,p) + W_p_r(v,p) * l (the slope IS the projected
+# row width), for flat and curved detectors alike -- so the vertical fan needs no
+# per-slice precompute: the kernel forms row centers, trapezoid row weights, and the
+# 1/cos(phi) divisor in-kernel from two scalars per (view, pixel).  The register
+# tile holds out[p, l0:l0+LC] across the whole view loop (increment 1's design, 3x3
+# taps).  Value contract (Greg 2026-07-13): gradient rel <= 1e-5; Hessian <= 1e-4 --
+# the in-kernel f32 affine is a different rounding sequence than the XLA chain (~1-2
+# ULP of m), which squared weights do not cancel (measured 2.0e-5 at the 1024 cell).
+# Row centers use floor(m + 0.5) (jnp.round has no Triton lowering); safe because
+# W_p_r <= 2*psf_radius makes a center flip move only a zero-weight tap.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Measured (e5_cone_fused_back.py sweep, H100): slice-chunk 128 dominates (the
+# per-(view,pixel) scalar re-stream amortizes across the chunk -- the rc=256 lesson);
+# num_warps=1 wins at every chunk size.
+CONE_LC = 128
+CONE_NUM_WARPS = 1
+
+
+@partial(jax.jit, static_argnames=['projector_params'])
+def _jit_compute_vfan_scalars(view_params_array, pixel_indices, projector_params,
+                              owned_view_indices=()):
+    """(m0, W_p_r) per (view, pixel): the affine row-center anchor at GLOBAL slice 0
+    and the slope==width scalar.  MODULE-LEVEL jit (the retrace lesson)."""
+    from mbirjax.cone_beam import ConeBeamModel     # lazy: avoids an import cycle
+    if len(owned_view_indices) > 0:
+        view_params_array = view_params_array[jnp.asarray(owned_view_indices)]
+
+    def one_view(svp):
+        def one_pixel(pidx):
+            m_p, _, W_p_r, _ = ConeBeamModel.compute_vertical_data_single_pixel(
+                pidx, jnp.arange(1), svp, projector_params)
+            return m_p[0], W_p_r if jnp.ndim(W_p_r) == 0 else W_p_r[0]
+        return jax.vmap(one_pixel)(pixel_indices)
+    return jax.vmap(one_view)(view_params_array)
+
+
+def _cone_back_kernel(c0_ref, wc_ref, m0_ref, wpr_ref, g0_ref, sino_ref, out_ref, *,
+                      lc, num_views, num_channels, num_rows, psf_radius, psf_width,
+                      coeff_power, delta_det_row, det_row_offset, det_center_row,
+                      inv_sdd):
+    """One program per (slice-chunk, pixel); see the section comment above."""
+    l_vec = g0_ref[0] + pl.program_id(0) * lc + jnp.arange(lc).astype(jnp.float32)
+
+    def vbody(v, acc):
+        c0 = c0_ref[v, 0]
+        m = m0_ref[v, 0] + wpr_ref[v, 0] * l_vec              # exactly affine
+        wpr = wpr_ref[v, 0]
+        mc = jnp.floor(m + 0.5).astype(jnp.int32)             # W<=2r makes flips inert
+        v_p = (m - det_center_row) * delta_det_row - det_row_offset
+        # The XLA vfan DIVIDES by cos(phi): multiply by 1/cos(phi) =
+        # sqrt(1 + (v_p/sdd)^2); inv_sdd = 0 at sdd = Inf gives exactly 1 (Inf-safe).
+        inv_cos = jnp.sqrt(1.0 + (v_p * inv_sdd) ** 2)
+        L_max = jnp.minimum(1.0, wpr)
+        for tr in range(psf_width):                           # static unroll
+            mt = mc + (tr - psf_radius)
+            w_row = jnp.clip((wpr + 1.0) / 2.0 - jnp.abs(m - mt.astype(jnp.float32)),
+                             0.0, L_max) * inv_cos
+            w_row = w_row * ((mt >= 0) & (mt < num_rows))     # real rows, not padded
+            if coeff_power == 2:
+                w_row = w_row * w_row                         # square AFTER the divisor
+            mr = jnp.clip(mt, 0, num_rows - 1)
+            row_vals = jnp.zeros((lc,), jnp.float32)
+            for tc in range(psf_width):                       # static unroll
+                cc = jnp.clip(c0 + (tc - psf_radius), 0, num_channels - 1)
+                row_vals = row_vals + wc_ref[v, tc, 0] * sino_ref[v, cc, mr]
+            acc = acc + w_row * row_vals
+        return acc
+    acc = jax.lax.fori_loop(0, num_views, vbody, jnp.zeros((lc,), jnp.float32))
+    out_ref[0, :] = acc
+
+
+@functools.cache
+def _make_cone_back_call(num_views, num_channels, rows_padded, num_rows, num_pixels,
+                         l_padded, lc, psf_radius, coeff_power, geom_consts,
+                         interpret=False):
+    # Cached on static shapes + the per-geometry scalar constants (hashable floats);
+    # see _make_back_call's caching note.  rows_padded pads the CHANNEL-MAJOR block's
+    # last axis to a power of two (production cone rows are often non-pow2); the
+    # kernel masks and clips against the REAL num_rows, so padding is never read.
+    kw = ({} if interpret else
+          {'compiler_params': pltriton.CompilerParams(num_warps=CONE_NUM_WARPS)})
+    delta_det_row, det_row_offset, det_center_row, inv_sdd = geom_consts
+    return pl.pallas_call(
+        partial(_cone_back_kernel, lc=lc, num_views=num_views,
+                num_channels=num_channels, num_rows=num_rows, psf_radius=psf_radius,
+                psf_width=2 * psf_radius + 1, coeff_power=coeff_power,
+                delta_det_row=delta_det_row, det_row_offset=det_row_offset,
+                det_center_row=det_center_row, inv_sdd=inv_sdd),
+        out_shape=jax.ShapeDtypeStruct((num_pixels, l_padded), jnp.float32),
+        grid=(l_padded // lc, num_pixels),                    # slice-chunk SLOWEST
+        in_specs=[
+            pl.BlockSpec((num_views, 1), lambda s, p: (0, p)),             # c0
+            pl.BlockSpec((num_views, 2 * psf_radius + 1, 1),
+                         lambda s, p: (0, 0, p)),                          # Wchan
+            pl.BlockSpec((num_views, 1), lambda s, p: (0, p)),             # m0
+            pl.BlockSpec((num_views, 1), lambda s, p: (0, p)),             # W_p_r
+            pl.BlockSpec((1,), lambda s, p: (0,)),                         # g0 scalar
+            pl.BlockSpec((num_views, num_channels, rows_padded),
+                         lambda s, p: (0, 0, 0)),                          # sino ref
+        ],
+        out_specs=pl.BlockSpec((1, lc), lambda s, p: (p, s)),
+        interpret=interpret, **kw)
+
+
+def cone_back_project_band(model, sinogram, pixel_indices, g0, num_band_slices,
+                           owned_view_indices=(), coeff_power=1, interpret=False):
+    """Cone banded back projection of one view-owner's FULL-ROW views onto the global
+    slice band [g0, g0 + num_band_slices) -- the pallas replacement for the XLA banded
+    path (a cone slice draws from a RANGE of detector rows, so the rows are never
+    cropped).  ``sinogram``: the owner's local (views, rows, channels) block; per-owner
+    placement rules as in ``back_project_single_device``.  Returns (num_pixels, L).
+
+    PADDED global slices (l >= the real slice count) are NOT zeroed here, unlike the
+    XLA fan's in-kernel mask: inertness is delegated to the sharded assembly's
+    ``_mask_padded_slices`` -- the one downstream consumer.  A new consumer of these
+    partials must mask padded slices itself."""
+    from mbirjax.projectors import _jit_compute_scatter_centers
+    pf = model.projector_functions
+    pp = pf.projector_params
+    num_views, rows, num_channels = sinogram.shape
+    rows_padded = next_pow2(rows)
+    psf_radius = pp.geometry_params.psf_radius
+    num_pixels = int(pixel_indices.shape[0])
+    gp = pp.geometry_params
+    sdd = gp.source_detector_dist
+    geom_consts = (float(gp.delta_det_row), float(gp.det_row_offset),
+                   (rows - 1) / 2.0,
+                   0.0 if np.isinf(sdd) else float(1.0 / sdd))
+    if len(owned_view_indices) > 0:
+        owned_all = np.asarray(owned_view_indices)
+    else:
+        owned_all = np.arange(num_views)
+    lc = min(CONE_LC, next_pow2(num_band_slices))
+    l_padded = -(-num_band_slices // lc) * lc
+    g0_arr = jnp.asarray([float(g0)], jnp.float32)
+
+    out = None
+    view_chunk = min(model.tiles.back_view_batch, BACK_VIEW_CHUNK_CAP, num_views)
+    for v0 in range(0, num_views, view_chunk):
+        v1 = min(v0 + view_chunk, num_views)
+        owned = owned_all[v0:v1]
+        c0 = _jit_compute_scatter_centers(pf.view_params_array, pixel_indices,
+                                          model.compute_channel_coordinate, pp,
+                                          pixels_major=False, owned_view_indices=owned)
+        wc = _jit_compute_back_weights(pf.view_params_array, pixel_indices,
+                                       model.compute_hfan_data, pp,
+                                       coeff_power=coeff_power,
+                                       owned_view_indices=owned)
+        m0, wpr = _jit_compute_vfan_scalars(pf.view_params_array, pixel_indices, pp,
+                                            owned_view_indices=owned)
+        sino_cm = _to_channel_major(sinogram[v0:v1], rows_padded=rows_padded)
+        kern = _make_cone_back_call(v1 - v0, num_channels, rows_padded, rows,
+                                    num_pixels, l_padded, lc, psf_radius,
+                                    coeff_power, geom_consts, interpret=interpret)
+        chunk = kern(c0, wc, m0, wpr, g0_arr, sino_cm)
+        out = chunk if out is None else _accumulate(out, chunk)
+    return out[:, :num_band_slices]
+
+
+def cone_back_project_single_device(model, sinogram, pixel_indices, coeff_power=1,
+                                    output_device=None, interpret=False):
+    """Cone n=1 back projection through the fused kernel: the full slice range as ONE
+    launch per view chunk (l padded to a multiple of CONE_LC -- grid dims need not be
+    powers of two, so the pad waste is < one slice-chunk)."""
+    sinogram = model._shard_sinogram(sinogram)
+    pixel_indices = jax.device_put(pixel_indices, model.sino_placement.devices[0])
+    num_slices = model.get_params('recon_shape')[2]
+    out = cone_back_project_band(model, sinogram, pixel_indices, 0, num_slices,
+                                 coeff_power=coeff_power, interpret=interpret)
+    if output_device is not None:
+        out = jax.device_put(out, output_device)
+    return out

@@ -71,6 +71,14 @@ class ParallelBeamModel(TomographyModel):
         magnification = 1.0
         return magnification
 
+    def _pallas_back_project_single_device(self, sinogram, pixel_indices,
+                                           coeff_power=1, output_device=None):
+        """Parallel's pallas n=1 back driver: the register-tile row kernel."""
+        from mbirjax import _pallas_kernels
+        return _pallas_kernels.back_project_single_device(
+            self, sinogram, pixel_indices, coeff_power=coeff_power,
+            output_device=output_device)
+
     def _back_project_view_shard_to_band(self, view_data, pixel_indices, g0, g1,
                                          owned_view_indices, coeff_power):
         """Parallel-beam specialization of the sharded slice-band back projection (overrides the

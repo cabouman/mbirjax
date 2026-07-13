@@ -339,7 +339,15 @@ class ConeBeamModel(TomographyModel):
         num_det_rows = self.get_params('sinogram_shape')[1]
         if num_slices >= self._FWD_PIXEL_BATCH_MIN_SLICES:
             tiles = tiles._replace(fwd_pixel_batch=self._FWD_PIXEL_BATCH_GPU_LARGE)
-        return tiles._replace(sort_by_channel=num_det_rows >= SORTED_CHANNEL_REDUCE_MIN_COLS)
+        # The fused-vfan back kernel (e5_cone_fused_back.py: 9.4x the XLA band sweep;
+        # value contract = gradient 1e-5 / Hessian 1e-4, the affine-m rounding note in
+        # _pallas_kernels.py).  n=1 -> the single-device short-circuit; n>1 -> the
+        # per-owner band path; same availability gates as parallel.
+        from mbirjax import _pallas_kernels
+        return tiles._replace(
+            sort_by_channel=num_det_rows >= SORTED_CHANNEL_REDUCE_MIN_COLS,
+            back_pallas=_pallas_kernels.is_available() and n_devices == 1,
+            back_pallas_band=_pallas_kernels.is_available() and n_devices > 1)
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
@@ -782,6 +790,39 @@ class ConeBeamModel(TomographyModel):
         vertical_data = (m_p, m_p_center, W_p_r, cos_phi_p)  # cos_alpha_p_z)
 
         return vertical_data
+
+    @staticmethod
+    def compute_hfan_data(pixel_indices, single_view_params, projector_params):
+        """(n_p, W_p_c, weight_scale) for the shared trapezoid weight builders
+        (_pallas_kernels._jit_compute_back_weights): cone's horizontal-fan data with
+        the weight scale of back_horizontal_fan_one_view_to_pixel_batch."""
+        gp = projector_params.geometry_params
+        n_p, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(
+            pixel_indices, single_view_params, projector_params)
+        weight_scale = (gp.voxel_row_aspect * gp.delta_voxel * gp.delta_voxel) / footprint_xy
+        return n_p, W_p_c, weight_scale
+
+    def _pallas_back_project_single_device(self, sinogram, pixel_indices,
+                                           coeff_power=1, output_device=None):
+        """Cone's pallas n=1 back driver: the fused-vfan kernel over the full slice
+        range (see _pallas_kernels.cone_back_project_single_device)."""
+        from mbirjax import _pallas_kernels
+        return _pallas_kernels.cone_back_project_single_device(
+            self, sinogram, pixel_indices, coeff_power=coeff_power,
+            output_device=output_device)
+
+    def _back_project_view_shard_to_band(self, view_data, pixel_indices, g0, g1,
+                                         owned_view_indices, coeff_power):
+        """Cone's per-owner banded back: the fused-vfan pallas kernel when enabled
+        (full-row views -- a cone slice draws from a RANGE of rows, so no crop),
+        else the base XLA banded path."""
+        if getattr(self.tiles, 'back_pallas_band', False) and coeff_power in (1, 2):
+            from mbirjax import _pallas_kernels
+            return _pallas_kernels.cone_back_project_band(
+                self, view_data, pixel_indices, g0, g1 - g0,
+                owned_view_indices=owned_view_indices, coeff_power=coeff_power)
+        return super()._back_project_view_shard_to_band(
+            view_data, pixel_indices, g0, g1, owned_view_indices, coeff_power)
 
     @staticmethod
     def compute_channel_coordinate(pixel_indices, single_view_params, projector_params):
