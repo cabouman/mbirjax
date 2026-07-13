@@ -886,6 +886,40 @@ bisect needed.  **Increment 5 is complete**: cone back 3.9×/9.9×/6.0× at n=1/
 both coeff powers through the fused kernel, cone anti-scaling dead, value equivalence
 gated at the level that matters.
 
+## Cone forward kernel — DESIGN OPENING (2026-07-13; increment 6 candidate)
+
+Structure (cone_beam.forward_project_pixel_batch_to_one_view): **vfan first** —
+x(P, slices) → cylinder(P, det_rows) per view, the affine row spread — **then hfan**,
+the channel-sorted two-phase scatter the shipped forward kernel already solves.
+Baseline: XLA cone fwd 19.4 s full-grid at the 1024³ cell (campaign); the E1 split:
+hfan 72% / vfan 41% (overlap 1.13).  The E3 cone-hfan spike kernel exists (v2
+row-chunked, 2.13× subset).
+
+Structural difference from parallel fwd: the post-vfan values are PER-VIEW (m0/W_p_r
+are view-dependent), so the shared L2-hot values tile that powers the parallel
+forward kernel does not exist — wins must come from sort/scatter elimination and
+fused resampling, not cross-view tile reuse.  The vfan itself is collision-free in
+BOTH directions: forward spread per pixel column, or a gather via the INVERSE affine
+l*(m) = (m − m0)/W_p_r (each output row gathers its ~T slice taps).
+
+Candidate architectures for the design pass:
+* **(A) hfan-stage adoption**: the spiked cone-hfan kernel serves the hfan stage,
+  vfan stays XLA — Amdahl ≈ 1.6× cone fwd; smallest change, needs the two-stage
+  library restructure of the cone forward internals.
+* **(B) two-stage pallas**: an inverse-affine vfan gather kernel producing per-
+  (view, pixel-tile) cylinders + the hfan kernel — pays the cylinder materialization
+  per view tile; pixel tiling requires the hfan kernel's multi-tile atomic variant
+  (the deferred increment-2 "batched-grid" machinery).
+* **(C) fully fused**: the hfan segment-walk whose per-(pixel, row) reads compute the
+  vfan in-kernel via the inverse affine (~3 gathers + weights per element, ~3× the
+  parallel fwd per-element cost; zero intermediate).  Rough ceiling ~2.5× vs XLA
+  from the per-element model — the design pass must sharpen this before choosing.
+
+Next: full design + adversarial panel (the E5 pattern), then the spike.  The
+Hessian/rounding lessons carry over: channel centers concrete, row rounding
+in-kernel under the W ≤ 2r invariant, value gates gradient-class only (forward has
+no squared-weight path), convergence-level equivalence for the VCD composition.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
