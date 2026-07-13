@@ -129,62 +129,14 @@ to a band up front.  This coupling is also why the sinogram is sharded
 by view (not by detector row) uniformly across geometries.
 
 
-Projector kernel design
------------------------
+Projector kernels
+-----------------
 
-Below the band level, the projector kernels themselves carry several design
-decisions from the 2026-07 kernel campaign (full record with measurements in the
-repo at ``plans/projector_kernels/fwd_back_findings.md``).  The durable pieces:
-
-**One tile policy.**  Every projector batching/banding knob and kernel-algorithm
-flag is consolidated into a single ``TilePolicy`` (``model.tiles``), selected in
-one method (``TomographyModel._select_tile_policy``, re-run on each device
-re-layout) and read late-bound by all consumers.  Geometry classes override only
-what they have measured; the experiment-override idiom is
-``model.tiles = model.tiles._replace(...)``.
-
-**The forward/back kernel asymmetry, and the sorted channel reduction.**  The
-forward kernel's psf loop is a scatter-add with *duplicated channel indices*
-(roughly ``psf_width * pixels / channels`` pixels collide per channel), while
-back projection is a conflict-free gather -- the colliding atomic adds were
-essentially the entire GPU forward-kernel cost.  The GPU horizontal fans
-therefore use a **sorted channel reduction**
-(``projectors.channel_scatter_reduce``: ``lax.sort_key_val`` with the sorted
-keys as the segment ids), behind the static flag
-``ProjectorParams.sort_by_channel``.  Parallel, cone, and multiaxis enable it by
-policy; **translation deliberately does not** -- at its real detector shapes the
-sorted form measured 4.5--6.5x *slower* (the collision-ratio cliff), and three
-measured guard constants in ``projectors.py`` (minimum columns, maximum psf
-radius, minimum collision ratio) encode the crossovers.  CPU keeps the original
-scatter loop everywhere.  The general lesson those guards embody: kernel-choice
-policies must be validated at production shapes, not just benchmark cells.
-
-**Stacked back gather (parallel only).**  The GPU parallel-beam back kernel
-gathers all psf taps at once behind ``ProjectorParams.back_stacked_gather``.
-Every geometry's back kernel honors the flag, but only parallel's policy enables
-it: for the vertical-fan geometries the gather hides behind the band work (a
-measured composition no-op, confirmed independently on three geometries).
-
-**DRY fan kernels.**  The trapezoid tap machinery lives once in
-``projectors.py`` (``horizontal_fan_project`` / ``horizontal_fan_back`` /
-``vertical_fan_band_gather``); geometry files contribute only their coordinate
-stages and weight scales.
-
-**Concrete scatter centers.**  The horizontal fans' integer channel centers are
-computed in a separate small jit and passed into the projector programs as
-concrete inputs, so the compiled programs are round-free for parallel beam --
-the defense against the known XLA rounding hazard (see
-``plans/bugs_and_artifacts/jax rounding bug/`` in the repo).  The wrappers carry
-a **no-eager-array-ops contract**: a single eager array op per wrapper call
-measured +35% on whole-recon VCD time, because VCD at interactive sizes is
-host-dispatch-bound.
-
-**Remaining headroom, quantified.**  After the campaign, the two dominant
-kernels (forward sorted-reduce and back gather) both sit roughly 10x above
-compute-only bounds; profiling attributes this to memory *access patterns*
-rather than HBM bandwidth.  Closing that gap is custom-kernel territory — the
-custom-kernel (Pallas) path built on top of this substrate is documented in
-:doc:`dev_pallas_kernels`.
+The kernels that run within each band or shard -- both the portable XLA kernel
+design (the tile policy, the forward/back scatter-versus-gather asymmetry, the
+sorted channel reduction, the shared fan machinery) and the optional GPU
+custom-kernel (Pallas) path built on top of it -- are described in
+:doc:`dev_projector_kernels`.
 
 
 The QGGMRF prior and halos

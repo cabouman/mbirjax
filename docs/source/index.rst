@@ -96,7 +96,7 @@ MBIRJAX: High-performance tomographic reconstruction
 
    dev_performance_dashboard
    dev_sharding_overview
-   dev_pallas_kernels
+   dev_projector_kernels
    dev_api
    dev_maintenance
 
