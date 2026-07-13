@@ -123,16 +123,27 @@ geometry, and all CPU work, stays on the XLA kernels.
 **Gradient and Hessian can take different paths.**  Back projection is called with the
 weights unchanged for the gradient and *squared* for the Hessian diagonal, and a
 geometry may send one through the custom kernel and keep the other on XLA.  The class
-attribute ``_PALLAS_BACK_COEFF_POWERS`` lists which it serves.  Parallel beam serves
-both: its weights are reproduced exactly.  Cone serves the gradient only -- its fused
-kernel computes the detector row from a compact in-kernel formula that carries a tiny
-(~2e-5) error in the *squared* weights, and because the solver divides the gradient by
-the Hessian, that error is amplified at low-Hessian edge voxels (a test measured 8.5e-3
-divergence in the reconstruction when the Hessian went through the kernel).  So cone
-takes the once-per-reconstruction Hessian on the exact XLA path and only the
-per-iteration gradient through the kernel.  The base class serves neither and raises if
-a flag is ever set without a matching kernel, so a misconfiguration fails loudly rather
-than silently mis-projecting.
+attribute ``_PALLAS_BACK_COEFF_POWERS`` lists which it serves.  Both parallel beam and
+cone serve both powers.  Their accuracy contracts differ: parallel reproduces the XLA
+weights exactly, while cone's fused kernel computes the detector row from a compact
+in-kernel formula whose floating-point rounding differs slightly from the XLA chain's
+-- invisible in the gradient (the trapezoid taps are a partition of unity, so the
+difference cancels) and a small, bounded effect (~2e-5, against a 1e-4 contract) in
+the squared Hessian weights.  The base class serves neither and raises if a flag is
+ever set without a matching kernel, so a misconfiguration fails loudly rather than
+silently mis-projecting.
+
+A calibration note for anyone comparing reconstructions across kernel paths: after a
+few solver iterations, *any* implementation that sums in a different order -- a custom
+kernel, or even the XLA path with a different view batch -- diverges pointwise at the
+weakly-constrained voxels near the edge of the field of view, where the solution is
+ill-conditioned and float-level differences are amplified about a thousandfold.  A
+max-norm comparison over the full support therefore only ever passes for bitwise
+identical code.  Kernel-path equivalence is instead verified occasionally (not in the
+nightly runs) at the reconstruction level: both paths are run on real data against
+deep reference reconstructions, and their convergence curves must agree within a
+noise band calibrated by an XLA-vs-XLA control (the record lives with the campaign
+notes under ``plans/projector_kernels/``).
 
 **Turning it on, and seeing what ran.**  A geometry enables a flag only on the GPU and
 only where it measured a win, and every flag is additionally gated by a runtime check,
