@@ -324,6 +324,29 @@ class TestTilePolicy(unittest.TestCase):
             base = super(type(model), model)._select_tile_policy(True, 12, num_slices, 1)
             self.assertEqual(gpu, base)
 
+    def test_get_compute_config(self):
+        # The introspection contract: all sections present, tiles mirrored verbatim,
+        # pallas state consistent with availability, and print_results doesn't raise.
+        model = make_model()
+        model.configure_devices(1)
+        config = model.get_compute_config(print_results=True)
+        self.assertEqual(set(config),
+                         {'versions', 'devices', 'tiles', 'kernels', 'jit_cache'})
+        self.assertEqual(config['tiles'], dict(model.tiles._asdict()))
+        self.assertEqual(config['devices']['count'], 1)
+        kernels = config['kernels']
+        from mbirjax import _pallas_kernels
+        self.assertEqual(kernels['pallas_available'], _pallas_kernels.is_available())
+        if not kernels['pallas_available']:
+            # On CPU CI the reason must be populated and the paths off -- and the
+            # device line must NOT carry a pallas token.
+            self.assertTrue(len(kernels['pallas_status']) > 0)
+            self.assertFalse(kernels['back_pallas'] or kernels['fwd_pallas'])
+            self.assertNotIn('pallas', model.device_summary)
+        else:
+            self.assertIn('pallas', model.device_summary)
+        self.assertEqual(kernels['fwd_pallas_max_pixels'], model.tiles.fwd_pixel_batch)
+
     def test_projection_runs_with_replaced_tiles(self):
         # End-to-end smoke: an overridden tile policy still projects correctly (values equal
         # to the default-policy projection up to reordering).

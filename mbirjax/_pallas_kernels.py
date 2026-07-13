@@ -76,17 +76,23 @@ def next_pow2(n):
 
 
 @functools.cache
-def is_available():
-    """True when the pallas back path may be used: enabled, GPU, measured arch, and a
-    probe kernel actually compiles (a toolchain-drift guard).  Cached per process."""
+def availability():
+    """(usable, reason): whether the pallas paths may be used, and why not when they
+    can't -- enabled, GPU, measured arch, and a probe kernel actually compiles (a
+    toolchain-drift guard).  Cached per process.  The reason string is user-facing
+    (surfaced by ``TomographyModel.get_compute_config``): the fallback to XLA is
+    silent at run time by design, so this is where a benchmark learns WHY a node is
+    not using the custom kernels."""
     if os.environ.get('MBIRJAX_DISABLE_PALLAS', '0') == '1':
-        return False
+        return False, 'disabled by MBIRJAX_DISABLE_PALLAS=1'
     try:
         dev = jax.devices()[0]
         if dev.platform != 'gpu':
-            return False
-        if not any(a in getattr(dev, 'device_kind', '') for a in _ARCH_ALLOWLIST):
-            return False
+            return False, 'not a GPU platform ({})'.format(dev.platform)
+        kind = getattr(dev, 'device_kind', '')
+        if not any(a in kind for a in _ARCH_ALLOWLIST):
+            return False, 'device kind {!r} not in the measured allowlist {}'.format(
+                kind, _ARCH_ALLOWLIST)
 
         def probe_kernel(x_ref, o_ref):
             o_ref[...] = x_ref[...] * 2.0
@@ -96,9 +102,16 @@ def is_available():
             out_shape=jax.ShapeDtypeStruct((32,), jnp.float32),
             compiler_params=pltriton.CompilerParams(num_warps=1))
         out = jax.jit(probe)(jnp.ones((32,), jnp.float32))
-        return bool(jax.block_until_ready(out)[0] == 2.0)
-    except Exception:
-        return False
+        if bool(jax.block_until_ready(out)[0] == 2.0):
+            return True, 'available ({})'.format(kind)
+        return False, 'probe kernel returned a wrong value'
+    except Exception as e:
+        return False, 'probe kernel failed to compile/run: {}'.format(e)
+
+
+def is_available():
+    """True when the pallas kernel paths may be used; see ``availability``."""
+    return availability()[0]
 
 
 @partial(jax.jit, static_argnames=['hfan_data_fn', 'projector_params', 'coeff_power'])

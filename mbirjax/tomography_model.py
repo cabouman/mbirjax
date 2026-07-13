@@ -363,6 +363,14 @@ class TomographyModel(ParameterHandler):
                 report += (' (using {} of {} GPUs: with num_slices={}, more devices would '
                            'leave some entirely idle (a fully padded shard))'.format(
                                n, n_available, num_slices))
+        # Custom-kernel (pallas) paths fall back to XLA silently, so when one IS active
+        # the run log should say so -- a timing comparison must know which kernels ran.
+        # Full detail (including WHY pallas is off) via get_compute_config().
+        pallas = [name for name, flag in
+                  [('back', getattr(self.tiles, 'back_pallas', False)),
+                   ('fwd', getattr(self.tiles, 'fwd_pallas', False))] if flag]
+        if pallas:
+            report += ' (pallas: {})'.format('+'.join(pallas))
         return report
 
     @property
@@ -378,6 +386,58 @@ class TomographyModel(ParameterHandler):
         is logged at the start of every reconstruction.
         """
         return self._device_report()
+
+    def get_compute_config(self, print_results=False):
+        """Return the resolved COMPUTE configuration of this model as a nested dict.
+
+        This reports how the model will execute -- versions, the resolved device
+        layout, the tile/batching policy (``model.tiles``), and which custom-kernel
+        (pallas) paths are active and why or why not -- as opposed to
+        :meth:`get_params`/:meth:`print_params`, which report the model/geometry
+        parameters.  Useful when comparing timings across machines or builds: the
+        custom-kernel paths fall back to XLA silently, and this is the introspection
+        point that says which kernels a run will actually use.
+
+        Args:
+            print_results (bool, optional): If True, also pretty-print the
+                configuration to stdout (matching :func:`get_memory_stats`).
+
+        Returns:
+            dict: Sections ``versions``, ``devices``, ``tiles``, ``kernels``,
+            ``jit_cache``.
+
+        Example:
+            >>> ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
+            >>> config = ct_model.get_compute_config(print_results=True)
+            >>> config['kernels']['back_pallas']
+            True
+        """
+        from mbirjax import _pallas_kernels
+        import jaxlib
+        devices = self.shard_devices
+        pallas_ok, pallas_reason = _pallas_kernels.availability()
+        config = {
+            'versions': {'mbirjax': self.version, 'jax': jax.__version__,
+                         'jaxlib': jaxlib.__version__},
+            'devices': {'summary': self._device_report(),
+                        'count': len(devices),
+                        'platform': self._platform_label(devices[0]),
+                        'device_kind': getattr(devices[0], 'device_kind', '')},
+            'tiles': dict(self.tiles._asdict()),
+            'kernels': {'pallas_available': pallas_ok,
+                        'pallas_status': pallas_reason,
+                        'back_pallas': bool(getattr(self.tiles, 'back_pallas', False)),
+                        'fwd_pallas': bool(getattr(self.tiles, 'fwd_pallas', False)),
+                        'fwd_pallas_max_pixels': self.tiles.fwd_pixel_batch},
+            'jit_cache': {'persistent_cache_dir': jax.config.jax_compilation_cache_dir},
+        }
+        if print_results:
+            print('Compute configuration:')
+            for section, entries in config.items():
+                print('  {}:'.format(section))
+                for key, value in entries.items():
+                    print('    {}: {}'.format(key, value))
+        return config
 
     def _set_device_layout(self, devices, pinned):
         """Set the device layout from a concrete device list -- the single place that does so.
