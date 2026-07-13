@@ -22,6 +22,7 @@
   .s20{background:#ffedd5;color:#9a3412}   /* sharpness 2.0 = orange */
   .i15{background:#e5e7eb;color:#111}
   .i20{background:#c7ccd4;color:#111}
+  hr.sep{width:40%;margin:2em auto 0 0;border:0;border-top:2px solid #ccc}
 </style>
 </head>
 <body>
@@ -79,7 +80,7 @@ the relative RMS difference from the converged answer over the interior (disk of
 0.85&times; the recon radius, 10% of slices excluded at each axial end).  Lower =
 closer to converged; 5% means the reconstruction differs from the reference by 5% RMS.</li>
 <li><b>Display window.</b> Every figure of a dataset uses the SAME grayscale window:
-the 5th&ndash;95th percentile of that dataset's sharpness-1.0 reference volume.  Each
+the 1st&ndash;99th percentile of that dataset's sharpness-1.0 reference volume.  Each
 figure title shows the window and the full data min/max.</li>
 <li><b>Volumes.</b> All captured volumes and references are in depot at
 <code>/depot/bouman/data/mbirjax_metrics/slice_parity/</code> (<code>recons/</code>,
@@ -96,10 +97,10 @@ sharpness setting and iteration count change, as labeled by the colored chips in
 figure heading (<span class="chip s10">sharpness 1.0</span> is blue,
 <span class="chip s20">sharpness 2.0</span> is orange; the gray chip gives the
 iteration count).  The grayscale window is fixed across all figures of a dataset (see
-Methods).  The difference panel has its own symmetric limit, printed in its title both
-absolutely and <b>as a percent of the dataset's 95% intensity value</b> &mdash; that
-percentage is the honest size of the largest disagreements (and note it is the limit
-of the color scale, i.e. the extreme of the difference, not its typical value).
+Methods).  The difference panel has its own symmetric limit, printed in its title <b>as a
+percent of the dataset's 99% intensity value</b> &mdash; that percentage is the honest
+size of the largest disagreements (and note it is the limit of the color scale, i.e.
+the extreme of the difference, not its typical value).
 </p>
 <ul>
 <li><b>Interior structure:</b> the decision-relevant question.  Any coherent
@@ -133,10 +134,13 @@ runs' noise realizations diverge most where voxels are least anchored.</li>
 </table>
 <h3 id="lilly_ds8-s10-i15"><span class="chip s10">sharpness 1.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds8_s1.0_it15.png">
+<hr class="sep">
 <h3 id="lilly_ds8-s10-i20"><span class="chip s10">sharpness 1.0</span><span class="chip i20">20 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds8_s1.0_it20.png">
+<hr class="sep">
 <h3 id="lilly_ds8-s20-i15"><span class="chip s20">sharpness 2.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds8_s2.0_it15.png">
+<hr class="sep">
 <h3 id="lilly_ds8-s20-i20"><span class="chip s20">sharpness 2.0</span><span class="chip i20">20 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds8_s2.0_it20.png">
 
@@ -156,10 +160,13 @@ runs' noise realizations diverge most where voxels are least anchored.</li>
 </table>
 <h3 id="z62-s10-i15"><span class="chip s10">sharpness 1.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/z62_s1.0_it15.png">
+<hr class="sep">
 <h3 id="z62-s10-i20"><span class="chip s10">sharpness 1.0</span><span class="chip i20">20 iterations</span></h3>
 <img src="r2_recon_figs/z62_s1.0_it20.png">
+<hr class="sep">
 <h3 id="z62-s20-i15"><span class="chip s20">sharpness 2.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/z62_s2.0_it15.png">
+<hr class="sep">
 <h3 id="z62-s20-i20"><span class="chip s20">sharpness 2.0</span><span class="chip i20">20 iterations</span></h3>
 <img src="r2_recon_figs/z62_s2.0_it20.png">
 
@@ -178,10 +185,13 @@ sharpness 2.0 &mdash; image-only there):</p>
 </table>
 <h3 id="lilly_ds4-s10-i15"><span class="chip s10">sharpness 1.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds4_s1.0_it15.png">
+<hr class="sep">
 <h3 id="lilly_ds4-s10-i20"><span class="chip s10">sharpness 1.0</span><span class="chip i20">20 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds4_s1.0_it20.png">
+<hr class="sep">
 <h3 id="lilly_ds4-s20-i15"><span class="chip s20">sharpness 2.0</span><span class="chip i15">15 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds4_s2.0_it15.png">
+<hr class="sep">
 <h3 id="lilly_ds4-s20-i20"><span class="chip s20">sharpness 2.0</span><span class="chip i20">20 iterations</span></h3>
 <img src="r2_recon_figs/lilly_ds4_s2.0_it20.png">
 

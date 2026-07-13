@@ -3,11 +3,11 @@ r2_recon_capture.py staged (run on gautschi AFTER the capture job; CPU-only).
 
 For each (dataset, sharpness, iteration): a figure with two view rows (axial
 mid-slice, coronal mid-cut) and columns [150-it reference (if present) | default |
-skip 0 | difference].  The grayscale window is FIXED PER DATASET: the 5th-95th
+skip 0 | difference].  The grayscale window is FIXED PER DATASET: the 1st-99th
 percentile of that dataset's sharpness-1.0 reference volume; the figure title shows
 the window and the full data range.  The difference panel is symmetric with its limit
-shown both absolutely and as a percent of the 95% value.  Also builds the
-center-slice (fan-plane) zoom for lilly_ds4 s2.0.
+shown as a percent of the dataset's 99% value.  Also builds the center-slice
+(fan-plane) zoom for lilly_ds4 s2.0.
 
 Outputs PNGs to OUT_DIR only.  The narrative page is hand-maintained at
 plans/slice_parity/r2_recon_compare.html and published (with these figures) at
@@ -35,7 +35,7 @@ FIG_ITERS = [15, 20]
 ARMS = ['D0_default', 'D1_g2start']
 ARM_LABELS = {'D0_default': 'default [0,2,4,6,7]',
               'D1_g2start': 'skip 0 [2,4,6,7]'}
-WINDOW_PCT = (5, 95)                # fixed per-dataset window percentiles
+WINDOW_PCT = (1, 99)                # fixed per-dataset window percentiles
 
 
 def dataset_window(case):
@@ -74,15 +74,15 @@ def build_fig(case, s, it, window, out_png):
                 lim = np.percentile(np.abs(diff), 99.9) or 1e-6
                 ax.imshow(diff, cmap='coolwarm', vmin=-lim, vmax=lim)
                 ax.set_title(f'skip 0 − default '
-                             f'(±{lim:.2g} = {lim / vmax * 100:.1f}% of the 95% value)',
-                             fontsize=8)
+                             f'(±{lim / vmax * 100:.1f}% of the 99% value)',
+                             fontsize=9)
             else:
                 ax.imshow(mid_slices(vol)[view], cmap='gray', vmin=vmin, vmax=vmax)
                 ax.set_title(label if i == 0 else '', fontsize=9)
             if j == 0:
                 ax.set_ylabel(view, fontsize=9)
     fig.suptitle(f'{case}  sharpness {s}  —  {it} iterations   |   '
-                 f'window [5%, 95%] = [{vmin:.3g}, {vmax:.3g}],  '
+                 f'window [1%, 99%] = [{vmin:.3g}, {vmax:.3g}],  '
                  f'data range [{dmin:.3g}, {dmax:.3g}]', fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     fig.savefig(out_png, dpi=110)
@@ -114,10 +114,11 @@ def build_zoom(out_png):
         ax.set_title(f'{label}  z={zc}', fontsize=10)
     diff = sl1 - sl0
     lim = np.percentile(np.abs(diff), 99.9)
+    ds_vmax = dataset_window('lilly_ds4')[1]
     axes[2].imshow(diff, cmap='coolwarm', vmin=-lim, vmax=lim)
     axes[2].set_xticks([]); axes[2].set_yticks([])
-    axes[2].set_title(f'skip 0 − default (±{lim:.2g} = {lim / vmax * 100:.1f}% '
-                      f'of the 95% value)', fontsize=9)
+    axes[2].set_title(f'skip 0 − default (±{lim / ds_vmax * 100:.1f}% '
+                      f'of the 99% value)', fontsize=9)
     axes[3].plot(zs, ax2['default'], label='default', lw=1.2)
     axes[3].plot(zs, ax2['skip 0'], label='skip 0', lw=1.2, ls='--')
     axes[3].axvline(zc, color='gray', lw=0.7, ls=':')
@@ -136,7 +137,7 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     for case in CASES:
         window = dataset_window(case)
-        print(f'{case}: window [5%,95%] = [{window[0]:.4g}, {window[1]:.4g}], '
+        print(f'{case}: window [1%,99%] = [{window[0]:.4g}, {window[1]:.4g}], '
               f'range [{window[2]:.4g}, {window[3]:.4g}]', flush=True)
         for s in SHARPNESS_LIST:
             for it in FIG_ITERS:
