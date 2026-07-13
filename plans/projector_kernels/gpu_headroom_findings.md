@@ -588,6 +588,43 @@ the per-owner shard shape (V=512, L=115, P=823k) — the band kernel cost is
 per-device, so no multi-GPU allocation is needed to gate the kernel itself — then
 the n=1/2/4 model-level curve if it clears ≥1.5×.
 
+## Wave-2 band A/B — A5 knob verdict + the parallel adoption probe (2026-07-13; job 13505309; `w2_band_ab.py`)
+
+Single-device replications of one n=2 view-owner's full band sweep (512 views,
+1024×1024 det, L=115; cone = 11 bands over the extended 1152 slices, ~1.1× production's
+absolute walls with ratios exact; harness review wf_2a3f9c18 fixed two operating-point
+blockers pre-run).  Values PASS everywhere (≤2.4e-6).
+
+**Cone (the A5 view-batch knob):**
+
+| back_view_batch | 512 (production) | 256 | 128 | 64 | 32 | 16 |
+|---|---|---|---|---|---|---|
+| band-sweep wall | 27.83 s | 30.88 | 29.82 | 29.67 | 27.58 | **21.15 s** |
+| peak GB | 13.9 | 13.4 | 13.0 | 12.9 | 12.9 | 13.0 |
+
+**A5 verdict: the XLA lever tops out at 1.32×** (vb16), non-monotonically (mid values
+WORSE than default).  Shrinking the (P_batch, L, view_batch) stack 32× bought only
+24% — the materialization is real but the XLA gather kernels' access patterns keep
+most of the cost.  Per the plan's decision gate ("bar not met → stop at the XLA level
+and document"): **the XLA-level (c) track is CLOSED**; 1.32× does not restore cone
+n=2 scaling (27.5 → ~21 s vs n=1's 18.9 s).
+
+**Parallel (the adoption probe): the shipped register-tile kernel is 8.9× on the
+per-owner band work** — 5.49 s (XLA at the true n≥2 entry point and vb=512) →
+**0.618 s** (pallas, same calls routed through `back_project_single_device`), rel
+2.3e-6 PASS.  Projected: parallel n=2 back ≈ 0.6–0.8 s + reduce-scatter, vs today's
+5.39 s and n=1-pallas's 1.57 s — the existing kernel turns parallel multi-GPU into a
+real scaling curve with DRIVER work only (per-band dispatch + owned_view_indices
+plumbing in the per-owner override).  Ack to size in integration: the pallas cell
+peaked +3.4 GB (15.3 vs 11.9 GB — the channel-major copies; bounded per view chunk).
+
+Consequences for the (c) sequencing: (1) increment 3 = parallel multi-device band
+adoption (driver-level, kernels already shipped and gated); (2) the cone fused-vfan
+pallas band kernel is now the load-bearing (c) work — bar: beat the best XLA form
+(21.2 s per-owner sweep) by ≥1.5×, with the parallel probe suggesting ~5–9× is
+available to a kernel that fuses the vertical fan; (3) the vb16 cone knob is a
+possible interim ~1.3× (platform-gated) but is superseded if the cone kernel lands.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
