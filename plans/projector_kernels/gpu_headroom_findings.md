@@ -676,27 +676,57 @@ precompute — 3 scalars per (view, pixel) beyond the parallel kernel's existing
 {c0, 3 channel weights}: {m0, slope, W_p_r}.
 
 **Kernel (register-tile, extending increment 1's design):** grid = (slice-chunk,
-pixel); the program holds out[p, l0:l0+LC] in registers and loops all views: load the
-per-(v,p) scalars (ref-level), then per l: compute m(l), round to the row center,
-form the 3 trapezoid row weights (÷ cos φ), and accumulate the 3×3 tap products from
-the channel-major (V, C, rows) sinogram.  In-kernel row rounding matches the XLA
-vfan's own behavior (m_p_center = round(m_p) INSIDE its jit — row centers were never
-part of the Phase-D concrete-centers contract, which is channel-only; a boundary
-rounding flip moves a tap whose trapezoid weight is →0 there, so it is
-value-gate-safe by the same continuity argument the XLA path relies on).
+pixel); the program holds out[p, l0:l0+LC] in registers and loops the view chunk
+(BACK_VIEW_CHUNK_CAP=128): load the per-(v,p) scalars (ref-level), then per l:
+compute m(l), row-center it, form the 3 trapezoid row weights (÷ cos φ), and
+accumulate the 3×3 tap products (factored as 3 row-weight × 3 channel-scalar FMAs)
+from the channel-major (V, C, rows) sinogram.  PANEL AMENDMENTS (wf_0fc29e84, both
+agents' numerical checks in their scratch scripts): (1) `jnp.round` has NO Triton
+lowering at the pin — emulate with floor(m + 0.5); safety rests on the verified
+invariant W_p_r ≤ 2·psf_radius (a center flip moves a tap whose weight is EXACTLY
+zero — forced-flip check: output delta 0.0), NOT on matching round-half-even
+semantics; (2) the divisor must be the Inf-safe form 1/hypot(1, v_p/sdd)
+(sdd = Inf is a supported configuration; sdd/hypot(sdd, v_p) is NaN there) and
+division-free in-kernel; (3) `slope == W_p_r` EXACTLY (both are
+pixel_mag·Δslice/Δrow — verified analytically and numerically), so the vfan
+precompute is {m0, W_p_r} only; (4) day-0 lowering probe for the vector ref-gather
+`sino_ref[v, cc, m_vec]` — the lowering table supports int-array indexers but no
+shipped kernel exercises one, and the two-stage fallback needs the same construct.
 
-**Traffic/flop model vs the two-stage XLA form:** two-stage ≈ 3·V·P·(rows + L_total)
-fused ≈ 9·V·P·L_total → ~1.6× the flops at the 1024³ shapes — irrelevant (the XLA
-path runs at ~1% of arithmetic peak; access patterns dominate).  Per output element
-the fused kernel gathers 9 taps × V from a row-window slice (the window spans
-~LC·slope + spread rows — L2-resident like the parallel kernel's row-chunk phase),
-i.e. ~3× parallel-back's per-element loads → expected ~3× its wall class: **~2–3 s
-per-owner band sweep vs 21–27 s XLA (≈7–10×), far above the ≥1.5× bar**.
+**Traffic/flop model (panel-corrected):** load side = 9·V·P·L taps at the parallel
+kernel's measured 1.81e12 taps/s ≈ 2.15 s per-owner sweep.  ALU side is NOT free
+here (~50–60 FMA-eq per (v,l) element vs parallel's ~6): 2.2–2.6e13 FMA-eq ≈ 0.7 s
+at f32 peak, 1.3–2.6 s at realistic utilization.  Honest expectation **2.5–4.5 s ≈
+5–8×** (was 7–10×); the ≥1.5× bar (>14 s) keeps ≥3× margin.  L2 story corrected:
+the per-view row window is dominated by the pixel-magnification SPREAD
+(~110–170 rows at 1024-scale, LC-independent), so the nominal (128-view, C, window)
+set is 68–90 MB > L2 — residency holds via the DRIFT-BAND mechanism (~70–95 views
+of program drift fit in L2), the same mechanism the shipped parallel kernel already
+relies on (its nominal phase set is 134 MB); the spike must report edge-chunk vs
+central-chunk throughput separately.  LC sweep extended to {16, 32, 64, **128**} —
+each slice-chunk phase re-streams the whole per-(v,p) scalar array, so large LC
+amortizes it (the rc=256 lesson), and the register budget is comfortable at 128.
 
 **Precompute:** one builder jit mirroring `_jit_compute_back_weights`: hfan
-{c0, Wchan(T)} (identical math) + vfan {m0, slope, W_p_r} — per view chunk
-(BACK_VIEW_CHUNK_CAP), transient ≈ (6/3)× the parallel weights ≈ 2.5 GB class at
-full grid, bounded by the same cap.
+{c0, Wchan(T)} (identical math) + vfan {m0, W_p_r} — 24 B/(view, pixel) →
+**2.53 GB** at chunk=128 × P=823k, bounded by BACK_VIEW_CHUNK_CAP.
+
+**OPEN DECISION (panel blocker) — the Hessian value gate.**  The affinity is exact
+in real arithmetic (f64 deviation 5.7e-14) but the in-kernel f32 `m0 + slope·l` is a
+different ROUNDING SEQUENCE than the XLA chain: δm ≈ 1–2 ULP of m (~1e-4 abs at 1024
+rows).  The GRADIENT is immune (trapezoid weights are a partition of unity — Σ taps
+= W_p_r independent of m, so δm only transports weight between adjacent rows;
+end-to-end emulation passes at 1.5–2.3e-6).  The HESSIAN (squared weights, no
+cancellation) measures **1.5e-5 flat / 3.4e-5 curved vs the 1e-5 gate — FAIL**;
+ablation confirms the affine-m recomputation is the sole driver.  Options:
+(a) relax the Hessian gate to 1e-4 with the accuracy argument (the VCD fixed point
+is set by the gradient; the Hessian diagonal only preconditions the path, so a
+~3e-5 relative perturbation is limit-neutral and rate-negligible — verify
+empirically in the spike with a VCD-trajectory comparison), keeping 1e-5 for the
+gradient; (b) dispatch coeff_power=2 to the XLA band path (Hessian is computed once
+per recon — costs one XLA-speed pass per recon, zero accuracy questions);
+(c) reproduce the exact f32 op sequence in-kernel — fragile across XLA/Triton FMA
+contraction, rejected.
 
 **Fallback variant (record, not first):** two-stage in pallas (the existing hfan
 spike kernel → HBM cylinder → a vfan register-tile) — fewer in-kernel loads but pays
