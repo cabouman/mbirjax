@@ -58,6 +58,7 @@ from importlib.metadata import version, PackageNotFoundError
 TilePolicy = namedtuple('TilePolicy', ['fwd_view_batch', 'back_view_batch',
                                        'fwd_pixel_batch', 'back_pixel_batch',
                                        'fwd_slice_band', 'back_slice_band',
+                                       'back_pallas',
                                        'sort_by_channel', 'back_stacked_gather'])
 
 # Persistent jit-compilation cache: repeat runs of the same model shapes load
@@ -466,6 +467,11 @@ class TomographyModel(ParameterHandler):
             back_pixel_batch=self._PIXEL_BATCH_DEFAULT,
             fwd_slice_band=None,
             back_slice_band=None,
+            # Pallas custom-kernel path for the single-device back projection (the 2026-07
+            # GPU-headroom campaign; see mbirjax/_pallas_kernels.py).  Off in the base
+            # policy: geometries enable it only where measured (ParallelBeamModel, GPU,
+            # allowlisted arch) -- the platform-conditional-kernel precedent.
+            back_pallas=False,
             sort_by_channel=False,
             back_stacked_gather=False,
         )
@@ -1720,6 +1726,15 @@ class TomographyModel(ParameterHandler):
         (:meth:`_shard_sinogram`, a no-op when already sharded) so the whole body operates on
         the model's single device (``sino_placement.devices[0]``).
         """
+        # Pallas custom-kernel path (GPU, measured archs only; see _pallas_kernels.py).
+        # Value-equal to the XLA path up to float summation order (gated in
+        # tests/test_pallas_kernels.py); falls through to the XLA loop everywhere else.
+        if getattr(self.tiles, 'back_pallas', False):
+            from mbirjax import _pallas_kernels
+            return _pallas_kernels.back_project_single_device(
+                self, sinogram, pixel_indices, coeff_power=coeff_power,
+                output_device=output_device)
+
         # Shard at entry so every sinogram slice below is already on the model's single device.
         sinogram = self._shard_sinogram(sinogram)
 

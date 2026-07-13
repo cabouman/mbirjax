@@ -429,6 +429,10 @@ class Projectors:
         back_stacked_gather = int(bool(tiles is not None and tiles.back_stacked_gather))
         projector_params = ProjectorParams(sinogram_shape, recon_shape, geometry_params,
                                            sort_by_channel, back_stacked_gather)
+        # Exposed for consumers outside the jitted drivers (the pallas back path reads
+        # shapes/geometry/psf_radius from it -- fields that cannot go stale; the baked
+        # kernel-algorithm flags carry the staleness caveat above).
+        self.projector_params = projector_params
 
         view_params_name = self.tomography_model.get_params('view_params_name')
         # The view parameters are a RUNTIME input to the jitted projectors, not a baked

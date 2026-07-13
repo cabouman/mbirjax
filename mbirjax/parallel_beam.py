@@ -105,14 +105,22 @@ class ParallelBeamModel(TomographyModel):
         slices_per_dev = -(-num_slices // max(1, n_devices))
         band = min(self._FWD_SLICE_BAND_GPU, max(1, slices_per_dev))
         balanced_band = slices_per_dev // max(1, -(-slices_per_dev // band))
+        # The pallas back kernel (single-device path; _pallas_kernels.py): 16-26x
+        # kernel-level / 9.07x composed over the stacked gather on H100, all
+        # granularities (its per-call setup is ~free -- the centers exist for the XLA
+        # path anyway).  is_available() gates on GPU + measured arch + a probe compile,
+        # so unsupported toolchains silently keep the XLA path.
+        from mbirjax import _pallas_kernels
         return tiles._replace(
             fwd_slice_band=self._FWD_SLICE_BAND_GPU,
             fwd_pixel_batch=self._FWD_PIXEL_BATCH_GPU,
             sort_by_channel=balanced_band >= SORTED_CHANNEL_REDUCE_MIN_COLS,
+            back_pallas=_pallas_kernels.is_available(),
             # Back kernel: one stacked gather covering every psf tap.  A GPU win because the
             # back kernel is almost entirely gather-bound and parallel beam has no vertical
             # fan behind which the gather latency could hide; measured WORSE on CPU, which
-            # keeps the per-tap loop (see projectors.horizontal_fan_back).
+            # keeps the per-tap loop (see projectors.horizontal_fan_back).  Remains the
+            # fallback (and the n>1 path) when back_pallas is off.
             back_stacked_gather=True,
         )
 
@@ -330,6 +338,20 @@ class ParallelBeamModel(TomographyModel):
         return horizontal_fan_back(sinogram_view_T, n_p, n_p_centers, W_p_c, weight_scale,
                                    gp.psf_radius, coeff_power=coeff_power,
                                    use_stacked=projector_params.back_stacked_gather)
+
+    @staticmethod
+    def compute_hfan_data(pixel_indices, single_view_params, projector_params):
+        """(n_p, W_p_c, weight_scale) for one view -- the horizontal fan's float chain
+        plus the geometry weight scale, for consumers that rebuild the trapezoid weights
+        OUTSIDE the projector programs (the pallas back path; _pallas_kernels.py).
+        Reuses compute_proj_data verbatim so the weights match the in-kernel ones by
+        construction (the same consistency contract as compute_channel_coordinate)."""
+        gp = projector_params.geometry_params
+        n_p, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(
+            pixel_indices, single_view_params, projector_params)
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
+        weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
+        return n_p, W_p_c, weight_scale
 
     @staticmethod
     def compute_channel_coordinate(pixel_indices, single_view_params, projector_params):

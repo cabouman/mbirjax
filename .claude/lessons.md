@@ -209,6 +209,16 @@ as suspect — and note small phantoms can never reproduce these (size-dependent
   stale compiled state (a "33 GB leak" was a stale binary); and a modern `pip install -e` registers a
   `sys.meta_path` finder that beats `PYTHONPATH` — to select code under test, install it into a
   dedicated env (`mbirjax_metrics/tooling/regression/lib_env.sh`), never point `PYTHONPATH` at it.
+- **A bench that constructs a `jax.jit` inside the measured call measures HOST TRACING, not the
+  operation.**  A fresh `jax.jit(...)` object retraces on every invocation (the persistent cache
+  skips only XLA compilation, not tracing) — in the E4 composed-back preview this inflated a ~1 ms
+  weight builder to 1,828 ms (61% of the "composed" time) and earlier masqueraded as an "H100
+  precompute oddity" (host tracing is why a Mac M3 looked FASTER than the H100 node).  Tells: a
+  warm cost far above the arithmetic/traffic floor; near-identical work at wildly different costs
+  (a module-level jit at 6 ms next to a per-call jit at 1,828 ms); cold ≈ warm.  Rule: hoist jits
+  to module level (or cache the jitted callable) before timing anything; suspect any "expensive
+  precompute" measured through a locally-constructed jit.  Full record:
+  `plans/projector_kernels/gpu_headroom_findings.md` (the composed-preview sections).
 
 ## 6. Performance expectations
 

@@ -182,8 +182,51 @@ host-dispatch-bound.
 **Remaining headroom, quantified.**  After the campaign, the two dominant
 kernels (forward sorted-reduce and back gather) both sit roughly 10x above
 compute-only bounds; profiling attributes this to memory *access patterns*
-rather than HBM bandwidth.  Closing that gap is custom-kernel territory and is
-deliberately deferred.
+rather than HBM bandwidth.  Closing that gap is custom-kernel territory — begun
+in the section below.
+
+
+Pallas projector kernels
+------------------------
+
+The 2026-07 GPU-headroom campaign added a custom-kernel path written in **Pallas**
+(pure Python, compiled by the jax already shipped — no CUDA build step; the Triton
+backend).  Design and measurements: ``plans/projector_kernels/`` in the repo
+(``e4_integration_design.md`` is the integration design; ``gpu_headroom_findings.md``
+the measured record; the ``e3_*``/``e4_*`` scripts under
+``plans/experiments/projector_kernels/`` reproduce every constant).
+
+**Structure — three pieces:**
+
+* ``mbirjax/_pallas_kernels.py`` — ALL kernels and their drivers live in this one
+  module.  Increment 1: the parallel-beam single-device back projection.
+* **Policy** — a ``TilePolicy`` flag (``back_pallas``), set only by geometries that
+  have measured it (``ParallelBeamModel``, GPU) and gated by
+  ``_pallas_kernels.is_available()``: an env kill-switch
+  (``MBIRJAX_DISABLE_PALLAS=1``), a device-kind allowlist (H100; extend only with
+  measurements), and a probe compile of a tiny kernel — so an incompatible toolchain
+  silently keeps the XLA path.
+* **Fallback** — the XLA kernels remain compiled-in at every site (they also serve
+  CPU, other archs, and the multi-device band path).
+
+**How the back kernel works** (the register-tile + L2-phase design): one small GPU
+program per (row-chunk, pixel) holds its output row-chunk in registers and loops over
+all views and psf taps, gathering row-chunks from the channel-major sinogram — the view
+sum never touches memory, and because the row-chunk grid dimension varies slowest,
+concurrent programs share one mostly-L2-resident sinogram slice.  Work is uniform (no
+sort, no atomics); the trapezoid weights are rebuilt from the same geometry chain the
+XLA kernels use (``compute_hfan_data``), so the operator — and hence forward/back
+adjointness — is identical, with only the float summation order differing.  Measured
+on H100 at the 1024-class cell: 16–26x kernel-level, ~9x for a composed full-grid
+call; correctness gates in ``tests/test_pallas_kernels.py`` (relative-tolerance
+equality, chunking consistency, the adjoint identity) run in interpret mode on CPU CI
+and compiled on GPU.
+
+**Updating this path** (e.g. on a jax upgrade or a new GPU model): re-run the bench
+scripts named above to revalidate the constants (``ROW_CHUNK``, ``NUM_WARPS``) and the
+speedups; extend ``_ARCH_ALLOWLIST`` only with measurements in hand; the probe compile
+catches hard toolchain breaks automatically.  To retire the path entirely, set the
+env kill-switch or remove the one policy line — every call site falls back to XLA.
 
 
 The QGGMRF prior and halos
