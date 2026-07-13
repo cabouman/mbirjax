@@ -625,6 +625,40 @@ pallas band kernel is now the load-bearing (c) work — bar: beat the best XLA f
 available to a kernel that fuses the vertical fan; (3) the vb16 cone knob is a
 possible interim ~1.3× (platform-gated) but is superseded if the cone kernel lands.
 
+## Increment 3 — parallel multi-device band adoption: SHIPPED AND GATED (2026-07-13; commits through the chunk cap; jobs 13508069 → 13508447)
+
+The shipped register-tile back kernel now serves the n≥2 per-owner slice-band calls
+(`back_pallas_band`; driver per-owner mode = global view indices, caller placement
+trusted, no resharding; the banded reduce-scatter orchestration unchanged).  Final
+gate, flag-on vs kill-switch, values cross-checked on-vs-off, seeded partitions:
+
+| cell | XLA → pallas | speedup | values | peak memory |
+|---|---|---|---|---|
+| back full-grid n=2 | 5.37 → **0.716 s** | **7.5×** | 1.3e-6 PASS | +0.3 GB |
+| back full-grid n=4 | 3.29 → **0.443 s** | **7.4×** | 8.7e-7 PASS | +3.1 GB (ack) |
+| VCD n=2 (4 it, 1024³) | 97.9 → **50.3 s** | **1.95×** | 6.7e-6 PASS | equal |
+
+**The (c) deliverable for parallel beam — the scaling curve is real now**: back
+full-grid 1.57 s (n=1) → 0.716 (n=2, 2.2×) → 0.443 (n=4, 3.5×), where pre-adoption
+n=4 LOST to n=1.  End-to-end VCD at n=2 nearly halves.  Two gate lessons en route:
+(1) the first VCD value FAIL (rel 0.116) was the unseeded-partition trap — off/on
+cells drew different random subsets; `np.random.seed(0)` before recon restored
+6.7e-6 (the load-bearing reproducibility gotcha, again); (2) the first run's +5.4 GB
+peak at n=2 was the per-owner weights transient at the sharded view batch of 512 —
+weights/shard = T·(P/(rows·C))·(chunk/(V/n)) ≈ T·π/4 ≈ 2.4 when the whole shard is
+one chunk, size- and n-independent — fixed by capping the driver's chunk at 128
+(`BACK_VIEW_CHUNK_CAP`; chunking measured ~free), which cut it to +0.3 GB for 5.6%
+of wall.  The n=4 +3.1 GB residual is accepted (18.4 GB absolute) and unattributed —
+revisit if it grows at larger shapes.  One environmental rerun (both n=4 cells
+SIGABRT in XLA GPU-client init immediately after the `ai`-partition outage; clean on
+the healthy partition).
+
+Remaining wave-2 work: the cone fused-vfan pallas band kernel (the load-bearing (c)
+item — cone still anti-scales; bar ≥1.5× over the 21.2 s best-XLA per-owner sweep,
+with 5–9× indicated); candidate increment 4 = per-owner banded FORWARD adoption
+(the guard-sweep session's band-256 column measured the pallas forward driver
+1.7–3.8× at exactly the banded-forward width).
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
