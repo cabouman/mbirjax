@@ -920,6 +920,44 @@ Hessian/rounding lessons carry over: channel centers concrete, row rounding
 in-kernel under the W ≤ 2r invariant, value gates gradient-class only (forward has
 no squared-weight path), convergence-level equivalence for the VCD composition.
 
+## Cone forward fused kernel — DESIGN (architecture (C), Greg-approved 2026-07-13; discussion-first, no code yet)
+
+**Correction to the design opening**: the shared-tile premise HOLDS for (C) — the
+gather source is the raw, VIEW-INDEPENDENT ``x(P, slices)``; only the in-kernel
+indices are view-dependent.  (B)'s per-view cylinders are what break sharing.
+
+**Why the inverse formulation is forced, not chosen.**  The natural forward vfan
+spreads each x[p, l] into rows m(l)±r — an accumulator SCATTER at dynamic REGISTER
+indices, which Triton cannot express (dynamic indexing is legal only on refs, i.e.
+reads).  Inverting the affine turns every dynamic index into a ref-gather: for
+output row m, the contributing slices are l ∈ round((m − m0)/W_p_r) ± T_l, and the
+weight is the SAME trapezoid evaluated at m_p(l) − m (symmetric |·|, so the pair is
+adjoint-matched by construction).
+
+**The kernel = the shipped forward kernel + one substitution.**  The two-phase
+channel-sorted segment walk is unchanged; the per-pixel contribution
+``wt · vals_ref[pix, :]`` becomes ``wchan · resample(vals_ref[pix, :])`` where
+resample, vectorized over the rows axis (rows-length vectors are proven — the
+shipped kernel ran band=1024): l_c = the inverse affine of the row vector, then T_l
+static taps of {vector ref-gather x[pix, l_c+tl] × trapezoid(m_p(l_c+tl) − m) ÷ the
+cos φ divisor matching the XLA forward vfan}.  Precompute = exactly inc5's
+builders: {c0, Wchan(T)} + {m0, W_p_r}.  No coeff_power axis (forward has none).
+
+**The static inverse-tap bound** (the panel's primary target): contributions need
+|m_p(l) − m| ≤ (W_p_r+1)/2 ⇒ |l − (m−m0)/W_p_r| ≤ (W_p_r+1)/(2·W_p_r), so
+T_l = ceil of that at the MODEL-MINIMUM W_p_r — a per-model static python float
+(from geometry scalars at builder time; cache-stable), conservative for all (v,p),
+with out-of-support taps zero-weighted.  Typical W_p_r ≈ 0.9–1.4 ⇒ T_l ∈ {1, 2}
+(3–5 taps).
+
+**Model and bar**: per-element ≈ T_l× the parallel forward's loads + the inverse
+ALU; anchors: parallel pallas fwd full-grid 2.78 s, XLA cone fwd 19.4 s ⇒ expected
+**2–3× (7–9 s full-grid)**; bar ≥1.5×.  Gates: rel ≤1e-5 vs the XLA cone forward
+(single-shot, both full-grid and subset+band shapes), the PAIR adjoint against the
+inc5 cone back kernel, interpret mode on CPU CI; VCD composition equivalence via
+the occasional convergence gate.  Dispatch (post-spike): cone fwd_pallas /
+fwd_pallas_band through the same geometry-hook pattern as inc5.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
