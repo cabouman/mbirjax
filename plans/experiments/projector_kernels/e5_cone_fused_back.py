@@ -85,9 +85,14 @@ def probe_vector_gather(interpret):
         o_ref[0, :] = x_ref[0, 1, mc]                  # vector gather at fixed (v, c)
     x = jnp.arange(2 * 3 * 8, dtype=jnp.float32).reshape(2, 3, 8)
     idx = jnp.asarray([[0.6, 2.4, 4.5, 7.0]], dtype=jnp.float32)
+    # Triton params are LOAD-BEARING: a bare pallas_call defaults to the Mosaic GPU
+    # backend on Hopper (warpgroup-divisible copy constraints, different lowering) --
+    # the probe must exercise the SAME backend the fused kernel uses.
+    kw = ({} if interpret else
+          {'compiler_params': pltriton.CompilerParams(num_warps=1)})
     call = pl.pallas_call(kern,
                           out_shape=jax.ShapeDtypeStruct((1, 4), jnp.float32),
-                          interpret=interpret)
+                          interpret=interpret, **kw)
     out = np.asarray(jax.jit(call)(x, idx))
     expect = np.asarray([x[0, 1, i] for i in (1, 2, 5, 7)])
     assert np.array_equal(out[0], expect), (out, expect)
