@@ -791,11 +791,13 @@ class ConeBeamModel(TomographyModel):
 
         return vertical_data
 
-    # GRADIENT only: the fused kernel's in-kernel affine-m carries a ~2e-5 Hessian
-    # (squared-weight) error that VCD's grad/Hess division amplifies at low-Hessian
-    # edge voxels -- the inc5 trajectory gate measured 8.5e-3 recon divergence with
-    # cp=2 through the kernel.  The once-per-recon Hessian keeps the XLA path.
-    _PALLAS_BACK_COEFF_POWERS = (1,)
+    # Both powers through the fused kernel.  (A gradient-only interlude on
+    # 2026-07-13 responded to an 8.5e-3 VCD trajectory divergence later root-caused
+    # as INTRINSIC edge-voxel conditioning -- the XLA-vs-XLA view-batch control
+    # showed the same signature, and the Hessian ablation changed nothing.  The
+    # Hessian's own per-call gate is 2.0e-5 against its 1e-4 contract; see the
+    # findings doc's "inc5 VCD divergence" section.)
+    _PALLAS_BACK_COEFF_POWERS = (1, 2)
 
     @staticmethod
     def compute_hfan_data(pixel_indices, single_view_params, projector_params):
