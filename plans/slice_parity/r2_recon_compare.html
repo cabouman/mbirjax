@@ -53,10 +53,10 @@ iteration count; the <i>only</i> difference is the schedule.
 <b>Bottom line:</b> on three real datasets at two sharpness settings, default and
 skip&nbsp;0 are visually indistinguishable at 15 and 20 iterations, and the
 quantitative metrics agree (skip&nbsp;0 ties or very slightly leads in every measured
-cell).  The difference images contain no coherent structure inside the object &mdash;
-only boundary speckle and faint bands at the axial ends and at the cone fan plane,
-all small relative to the image intensity scale.  Dropping the granularity-0
-iteration is safe.
+cell).  Each schedule's difference from the converged reference is the same &mdash; the
+two difference panels in every figure with a reference are identical &mdash; so the
+schedules follow the same convergence path.  Dropping the granularity-0 iteration is
+safe.
 </p>
 
 <h2 id="methods">Data and methods</h2>
@@ -89,33 +89,43 @@ figure title shows the window and the full data min/max.</li>
 
 <h2 id="look">What to look for</h2>
 <p>
-Each figure shows an axial mid-slice (top row) and a coronal mid-cut (bottom row).
-Columns: reference (when available) | default | skip&nbsp;0 | difference
-(skip&nbsp;0&nbsp;&minus;&nbsp;default).  <b>Within</b> a figure, only the schedule
-differs between the default and skip&nbsp;0 columns.  <b>Between</b> figures, the
-sharpness setting and iteration count change, as labeled by the colored chips in each
-figure heading (<span class="chip s10">sharpness 1.0</span> is blue,
-<span class="chip s20">sharpness 2.0</span> is orange; the gray chip gives the
-iteration count).  The grayscale window is fixed across all figures of a dataset (see
-Methods).  The difference panel has its own symmetric limit, printed in its title <b>as a
-percent of the dataset's 99% intensity value</b> &mdash; that percentage is the honest
-size of the largest disagreements (and note it is the limit of the color scale, i.e.
-the extreme of the difference, not its typical value).
+Each figure has two view groups &mdash; an axial mid-slice (top) and a coronal mid-cut
+(bottom).  Within a group, the upper row shows the reconstructions (reference | default
+| skip&nbsp;0) and, <b>directly below the default and skip&nbsp;0 reconstructions</b>,
+their difference from the 150-iteration reference (<i>default&nbsp;&minus;&nbsp;reference</i>,
+<i>skip&nbsp;0&nbsp;&minus;&nbsp;reference</i>).  So each difference image sits under the
+reconstruction it belongs to; there is nothing under the reference itself.  The
+difference images use one shared color scale <b>per dataset</b> (the colorbar at the
+right of each figure), set from the 99th percentile of the whole-volume error so the
+scale is representative; the bright axial-end flash zones exceed it and may clip.
+</p>
+<p>
+<b>Between</b> figures, the sharpness setting and iteration count change, labeled by the
+colored chips in each figure heading (<span class="chip s10">sharpness 1.0</span> is
+blue, <span class="chip s20">sharpness 2.0</span> is orange; the gray chip gives the
+iteration count).  The grayscale recon window is fixed across all figures of a dataset
+(see Methods).  lilly_ds4 at sharpness&nbsp;2.0 has no reference, so it shows the two
+reconstructions only.
 </p>
 <ul>
-<li><b>Interior structure:</b> the decision-relevant question.  Any coherent
-structural difference between default and skip&nbsp;0 inside the object would argue
-against dropping the iteration.  None appears in any panel.</li>
-<li><b>Boundary speckle</b> in the difference images (e.g. rings at the syringe
-barrel): the two runs' subset-noise realizations differing at high-contrast edges,
-not a structural change.</li>
-<li><b>Bands at the axial ends</b> (top/bottom of the coronal cuts): the
-cone-beam flash zones, excluded from the metric and addressed separately by the
-flash-remediation work.</li>
-<li><b>A band at mid-height on lilly_ds4 sharpness 2.0:</b> the cone fan plane
-(center slice).  See the <a href="#zoom">zoom section</a> &mdash; both schedules have
-the same noise spike there; the difference image highlights it only because the two
-runs' noise realizations diverge most where voxels are least anchored.</li>
+<li><b>The two difference panels are the point:</b> <i>default&nbsp;&minus;&nbsp;reference</i>
+and <i>skip&nbsp;0&nbsp;&minus;&nbsp;reference</i> are visually identical in every
+figure &mdash; the two schedules are converging to the same place at the same rate.  Any
+coherent structural difference between them would argue against dropping the iteration;
+none appears.</li>
+<li><b>What the difference panels show</b> is where each reconstruction still differs
+from the converged reference at this iteration count: near-zero (gray) through the
+well-converged interior, with signed error at high-contrast edges and, in the coronal
+cuts, strong bands at the axial ends.</li>
+<li><b>Bands at the axial ends</b> (top/bottom of the coronal cuts): the cone-beam
+flash zones &mdash; large, un-converged, and clipping the diff scale; excluded from the
+metric and addressed separately by the flash-remediation work.</li>
+<li><b>The cone fan-plane (center-slice) effect:</b> on lilly_ds4 sharpness&nbsp;2.0 it
+shows as a mid-height band in the direct <i>skip&nbsp;0&nbsp;&minus;&nbsp;default</i>
+difference in the <a href="#zoom">zoom section</a> below (the sharpness-2.0 figures here
+have no reference, so they show reconstructions only).  Both schedules have the same
+noise spike there; it stands out only because the two runs' noise realizations diverge
+most where voxels are least anchored.</li>
 </ul>
 
 <h2 id="lilly_ds8">lilly_ds8</h2>
@@ -197,9 +207,10 @@ sharpness 2.0 &mdash; image-only there):</p>
 
 <h2 id="zoom">Center-slice (fan-plane) zoom &mdash; lilly_ds4 sharpness 2.0</h2>
 <p>
-The difference band at mid-height in the lilly_ds4 sharpness-2.0 coronal cut sits at
-z&nbsp;&asymp;&nbsp;329&ndash;331: the cone fan plane (the volume midpoint is 333; the
-offset matches the detector row offset).  The rightmost panel below plots per-slice
+In the direct <i>skip&nbsp;0&nbsp;&minus;&nbsp;default</i> difference (third panel, with
+its own colorbar), a band appears at mid-height, z&nbsp;&asymp;&nbsp;329&ndash;331: the
+cone fan plane (the volume midpoint is 333; the offset matches the detector row offset).
+The rightmost panel below plots per-slice
 axial second-difference RMS &mdash; the "slice decoupled from its neighbors" noise
 signature &mdash; for both schedules.  Both show the same sharp spike at the fan
 plane, and the two curves essentially coincide: skip&nbsp;0 is higher by less than 1%
