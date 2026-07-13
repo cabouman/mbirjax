@@ -383,6 +383,23 @@ composed time ≈ 1.2–1.3 s ≈ **8–9×**.  For VCD the point is already moo
 direction: plans amortize across iterations, so fine-tail subset calls see
 near-kernel-level gains regardless — 3.54× is the ONE-SHOT floor, not the ceiling.
 
+## E4 preview, corrected — the retrace artifact (2026-07-12; job 13486103)
+
+The 1.83 s weights cost in the first composed run was a BENCH ARTIFACT: the builder
+constructed a fresh `jax.jit` per chunk → full host retrace each call (the module-level
+centers jit doing near-identical work cost 6 ms — the tell).  With the builder hoisted
+(traced once, the production structure): **weights 1,828 → 7 ms (261×); COMPOSED BACK
+9.07× (10.48 s → 1.16 s); Hessian 9.11×; values unchanged (5.5e-7).**  Kernel = 96% of
+composed time; all plan+driver overheads ≈ 44 ms.  Consequences: (1) the one-shot back
+number is 9×, matching the projection; (2) the plan-builder cost floor is ~1 ms/chunk —
+the fwd break-even drops to a few reuses pending the same hoisted-jit measurement of the
+fwd stream builder (sort included, expect ~2–5 ms/chunk); (3) the "H100 precompute
+oddity" is CLOSED (host tracing, not device — also explains the M3 being faster); (4)
+the in-kernel-weights design change is now OPTIONAL (a memory nicety: 0.10-shard plan vs
+0.19), not performance-critical.  Lesson (the eager-gather episode's sibling): benches
+that construct jits per call measure TRACING, not the operation — hoist and warm before
+attributing.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).

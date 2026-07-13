@@ -102,6 +102,17 @@ recomputed per call or host-cached and streamed (~6 ms over PCIe); caching all 1
 subsets on-device (19 GB) is out at capacity.  A known compression (store per-pixel
 geometry, derive tap weights in-kernel) would roughly halve this if it ever matters.
 
+## The composed preview (added 2026-07-12, post-Q&A)
+
+Wiring the back kernel into a full production-shaped call (all pixels × all views,
+every cost charged) first measured 3.54× — and the shortfall taught the campaign's
+final lesson twice over: the limiter was a bench artifact (a per-call-constructed jit
+re-TRACING the weight builder every chunk; the same bug inflated the earlier
+"precompute oddity").  With the builder hoisted — the production structure — the
+composed result is **9.07× end-to-end for one-shot back projection (10.5 s → 1.16 s),
+9.11× for the Hessian**, kernel-bound at 96%, values unchanged.  VCD fine-tail calls,
+which amortize their plans across iterations, sit closer to the kernel-level 16–26×.
+
 ## E4 agreements (Greg, 2026-07-12)
 
 1. Precompute placement: alongside `n_p_centers` in the public wrappers (same eager

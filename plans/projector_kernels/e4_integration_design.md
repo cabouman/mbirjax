@@ -145,16 +145,15 @@ Two new TilePolicy fields: `fwd_pallas`, `back_pallas` (int flags like
   projected 8–9× post-fix) applies at every level.
 - **FWD: break-even per (subset, view-chunk) ≈ build_cost / (t_xla − t_pallas).**  Per
   8k-pixel chunk the kernel saves ~0.3 ms; the bench builder cost (~145 ms) makes that
-  ~500 reuses — but the builder cost is now attributed to a BENCH ARTIFACT (a fresh
-  jax.jit constructed per call → full retrace each time; the module-level centers jit
-  doing near-identical work costs 6 ms vs the per-call weights jit's 1,828 ms in the
-  composed breakdown — verification job 13486103 in flight).  At the builder's
-  arithmetic floor (~2–5 ms/chunk: one CUB sort of ~3M pairs + the weight formula),
-  break-even ≈ **6–15 reuses**: the fine tail (11–45 iterations at granularity 7) pays
-  clearly; one-shot coarse levels are marginal-to-negative and stay on XLA — which is
-  also where the fwd kernel is weakest (skew), so the policy loses nothing.  If the
-  measured builder lands ≤1 ms, one-shot fwd approaches break-even and the policy can
-  widen; the number gets pinned in the E4 A/B either way.
+  ~500 reuses — RESOLVED (job 13486103): the builder cost was a bench artifact (fresh
+  jax.jit per call → host retrace; hoisted, the back weights builder measures **~1 ms/
+  chunk**, and the composed back went 3.54× → **9.07×** with the kernel at 96% of the
+  time).  The fwd stream builder (sort included) gets the same hoisted-jit measurement
+  in E4 — expected ~2–5 ms/chunk → break-even ≈ **6–15 reuses**: the fine tail pays
+  clearly; one-shot coarse fwd stays on XLA (also its weak case, skew) unless the
+  measured builder lands ≤1 ms, in which case the policy can widen.  The in-kernel-
+  weights variant (§2) is retained as a MEMORY option (0.10- vs 0.19-shard plans), no
+  longer performance-motivated.
 
 ## 7. Open items folded into the E4 work
 
