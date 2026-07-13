@@ -201,26 +201,78 @@ projection already shipped exactly this trade in E4 increment 1 (atomic adds, 9.
 and the float-gate policy (lessons.md §2) was designed for it.  MBIRJAX_DISABLE_PALLAS
 remains the escape hatch.
 
-## Open follow-ups (not this session's scope)
+## Follow-up: the XLA forward cliff — RESOLVED (job 13505779, `fwd_guard_cliff.py`)
 
-1. **XLA forward band≥2048 cliff** (Read 2): ~50× per-work penalty on the XLA path
-   at ≥2048 slices, band-categorical, NOT the 2^31 boundary (ablated), values
-   correct.  Hits XLA-fallback users (multi-device, non-H100, kill switch) on
-   2048-row parallel-beam problems today.  Next discriminator: GPU HLO dump of the
-   band=1024 vs band=2048 forward programs (fusion/materialization threshold is the
-   leading hypothesis).
+The Read-2 cliff is fully localized.  Grid: band ∈ {1024, 1152, 1280, 1536, 1792,
+2048, 3072, 4096} × channel reduction ∈ {sorted segment-sum, scatter-add}, at fixed
+P=8192, views=1024, channels=1024, XLA path (`MBIRJAX_DISABLE_PALLAS=1`); the
+reduction is forced via `model.tiles._replace(sort_by_channel=…)` + a projector
+rebuild.  Per-band-element cost vs band=1024 (a flat curve = linear scaling, a jump
+= cliff):
+
+| band | 1024 | 1152 | 1280 | 1536 | 1792 | 2048 | 3072 | 4096 |
+|---|---|---|---|---|---|---|---|---|
+| **sorted** | 1.00 | 1.13 | 1.01 | **18.5** | 24.2 | 22.1 | 42.8 | 59.5 |
+| **scatter-add** | 1.00 | 1.01 | 1.01 | 1.01 | 1.01 | 1.01 | 1.01 | 1.00 |
+
+sorted-vs-scatter values agree at 2–3e-7 everywhere (apples-to-apples).  Three
+findings:
+
+1. **Cause: the sorted segment-sum reduce alone** (`_channel_reduce_sort_segsum` in
+   projectors.py).  Scatter-add (`_channel_reduce_scatter_add`) is perfectly linear
+   in band from 1024 to 4096 — no cliff.  So the base forward kernel and everything
+   upstream are fine; the cliff is entirely in `lax.sort_key_val` + `segment_sum`
+   over wide (`psf_width·P`, band) rows.
+2. **Threshold: onset between band 1280 and 1536, NOT 2048.**  1280 is still linear
+   (1.01×); 1536 is already 18.5×.  So it is a mid-range limit (~1300–1500 columns),
+   not a power-of-two tiling boundary — most consistent with a register/vectorization
+   width ceiling in the segmented-reduce lowering (1536 f32 = 6 KiB per reduced row).
+3. **Not materialization.**  Peak memory is identical between the two reductions
+   (16.17 vs 16.13 GB at band=2048) and grows smoothly (linear in band, = the
+   sinogram) for both — no jump at the threshold.  The cliff is a compute-pattern
+   (tiling/vectorization) collapse, not a temp blow-up.  No HLO dump is needed;
+   this + the flat scatter-add curve already pin it.
+
+**The crossover (fix-design curve):** sorted is ~2.7–2.9× FASTER than scatter for
+band ≤ 1280 (which is why it is the GPU default), and 6–20× SLOWER for band ≥ 1536.
+Clean crossover in (1280, 1536].
+
+### Proposed fix (minimal, robust — awaiting Greg)
+
+**Cap the sorted reduce by column width.**  Add `SORTED_CHANNEL_REDUCE_MAX_COLS`
+(~1280, the last measured-safe point, leaving the unmeasured 1281–1535 gap on the
+safe side) next to the existing `_MIN_COLS`, and gate at the ONE reduction site
+`channel_scatter_reduce`:
+
+```python
+if use_sorted and values.shape[1] <= SORTED_CHANNEL_REDUCE_MAX_COLS:
+    return _channel_reduce_sort_segsum(...)
+return _channel_reduce_scatter_add(...)
+```
+
+`values.shape[1]` (= num_cols = the reduce's row width) is static at trace time, so
+this is a compile-time branch, value-equal (both reduces agree at 2e-7).  Why the
+reduce site and not `_select_tile_policy`: the policy bakes ONE `sort_by_channel`
+flag, but the single-device XLA forward feeds it the FULL num_slices while the
+multi-device banded path feeds ≤256 — only a per-call `values.shape[1]` check sees
+the width each caller actually passes, so it protects every caller and every
+geometry automatically (cone/multiaxis/translation forward share this reduce).  It
+touches only `projectors.py` (my territory, not `_pallas_kernels.py`), plus a test.
+
+**Exposure this closes:** single-device on a non-allowlisted GPU or under the kill
+switch (pallas off), parallel-beam recon with ≥~1536 slices — the large-recon
+fallback regime; e.g. at band=2048 the forward reduce drops 5053 → 662 ms (7.6×).
+Everything on the shipped hot paths is unaffected: single-device H100 forward is
+pallas; the multi-device banded forward feeds 256 cols (< the cap), so it keeps
+sorted unchanged.
+
 2. Whether the multi-device banded forward (wave 2, the other session) inherits the
    no-guard conclusion — its band is `fwd_slice_band` = 256, BELOW sweep 3's corner
    cells; sweep 3's band-256 column is the relevant evidence.
 
 ## Library-change requests for the kernel session (none applied here)
 
-None so far: the sweep needed no `_pallas_kernels.py` changes (the driver's
-shape-static design held from P=2048 to full grid; grid segment counts at full-grid
-P≈823k are ~38k < the 65535 CUDA grid-dim bound, checked before sweep 2).
-
-## Library-change requests for the kernel session (none applied here)
-
-None so far: the sweep needed no `_pallas_kernels.py` changes (the driver's
-shape-static design held to P=49152; grid segment counts at full-grid P≈823k are
-~38k < the 65535 CUDA grid-dim bound, checked before sweep 2).
+None: the sweeps needed no `_pallas_kernels.py` changes (the driver's shape-static
+design held from P=2048 to full grid; grid segment counts at full-grid P≈823k are
+~38k < the 65535 CUDA grid-dim bound).  The proposed cliff fix is also outside
+`_pallas_kernels.py` (it lives in `projectors.channel_scatter_reduce`).
