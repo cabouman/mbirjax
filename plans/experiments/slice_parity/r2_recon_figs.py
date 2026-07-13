@@ -1,13 +1,15 @@
 """Build the default-vs-skip-0 head-to-head slice figures from the volumes that
 r2_recon_capture.py staged (run on gautschi AFTER the capture job; CPU-only).
 
-For each (dataset, sharpness, iteration): a figure with two view rows (axial
-mid-slice, coronal mid-cut) and columns [150-it reference (if present) | default |
-skip 0 | difference].  The grayscale window is FIXED PER DATASET: the 1st-99th
-percentile of that dataset's sharpness-1.0 reference volume; the figure title shows
-the window and the full data range.  The difference panel is symmetric with its limit
-shown as a percent of the dataset's 99% value.  Also builds the center-slice
-(fan-plane) zoom for lilly_ds4 s2.0.
+For each (dataset, sharpness, iteration): two view groups (axial mid-slice, coronal
+mid-cut).  Each group is a recon row [reference | default | skip 0] over a
+difference row [ (blank) | default − reference | skip 0 − reference ] — so each
+schedule's difference from the 150-iteration reference sits directly under that
+schedule's reconstruction.  Grayscale window is FIXED PER DATASET (1st-99th percentile
+of the sharpness-1.0 reference); the signed difference images share ONE symmetric color
+scale PER DATASET (a colorbar is drawn on each figure).  Cases with no reference
+(lilly_ds4 s2.0) show recons only.  Also builds the center-slice (fan-plane) zoom for
+lilly_ds4 s2.0 (layout unchanged, colorbar added).
 
 Outputs PNGs to OUT_DIR only.  The narrative page is hand-maintained at
 plans/slice_parity/r2_recon_compare.html and published (with these figures) at
@@ -35,11 +37,15 @@ FIG_ITERS = [15, 20]
 ARMS = ['D0_default', 'D1_g2start']
 ARM_LABELS = {'D0_default': 'default [0,2,4,6,7]',
               'D1_g2start': 'skip 0 [2,4,6,7]'}
+DIFF_LABELS = {'D0_default': 'default − reference',
+               'D1_g2start': 'skip 0 − reference'}
 WINDOW_PCT = (1, 99)                # fixed per-dataset window percentiles
+DIFF_PCT = 99                       # per-dataset diff scale = this pct of |axial diff|
+AXIAL, CORONAL = 'axial (z mid)', 'coronal (y mid)'
 
 
 def dataset_window(case):
-    """Per-dataset display window from the sharpness-1.0 reference volume."""
+    """Per-dataset grayscale window from the sharpness-1.0 reference volume."""
     ref = np.load(os.path.join(REF_DIRS[case], 'ref_sharp1.0.npy'))
     vmin, vmax = np.percentile(ref, WINDOW_PCT)
     return float(vmin), float(vmax), float(ref.min()), float(ref.max())
@@ -47,50 +53,108 @@ def dataset_window(case):
 
 def mid_slices(vol):
     """(axial mid-slice, coronal mid-cut) as 2-D arrays with z vertical for coronal."""
-    axial = vol[:, :, vol.shape[2] // 2]
-    coronal = vol[:, vol.shape[1] // 2, :].T      # (slices, rows): z runs vertically
-    return {'axial (z mid)': axial, 'coronal (y mid)': coronal}
+    return {AXIAL: vol[:, :, vol.shape[2] // 2],
+            CORONAL: vol[:, vol.shape[1] // 2, :].T}   # (slices, rows): z vertical
 
 
-def build_fig(case, s, it, window, out_png):
+def load_mids(case):
+    """Load every needed volume ONCE, keeping only its 2-D mid-slices (NFS-friendly).
+
+    Returns recon[(s, it, arm)] -> {view: 2-D} and ref[s] -> {view: 2-D} or None.
+    """
+    recon = {}
+    for s in SHARPNESS_LIST:
+        for it in FIG_ITERS:
+            for arm in ARMS:
+                vol = np.load(os.path.join(STAGE, f'{case}_{arm}_s{s}_it{it}.npy'))
+                recon[(s, it, arm)] = mid_slices(vol)
+    ref = {}
+    for s in SHARPNESS_LIST:
+        p = os.path.join(REF_DIRS[case], f'ref_sharp{s}.npy')
+        ref[s] = mid_slices(np.load(p)) if os.path.exists(p) else None
+    return recon, ref
+
+
+def dataset_diff_limit(recon, ref):
+    """One symmetric color limit per dataset for the (recon − reference) images, set
+    from the interior axial mid-slices (so the axial-end flash zones, which are much
+    larger, may clip rather than wash out the interior)."""
+    vals = []
+    for s in SHARPNESS_LIST:
+        if ref[s] is None:
+            continue
+        for it in FIG_ITERS:
+            for arm in ARMS:
+                d = recon[(s, it, arm)][AXIAL] - ref[s][AXIAL]
+                vals.append(np.percentile(np.abs(d), DIFF_PCT))
+    return max(vals) if vals else 1e-6
+
+
+def _coronal_ratio(mids):
+    a, c = mids[AXIAL].shape, mids[CORONAL].shape
+    return c[0] / a[0]                       # tall coronal -> >1
+
+
+def build_fig(case, s, it, window, difflim, recon, ref, out_png):
     vmin, vmax, dmin, dmax = window
-    vols = {a: np.load(os.path.join(STAGE, f'{case}_{a}_s{s}_it{it}.npy'))
-            for a in ARMS}
-    ref_path = os.path.join(REF_DIRS[case], f'ref_sharp{s}.npy')
-    ref = np.load(ref_path) if os.path.exists(ref_path) else None
+    d0 = recon[(s, it, 'D0_default')]
+    d1 = recon[(s, it, 'D1_g2start')]
+    rmids = ref[s]
+    cr = _coronal_ratio(d0)
 
-    cols = ([('reference (150 it)', ref)] if ref is not None else []) + \
-           [(ARM_LABELS[a], vols[a]) for a in ARMS] + [('diff', None)]
-    views = mid_slices(vols[ARMS[0]]).keys()
-    fig, axes = plt.subplots(2, len(cols), figsize=(3.2 * len(cols), 6.6))
-    for i, view in enumerate(views):
-        d0v = mid_slices(vols[ARMS[0]])[view]
-        d1v = mid_slices(vols[ARMS[1]])[view]
-        for j, (label, vol) in enumerate(cols):
-            ax = axes[i, j]
-            ax.set_xticks([]); ax.set_yticks([])
-            if label == 'diff':
-                diff = d1v - d0v
-                lim = np.percentile(np.abs(diff), 99.9) or 1e-6
-                ax.imshow(diff, cmap='coolwarm', vmin=-lim, vmax=lim)
-                ax.set_title(f'skip 0 − default '
-                             f'(±{lim / vmax * 100:.1f}% of the 99% value)',
-                             fontsize=9)
-            else:
-                ax.imshow(mid_slices(vol)[view], cmap='gray', vmin=vmin, vmax=vmax)
-                ax.set_title(label if i == 0 else '', fontsize=9)
-            if j == 0:
+    if rmids is None:                        # no reference -> recons only
+        fig, axes = plt.subplots(2, 2, figsize=(6.6, 3.4 * (1 + cr)),
+                                 gridspec_kw={'height_ratios': [1, cr]})
+        for i, view in enumerate((AXIAL, CORONAL)):
+            for j, (arm, mids) in enumerate((('D0_default', d0), ('D1_g2start', d1))):
+                ax = axes[i, j]; ax.set_xticks([]); ax.set_yticks([])
+                ax.imshow(mids[view], cmap='gray', vmin=vmin, vmax=vmax)
+                if i == 0:
+                    ax.set_title(ARM_LABELS[arm], fontsize=9)
+                if j == 0:
+                    ax.set_ylabel(view, fontsize=9)
+        fig.suptitle(f'{case}  sharpness {s}  —  {it} iterations  (no reference: '
+                     f'reconstructions only)\nwindow [1%, 99%] = [{vmin:.3g}, '
+                     f'{vmax:.3g}],  data range [{dmin:.3g}, {dmax:.3g}]', fontsize=11)
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.savefig(out_png, dpi=110); plt.close(fig)
+        return
+
+    # With a reference: recon row over diff row, for each of the two views.
+    fig, axes = plt.subplots(4, 3, figsize=(9.6, 4.7 * (1 + cr)),
+                             gridspec_kw={'height_ratios': [1, 1, cr, cr]})
+    recon_cols = [('reference (150 it)', rmids), (ARM_LABELS['D0_default'], d0),
+                  (ARM_LABELS['D1_g2start'], d1)]
+    diff_im = None
+    for vi, view in enumerate((AXIAL, CORONAL)):
+        rr, rd = vi * 2, vi * 2 + 1          # recon row, diff row
+        for c, (label, mids) in enumerate(recon_cols):
+            ax = axes[rr, c]; ax.set_xticks([]); ax.set_yticks([])
+            ax.imshow(mids[view], cmap='gray', vmin=vmin, vmax=vmax)
+            if rr == 0:
+                ax.set_title(label, fontsize=9)
+            if c == 0:
                 ax.set_ylabel(view, fontsize=9)
+        axes[rd, 0].axis('off')              # nothing under the reference
+        for c, (arm, mids) in enumerate((('D0_default', d0), ('D1_g2start', d1)),
+                                        start=1):
+            ax = axes[rd, c]; ax.set_xticks([]); ax.set_yticks([])
+            diff_im = ax.imshow(mids[view] - rmids[view], cmap='coolwarm',
+                                vmin=-difflim, vmax=difflim)
+            ax.set_title(DIFF_LABELS[arm], fontsize=9)
+    cb = fig.colorbar(diff_im, ax=axes.ravel().tolist(), location='right',
+                      shrink=0.45, aspect=40, pad=0.02)
+    cb.set_label(f'recon − reference   (±{difflim:.3g} = ±{difflim / vmax * 100:.0f}% '
+                 f'of the 99% value; axial-end flash zones may clip)', fontsize=9)
     fig.suptitle(f'{case}  sharpness {s}  —  {it} iterations   |   '
                  f'window [1%, 99%] = [{vmin:.3g}, {vmax:.3g}],  '
                  f'data range [{dmin:.3g}, {dmax:.3g}]', fontsize=11)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(out_png, dpi=110)
-    plt.close(fig)
+    fig.savefig(out_png, dpi=110, bbox_inches='tight'); plt.close(fig)
 
 
 def build_zoom(out_png):
-    """Center-slice (fan-plane) zoom for lilly_ds4 s2.0 at 15 iterations."""
+    """Center-slice (fan-plane) zoom for lilly_ds4 s2.0 at 15 iterations (layout
+    unchanged from before; a colorbar is added to the difference panel)."""
     d0 = np.load(f'{STAGE}/lilly_ds4_D0_default_s2.0_it15.npy')
     d1 = np.load(f'{STAGE}/lilly_ds4_D1_g2start_s2.0_it15.npy')
     n0, n1, nz = d0.shape
@@ -106,7 +170,7 @@ def build_zoom(out_png):
         ax2[name] = [np.sqrt(np.mean(
             ((v[:, :, z] - 0.5 * (v[:, :, z - 1] + v[:, :, z + 1]))[disk]) ** 2)) * 1e3
             for z in zs]
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4.2))
+    fig, axes = plt.subplots(1, 4, figsize=(16.5, 4.2))
     for ax, (label, sl) in zip(axes[:2], [('default [0,2,4,6,7]', sl0),
                                           ('skip 0 [2,4,6,7]', sl1)]):
         ax.imshow(sl, cmap='gray', vmin=vmin, vmax=vmax)
@@ -115,10 +179,11 @@ def build_zoom(out_png):
     diff = sl1 - sl0
     lim = np.percentile(np.abs(diff), 99.9)
     ds_vmax = dataset_window('lilly_ds4')[1]
-    axes[2].imshow(diff, cmap='coolwarm', vmin=-lim, vmax=lim)
+    im = axes[2].imshow(diff, cmap='coolwarm', vmin=-lim, vmax=lim)
     axes[2].set_xticks([]); axes[2].set_yticks([])
     axes[2].set_title(f'skip 0 − default (±{lim / ds_vmax * 100:.1f}% '
                       f'of the 99% value)', fontsize=9)
+    fig.colorbar(im, ax=axes[2], fraction=0.046, pad=0.04)
     axes[3].plot(zs, ax2['default'], label='default', lw=1.2)
     axes[3].plot(zs, ax2['skip 0'], label='skip 0', lw=1.2, ls='--')
     axes[3].axvline(zc, color='gray', lw=0.7, ls=':')
@@ -129,20 +194,23 @@ def build_zoom(out_png):
     fig.suptitle(f'lilly_ds4 s2.0, 15 iterations — center-slice (fan-plane) zoom, '
                  f'tight window [{vmin:.3g}, {vmax:.3g}]', fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.93])
-    fig.savefig(out_png, dpi=110)
-    plt.close(fig)
+    fig.savefig(out_png, dpi=110); plt.close(fig)
 
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     for case in CASES:
         window = dataset_window(case)
+        recon, ref = load_mids(case)
+        difflim = dataset_diff_limit(recon, ref)
         print(f'{case}: window [1%,99%] = [{window[0]:.4g}, {window[1]:.4g}], '
-              f'range [{window[2]:.4g}, {window[3]:.4g}]', flush=True)
+              f'range [{window[2]:.4g}, {window[3]:.4g}], diff scale ±{difflim:.4g}',
+              flush=True)
         for s in SHARPNESS_LIST:
             for it in FIG_ITERS:
                 name = f'{case}_s{s}_it{it}.png'
-                build_fig(case, s, it, window, os.path.join(OUT_DIR, name))
+                build_fig(case, s, it, window, difflim, recon, ref,
+                          os.path.join(OUT_DIR, name))
                 print(f'built {name}', flush=True)
     build_zoom(os.path.join(OUT_DIR, 'lilly_ds4_s2.0_it15_centerzoom.png'))
     print('built lilly_ds4_s2.0_it15_centerzoom.png', flush=True)
