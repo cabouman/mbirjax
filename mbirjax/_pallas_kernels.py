@@ -87,6 +87,13 @@ from jax.experimental.pallas import triton as pltriton
 # subset shape.  Revalidate per arch before extending the allowlist.
 ROW_CHUNK = 256
 NUM_WARPS = 2
+# Cap on the back driver's view chunk, independent of the (XLA-tuned) TilePolicy
+# back_view_batch: the per-chunk weights transient is chunk*T*P*4 B, which at the
+# SHARDED policy's view batch of 512 reaches ~2.4x the sino shard per owner
+# (T*pi/4, size- and n-independent -- the w2_inc3 gate measured +5.4 GB at 1024^3
+# n=2).  Chunking itself costs ~nothing (increment 1 gated 9.17x running 8 chunks),
+# so 128 holds the transient at <= 0.6x shard at production shapes.
+BACK_VIEW_CHUNK_CAP = 128
 # Forward (e3_hfan_pallas_v3.py sweep): segment cap 64 balances the tap walk against
 # split-segment atomics at subset uniformity; num_warps=1 (per-program work is one
 # warp's worth).  All pixel counts route here (no size guard -- see the module
@@ -284,7 +291,7 @@ def back_project_single_device(model, sinogram, pixel_indices, coeff_power=1,
     psf_radius = pp.geometry_params.psf_radius
     num_pixels = int(pixel_indices.shape[0])
 
-    view_chunk = min(model.tiles.back_view_batch, num_views)
+    view_chunk = min(model.tiles.back_view_batch, BACK_VIEW_CHUNK_CAP, num_views)
     kern = _make_back_call(view_chunk, num_channels, num_pixels, rows_padded,
                            psf_radius, interpret=interpret)
 
