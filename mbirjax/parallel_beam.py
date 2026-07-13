@@ -115,9 +115,12 @@ class ParallelBeamModel(TomographyModel):
             fwd_slice_band=self._FWD_SLICE_BAND_GPU,
             fwd_pixel_batch=self._FWD_PIXEL_BATCH_GPU,
             sort_by_channel=balanced_band >= SORTED_CHANNEL_REDUCE_MIN_COLS,
-            # fwd pallas serves single-device subset-sized calls only (the wrapper's
-            # pixel-count guard applies the fine-tail policy; multi-device forward goes
-            # through the banded per-owner path, wave 2).
+            # fwd pallas serves ALL single-device forward calls, fine tail through
+            # full grid: the 2026-07-13 P x band sweep found no crossover anywhere
+            # (min 1.34x, full grid 3.2-3.8x; plans/projector_kernels/
+            # fwd_guard_sweep.md), so the wrapper has no pixel-count guard.
+            # Multi-device forward still goes through the banded per-owner path
+            # (wave 2).
             fwd_pallas=_pallas_kernels.is_available() and n_devices == 1,
             # Also n=1-gated: the back dispatch lives in the single-device driver,
             # which multi-device recons never reach (they use the banded path), so an

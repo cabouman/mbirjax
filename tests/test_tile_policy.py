@@ -345,7 +345,6 @@ class TestTilePolicy(unittest.TestCase):
             self.assertNotIn('pallas', model.device_summary)
         else:
             self.assertIn('pallas', model.device_summary)
-        self.assertEqual(kernels['fwd_pallas_max_pixels'], model.tiles.fwd_pixel_batch)
 
     def test_projection_runs_with_replaced_tiles(self):
         # End-to-end smoke: an overridden tile policy still projects correctly (values equal

@@ -428,8 +428,7 @@ class TomographyModel(ParameterHandler):
             'kernels': {'pallas_available': pallas_ok,
                         'pallas_status': pallas_reason,
                         'back_pallas': bool(getattr(self.tiles, 'back_pallas', False)),
-                        'fwd_pallas': bool(getattr(self.tiles, 'fwd_pallas', False)),
-                        'fwd_pallas_max_pixels': self.tiles.fwd_pixel_batch},
+                        'fwd_pallas': bool(getattr(self.tiles, 'fwd_pallas', False))},
             'jit_cache': {'persistent_cache_dir': jax.config.jax_compilation_cache_dir},
         }
         if print_results:
@@ -531,8 +530,8 @@ class TomographyModel(ParameterHandler):
             # Pallas custom-kernel paths (the 2026-07 GPU-headroom campaign; see
             # mbirjax/_pallas_kernels.py).  Off in the base policy: geometries enable
             # them only where measured (ParallelBeamModel, GPU, allowlisted arch) --
-            # the platform-conditional-kernel precedent.  fwd applies only to
-            # subset-sized calls (the wrapper's pixel-count guard).
+            # the platform-conditional-kernel precedent.  When set, fwd serves ALL
+            # pixel counts (no guard -- plans/projector_kernels/fwd_guard_sweep.md).
             fwd_pallas=False,
             back_pallas=False,
             sort_by_channel=False,

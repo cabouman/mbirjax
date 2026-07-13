@@ -510,13 +510,17 @@ class Projectors:
             num_views_owned = num_owned(owned_view_indices)
             view_batch = tm.tiles.fwd_view_batch
 
-            # Pallas custom-kernel path for SUBSET-SIZED calls (one pixel batch -- the
-            # VCD fine tail, the measured 2.13x shape; see _pallas_kernels.py).  Larger
-            # calls keep the XLA sorted reduce below (its full-grid win is smaller and
-            # the python-loop driver overhead would erode it).  Value-equal up to float
-            # summation order (gated in tests/test_pallas_kernels.py).
-            if (getattr(tm.tiles, 'fwd_pallas', False)
-                    and int(pixel_indices.shape[0]) <= tm.tiles.fwd_pixel_batch):
+            # Pallas custom-kernel path for EVERY pixel count when the policy enables it
+            # (single device, allowlisted GPU -- see parallel_beam._select_tile_policy).
+            # The former pixel-count guard (<= fwd_pixel_batch) is gone: the 2026-07-13
+            # P x band sweep measured pallas faster at all 70 cells from P=2048 through
+            # full grid (min 1.34x, >=3x for P >= 24576, full grid 3.2-3.8x) -- see
+            # plans/projector_kernels/fwd_guard_sweep.md.  Value-equal up to float
+            # summation order (atomic adds; gated in tests/test_pallas_kernels.py), so
+            # full-grid forward is run-to-run noisy at the ~1e-6 relative level, like
+            # the pallas back projector.  fwd_pixel_batch below remains the XLA
+            # fallback path's pixel batching.
+            if getattr(tm.tiles, 'fwd_pallas', False):
                 from mbirjax import _pallas_kernels
                 return _pallas_kernels.forward_project_subset(
                     tm, voxel_values, pixel_indices,

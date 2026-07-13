@@ -134,6 +134,40 @@ def test_fwd_subset_matches_xla(band):
     assert _rel_max_err(out, jnp.asarray(ref)) < REL_TOL
 
 
+def test_wrapper_dispatches_pallas_above_pixel_batch(monkeypatch):
+    """The public wrapper must route EVERY pixel count to the pallas driver when the
+    policy flag is set -- the former subset-size guard (P <= fwd_pixel_batch) was
+    REMOVED after the 2026-07-13 P x band sweep measured pallas faster at all 70
+    cells through full grid (plans/projector_kernels/fwd_guard_sweep.md).  The call
+    is forced ABOVE fwd_pixel_batch (via a lowered batch), so a reintroduced guard
+    would fail the dispatch assertion, and values must still match the XLA path."""
+    model = _make_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+    rng = np.random.default_rng(7)
+    values = jnp.asarray(rng.random((len(idx), recon_shape[2]), dtype=np.float32))
+
+    # XLA reference through the same wrapper (flag off; tiles are read at call time).
+    model.tiles = model.tiles._replace(fwd_pallas=False)
+    ref = model.projector_functions.sparse_forward_project(values, idx)
+
+    # Spy on the driver so CPU CI runs it in interpret mode and the dispatch is
+    # observable (the wrapper resolves the module attribute at call time).
+    seen = {}
+    real = _pallas_kernels.forward_project_subset
+
+    def spy(tm, vals, pix, owned_view_indices=()):
+        seen['num_pixels'] = int(pix.shape[0])
+        return real(tm, vals, pix, owned_view_indices=owned_view_indices,
+                    interpret=_interpret())
+
+    monkeypatch.setattr(_pallas_kernels, 'forward_project_subset', spy)
+    model.tiles = model.tiles._replace(fwd_pallas=True, fwd_pixel_batch=64)
+    out = model.projector_functions.sparse_forward_project(values, idx)
+    assert seen['num_pixels'] == len(idx) > model.tiles.fwd_pixel_batch
+    assert _rel_max_err(out, jnp.asarray(ref)) < REL_TOL
+
+
 def test_fwd_view_chunking_consistent():
     """Chunked (small fwd_view_batch) and single-chunk forward drivers must agree."""
     model = _make_model()
