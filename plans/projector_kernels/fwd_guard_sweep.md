@@ -1,8 +1,9 @@
 # Forward-kernel dispatch guard: P × band sweep (fwd_guard)
 
-**Status: sweep 1 COMPLETE (job 13497787, 2026-07-13) — no knee found in range;
-sweep 2 (full-grid extension + views ablation) running.  Guard proposal pending
-sweep 2 + Greg approval.**
+**Status: sweeps 1–2 COMPLETE (jobs 13497787 / 13497833, 2026-07-13) — no knee
+found ANYWHERE, pallas ≥3.1× through full grid; the band=2048 XLA cliff is NOT the
+2^31 boundary (views ablation refuted it).  Sweep 3 (small-band corner) running.
+Guard proposal drafted below, pending sweep 3 + Greg approval.**
 
 ## Question
 
@@ -58,19 +59,23 @@ mild slope change, invisible in the ratio.  Consequence: the guard cannot be der
 from L2 capacity; the remaining question is whether the gap persists to full-grid P
 (~823k at this geometry) — sweep 2.
 
-### Read 2: the band=2048 XLA column is a separate pathology, likely the 2^31 boundary
+### Read 2: the band=2048 XLA column is a separate pathology — 2^31 hypothesis REFUTED
 
 Band=2048's XLA per-pixel slope (644 µs/px) is **58×** band=1024's — categorical at
-every P, while pallas scales smoothly (1.94× slope for 2× band).  At views=1024,
-band=2048, channels=1024 the sinogram element count is EXACTLY 2^31; the hypothesis
-is XLA switching the forward program's gather/scatter/sort onto 64-bit-index slow
-paths (the lessons.md §4 boundary class — here a silent PERFORMANCE face, values
-still gate PASS at 2e-7..7e-7).  Sweep 2's discriminator: views=512 (element count
-2^30, band unchanged) — if per-work cost snaps back in line, it's the index space,
-not the band.  Either way the guard conclusion is unaffected (pallas wins the column
-by 62–168×); but the attribution matters for the XLA fallback path's users
-(multi-device, non-allowlisted arch), where crossing 2^31 sino elements would mean a
-~50× forward slowdown TODAY.
+every P, while pallas scales smoothly (1.94× slope for 2× band).  First hypothesis:
+at views=1024, band=2048, channels=1024 the sinogram element count is EXACTLY 2^31,
+suggesting 64-bit-index slow paths (the lessons.md §4 class, a silent PERFORMANCE
+face).  Sweep 2's views=512 ablation REFUTED it: at 2^30 elements (band unchanged)
+the XLA wall halved exactly (5063 → 2517 ms, ratio 0.497; the band=1024 control also
+halved, 114.5 → 57.4 ms), so the per-work cliff is fully intact below 2^31.  The
+cliff is genuinely BAND-categorical in the XLA forward program (present at
+band=2048, absent at ≤1024, at any views/element count).  Most plausible mechanism:
+a fusion/materialization threshold in the sorted-channel-reduce lowering (a
+band-wide per-tap intermediate that stays fused at ≤1024 columns and materializes at
+2048); the discriminator would be an HLO dump of the two programs — DEFERRED, it
+does not affect the guard (pallas wins the column by 62–168×).  It DOES matter for
+whoever runs the XLA fallback (multi-device, non-allowlisted arch, kill switch) on
+≥2048-slice parallel-beam problems — flagged as follow-up.
 
 ### Memory
 
@@ -81,21 +86,87 @@ XLA peaks match pallas at small P but jump ~+50% in the P=12288/16384 window (e.
 view-chunking threshold (256 MB) kicks in at P ≥ ~24576.  No cell approached the
 80 GB card.
 
-## Sweep 2 (running)
+## Sweep 2 results (job 13497833): the win persists to FULL GRID
 
-`fwd_guard_sweep2.py`: P ∈ {98304, 196608, 393216, 786432, full≈823k} at bands
-512/1024 (both impls, same gates); band=2048 single point P=98304; views ablation
-(views=512, P=8192) at bands 1024 (control) and 2048 (discriminator).
+`fwd_guard_sweep2.py`: P extension at bands 512/1024, band=2048 single point, views
+ablation.  All 13 pairs value-gated PASS:
 
-## Proposed guard
+| band | P: 98304 | 196608 | 393216 | 786432 | full (821,904) |
+|---|---|---|---|---|---|
+| 512  | 5.79 | 5.68 | 4.70 | 3.73 | **3.76** |
+| 1024 | 5.72 | 4.84 | 3.69 | 3.09 | **3.17** |
+| 2048 | 138.3 | — | — | — | — |
 
-(pending sweep 2 — if the win persists to full grid, the natural proposal is to
-drop the pixel-count guard entirely for the single-device parallel forward path,
-i.e. dispatch pallas for ALL P when `fwd_pallas` is set, keeping
-MBIRJAX_DISABLE_PALLAS as the escape hatch; note this would change full-grid forward
-from the deterministic sorted-reduce to atomic adds — run-to-run noise at the ~1e-6
-relative level, within the existing float gates, but it needs Greg's explicit sign-off.
-If the win erodes, guard at the measured knee.)
+Full-grid production walls (views=1024, channels=1024): band=512: 4.85 s → 1.29 s;
+band=1024: 8.81 s → 2.78 s (the E4 fwd_full XLA wall at the 1024³-class cell was
+7.97 s at rows=1008/channels=992 — consistent).  The margin erodes gently from ~6×
+(P ≤ 200k) to ~3.1–3.8× at full grid but never approaches 1×.  Two acks: (1) pallas
+full-grid peak is +2.6 GB (band 1024) / +4.9 GB (band 512) over XLA — the streams
+(view_chunk × 3P × 8 B) + values-tile transients; bounded and small next to the 80 GB
+card, but it scales with P·band, worth restating at the next detector-size jump.
+(2) rel-max grows with P (6.1e-6 at band=512 full) — atomic-add summation-order noise
+scaling with collisions per channel (P/C ≈ 800 at full grid), same magnitude as the
+documented same-executable GPU run-to-run noise (~8e-6); the 1e-5 single-shot gate
+still passes but sits close — iterated/full-pipeline comparisons should use the
+existing 1e-4/1e-3 tiers, as always.
+
+## Sweep 3 (running): the small-band corner + pad path
+
+`fwd_guard_sweep3.py`: bands {128, 256} × P {2048, 8192, 24576} (views/channels
+1024 — single-variable vs sweep 1's band=512 column); band=768 at P=8192 (pad to
+1024, 33% wasted columns — every sweep-1/2 band was a power of two, so the driver's
+`vals_pad` path was unmeasured); and a small-problem pair at production aspect,
+sino (256, 256, 256), P ∈ {2048, full≈51k} — the op-level mirror of E4's vcd_guard.
+
+## Proposed guard (draft — pending sweep 3 + Greg approval)
+
+**Drop the pixel-count clause entirely: dispatch pallas for every single-device GPU
+parallel-beam forward call when `tiles.fwd_pallas` is set.**  Rationale: pallas
+measured ≥3.1× at EVERY point in a 3-decade P range (2048 → full grid) × bands
+512–2048, with the minimum at full grid — there is no measured regime where the XLA
+path wins, so any pixel-count threshold would be an unmeasured complication.  The
+"likely formula" from the task framing (min of an L2 cap and a measured knee) is
+moot: neither the L2 cap nor a knee exists in the data (Read 1).
+
+Concretely (post-approval):
+- `projectors.py sparse_forward_project_public`: the dispatch condition becomes
+  `getattr(tm.tiles, 'fwd_pallas', False)` alone; comment rewritten to cite this doc.
+  `tiles.fwd_pixel_batch` keeps its meaning as the XLA path's pixel batching (the
+  fallback still uses it).
+- `parallel_beam.py _select_tile_policy`: comment update only (`fwd_pallas` is no
+  longer "subset-sized calls only"); the flag itself already carries the
+  n_devices == 1 + is_available() gating, which is unchanged.
+- `tests/test_pallas_kernels.py`: extend so a call with P > fwd_pixel_batch
+  dispatches pallas and matches XLA at the 1e-5 gate (interpret mode on CPU CI).
+- Validation after the diff: rerun E4's six-cell A/B — fwd_full flips from a
+  "policy keeps XLA (1.00×, bitwise)" check to a "pallas ≈3× and value-gated" cell;
+  vcd_guard should not regress (expected: same or slightly better than 1.06×, since
+  coarse-granularity forward calls now also go pallas).
+
+**Behavioral change requiring explicit sign-off: full-grid forward projection
+becomes atomics-nondeterministic run-to-run** (~1e-6..6e-6 rel), where the XLA
+sorted-reduce was deterministic per executable.  Precedent: full-grid BACK
+projection already shipped exactly this trade in E4 increment 1 (atomic adds, 9.1×),
+and the float-gate policy (lessons.md §2) was designed for it.  MBIRJAX_DISABLE_PALLAS
+remains the escape hatch.
+
+## Open follow-ups (not this session's scope)
+
+1. **XLA forward band≥2048 cliff** (Read 2): ~50× per-work penalty on the XLA path
+   at ≥2048 slices, band-categorical, NOT the 2^31 boundary (ablated), values
+   correct.  Hits XLA-fallback users (multi-device, non-H100, kill switch) on
+   2048-row parallel-beam problems today.  Next discriminator: GPU HLO dump of the
+   band=1024 vs band=2048 forward programs (fusion/materialization threshold is the
+   leading hypothesis).
+2. Whether the multi-device banded forward (wave 2, the other session) inherits the
+   no-guard conclusion — its band is `fwd_slice_band` = 256, BELOW sweep 3's corner
+   cells; sweep 3's band-256 column is the relevant evidence.
+
+## Library-change requests for the kernel session (none applied here)
+
+None so far: the sweep needed no `_pallas_kernels.py` changes (the driver's
+shape-static design held from P=2048 to full grid; grid segment counts at full-grid
+P≈823k are ~38k < the 65535 CUDA grid-dim bound, checked before sweep 2).
 
 ## Library-change requests for the kernel session (none applied here)
 
