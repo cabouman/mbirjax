@@ -219,14 +219,77 @@ kernels, so the Triton backend is requested explicitly through ``compiler_params
 that is backend *selection*, not performance tuning.
 
 
-Updating or retiring a kernel
------------------------------
+Supporting a new GPU model
+--------------------------
 
-The tuned constants (the register-tile and segment sizes, the slice-chunk size, and the
-GPU allowlist) all come from the benchmark scripts under
-``plans/experiments/projector_kernels/``.  On a new GPU model or a JAX upgrade, rerun
-those to revalidate the constants and the speedups, then extend the allowlist only with
-measurements in hand; the probe compile in ``is_available()`` catches hard toolchain
-breaks on its own.  To retire a kernel, set the environment kill-switch or delete its
-one policy line -- every call site keeps the XLA kernel it was always compiled with, so
-nothing else has to change.
+The custom kernels are enabled only on the GPU models named in ``_ARCH_ALLOWLIST``
+(currently H100 alone), and that restriction is deliberate.  The constants baked into the
+kernels -- ``ROW_CHUNK`` and ``NUM_WARPS`` for the parallel back kernel,
+``FWD_SEGMENT_CAP`` and ``FWD_NUM_WARPS`` for the forward kernel, ``CONE_LC`` and
+``CONE_NUM_WARPS`` for the cone kernel -- are *measurements on an H100*, not universal
+choices, and so are the speedups themselves.  The ``is_available()`` probe that gates each
+flag only confirms that a kernel *compiles*; it says nothing about whether it is *faster*.
+An unmeasured GPU therefore keeps the XLA path by design, and enabling the custom kernels
+on a new model is a small validation project rather than a one-line edit.  (A JAX or
+toolchain upgrade is the same kind of change for the same reason -- the constants and
+speedups are measured against a particular compiler as well as a particular GPU -- so it
+calls for the same re-validation.)
+
+**Find the device string first.**  The allowlist matches by substring against the GPU's
+``device_kind``.  ``model.get_compute_config(print_results=True)`` prints that string in
+its ``pallas_status`` line -- it names the device it saw and the allowlist it failed -- so
+run it on the target machine to learn exactly what to add.
+
+**Then walk the validation ladder**, in order, correctness before speed and kernels before
+the assembled solver.  Each rung has a script under
+``plans/experiments/projector_kernels/``:
+
+* **Correctness.**  Run ``tests/test_pallas_kernels.py`` *compiled on the new GPU*.
+  Everywhere else the tests run in Pallas interpret mode, which emulates the kernel on the
+  host and never touches the real GPU backend, so this is the only step that exercises the
+  actual compiled kernel -- temporarily add the device to the allowlist (or monkeypatch it)
+  so the tests take the Pallas path.
+* **Kernel constants.**  Re-run the tuning sweeps and adopt what they find best on the new
+  hardware: ``e3_back_pallas_v1.py`` (the row-chunk and warp count for the parallel back
+  kernel), ``e5_cone_fused_back.py`` (the slice-chunk and warp count for the cone kernel;
+  it also runs a day-0 lowering probe that aborts with a clear message if the backend
+  cannot compile the kernel's gathers -- a new-architecture instance of the Hopper
+  backend-selection trap noted above), and ``fwd_guard_sweep.py`` (the forward kernel
+  across problem sizes).  The forward sweep matters especially: on H100 the custom forward
+  was faster at every size, which is why the dispatch carries no size threshold -- but that
+  "no crossover" result is an H100 measurement, and a different architecture is exactly
+  where a size threshold could reappear, so re-run the sweep rather than assume the
+  guard-free dispatch still holds.
+* **Composed gates.**  Run the model-level A/B harnesses -- ``w2_inc3_ab.py`` and
+  ``w2_inc4_ab.py`` (the parallel back and forward bands) and ``w2_inc5_ab.py`` (the cone
+  back kernel) -- which compare a full projection or short reconstruction flag-on against
+  the kill-switch (``MBIRJAX_DISABLE_PALLAS=1``) and report wall time, value agreement, and
+  per-GPU peak memory.  These catch the integration costs a bare kernel bench cannot.
+* **Convergence, occasionally.**  For a change that reaches the reconstruction itself (the
+  cone Hessian in particular), run ``w2_inc5_convergence.py``.  As the calibration note
+  above explains, a max-norm comparison across kernel paths is unpassable after a few
+  iterations, so this gate instead asks whether both paths *converge equally well* on real
+  data, within a noise band set by an XLA-vs-XLA control.
+
+**Only after all of that, extend the allowlist**, and record the constants and speedups in
+``plans/projector_kernels/gpu_headroom_findings.md`` next to the H100 numbers, so the next
+person can see what was measured where.  One caution: if the new GPU turns out to want
+*different* constants than the H100, do not split the difference and guess a compromise.
+Per-architecture constant tables are a real design decision for the kernel maintainers --
+flag it and let them choose, rather than inventing a mechanism on the spot.
+
+**When a kernel loses on the new hardware, leave it off.**  If a sweep shows a kernel no
+faster than XLA on the new model, or slower, do not add it to the allowlist: the silent XLA
+fallback is the correct end state, not a failure to fix.  This is the lesson the
+translation geometry already taught, where the "faster" sorted reduction measured 4.5--6.5x
+*slower* at real detector shapes -- a kernel choice is valid only where it was measured, and
+declining to enable one is a legitimate outcome of the validation, not a gap in it.
+
+
+Retiring a kernel
+-----------------
+
+To turn the custom path off, set the environment kill-switch
+(``MBIRJAX_DISABLE_PALLAS=1``), which disables every custom kernel at once; to retire a
+single kernel, delete the one policy line that sets its flag.  Either way every call site
+keeps the XLA kernel it was always compiled with, so nothing else has to change.
