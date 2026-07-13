@@ -71,6 +71,8 @@ class ParallelBeamModel(TomographyModel):
         magnification = 1.0
         return magnification
 
+    _PALLAS_BACK_COEFF_POWERS = (1, 2)     # exact-class weights: both powers pallas
+
     def _pallas_back_project_single_device(self, sinogram, pixel_indices,
                                            coeff_power=1, output_device=None):
         """Parallel's pallas n=1 back driver: the register-tile row kernel."""

@@ -791,6 +791,12 @@ class ConeBeamModel(TomographyModel):
 
         return vertical_data
 
+    # GRADIENT only: the fused kernel's in-kernel affine-m carries a ~2e-5 Hessian
+    # (squared-weight) error that VCD's grad/Hess division amplifies at low-Hessian
+    # edge voxels -- the inc5 trajectory gate measured 8.5e-3 recon divergence with
+    # cp=2 through the kernel.  The once-per-recon Hessian keeps the XLA path.
+    _PALLAS_BACK_COEFF_POWERS = (1,)
+
     @staticmethod
     def compute_hfan_data(pixel_indices, single_view_params, projector_params):
         """(n_p, W_p_c, weight_scale) for the shared trapezoid weight builders
@@ -816,7 +822,8 @@ class ConeBeamModel(TomographyModel):
         """Cone's per-owner banded back: the fused-vfan pallas kernel when enabled
         (full-row views -- a cone slice draws from a RANGE of rows, so no crop),
         else the base XLA banded path."""
-        if getattr(self.tiles, 'back_pallas_band', False) and coeff_power in (1, 2):
+        if (getattr(self.tiles, 'back_pallas_band', False)
+                and coeff_power in self._PALLAS_BACK_COEFF_POWERS):
             from mbirjax import _pallas_kernels
             return _pallas_kernels.cone_back_project_band(
                 self, view_data, pixel_indices, g0, g1 - g0,

@@ -1756,6 +1756,9 @@ class TomographyModel(ParameterHandler):
                 band, local_pixels[i], view_ranges[device])
         return mjs.run_per_device(devices, worker, executor=pool)
 
+    # coeff_powers the geometry's pallas back drivers serve; others keep XLA.
+    _PALLAS_BACK_COEFF_POWERS = ()
+
     def _pallas_back_project_single_device(self, sinogram, pixel_indices,
                                            coeff_power=1, output_device=None):
         """The geometry's pallas n=1 back driver (see _pallas_kernels.py).  Defined
@@ -1827,10 +1830,14 @@ class TomographyModel(ParameterHandler):
         # The DRIVER is geometry-specific (parallel: register-tile rows; cone: the
         # fused vertical fan), so the flag routes through a geometry hook -- only
         # geometries that define the hook set the flag in their tile policy.
-        # coeff_power guard: the pallas kernels implement powers {1, 2} only (the
-        # cone row factor is squared, not general-powered); any other power keeps
-        # the XLA path, which handles arbitrary integer powers.
-        if getattr(self.tiles, 'back_pallas', False) and coeff_power in (1, 2):
+        # coeff_power policy: per-geometry (_PALLAS_BACK_COEFF_POWERS).  Parallel
+        # serves {1, 2} (its weights are exact-class); cone serves {1} only -- its
+        # in-kernel affine-m carries a ~2e-5 Hessian error that VCD's grad/Hess
+        # division AMPLIFIES at low-Hessian edge voxels (measured 8.5e-3 recon
+        # divergence in the inc5 trajectory gate), so the once-per-recon Hessian
+        # keeps the XLA path.  Other powers keep XLA everywhere.
+        if (getattr(self.tiles, 'back_pallas', False)
+                and coeff_power in self._PALLAS_BACK_COEFF_POWERS):
             return self._pallas_back_project_single_device(
                 sinogram, pixel_indices, coeff_power=coeff_power,
                 output_device=output_device)
