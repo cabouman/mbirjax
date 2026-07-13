@@ -400,6 +400,38 @@ the in-kernel-weights design change is now OPTIONAL (a memory nicety: 0.10-shard
 that construct jits per call measure TRACING, not the operation — hoist and warm before
 attributing.
 
+## E4 increment 1 — SHIPPED TO THE BRANCH AND GATED (2026-07-12; commit 2174fb7 + afc8a76; job 13486197)
+
+The pallas parallel-beam back path is in the library (module `_pallas_kernels.py`,
+TilePolicy `back_pallas`, the n=1 dispatch, `compute_hfan_data`, tests, dev docs).
+Model-level A/B, flag-on vs kill-switch, fresh subprocesses:
+
+| cell | XLA → pallas | speedup | peak memory | values |
+|---|---|---|---|---|
+| back full-grid (1024³) | 10.55 → 1.15 s | **9.17×** | 18.89 → 17.61 GB (−1.3) | 5.5e-7 PASS |
+| back subset (6,026 px) | 198 → 24 ms | **8.25×** | 5.35 → 5.84 GB (+0.49) | 4.4e-7 PASS |
+| Hessian full-grid | 10.48 → 1.15 s | **9.10×** | −1.3 GB | 5.1e-7 PASS |
+| VCD guard (256³, 5 it) | 16.95 → 15.87 s | 1.07× | −0.03 GB | **7.6e-7** PASS (1e-4 gate) |
+
+Reads: full-grid memory DROPS 1.3 GB (the old path's transfer-chunk concat transients
+are gone); the subset +0.49 GB is the channel-major chunk copy (~0.52 GB — matches the
+pre-declared ack; a transpose-free gather variant could reclaim it later); the VCD
+guard is POSITIVE at an interactive size (the CUDA-graph/dispatch caveat did not bite)
+with recon values at 7.6e-7 after 5 iterations — far inside the iterated gate.  The
+CPU suite is green (one PRE-EXISTING unrelated failure, flagged separately); interpret
+gates + the adjoint identity run on CPU CI.
+
+Operational lesson from the first A/B attempt (job 13486147, FAILED silently at 3m15s):
+**the cluster HOME quota is 25 GB and a full home kills writes silently** — no
+traceback, no log tail, even the shell's echo lost.  Big regenerable artifacts go to
+SCRATCH (the runner now does; the parity session independently adopted the same policy
+and symlinked its staging).  Tell: sacct shows FAILED with a short elapsed while the
+log just stops.
+
+**Next: increment 2 — the forward kernels (two-phase + hybrid variants, fine-tail
+policy, ProjectorPlan for the streams), same rails; then the model-level pair A/B and
+the nightly soak.**
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
