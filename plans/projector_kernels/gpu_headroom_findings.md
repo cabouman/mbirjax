@@ -537,6 +537,34 @@ lives in the n=1 short-circuit).  Fixed: `back_pallas` is now n=1-gated in the p
 like `fwd_pallas`, so the token and `get_compute_config` report reachability, not
 wishfulness.
 
+## Wave-2 band trace — June's transpose attribution CONFIRMED on current code (2026-07-13; job 13497819; `w2_band_trace.py`)
+
+Per-kernel device self-time of `sparse_back_project` (3 calls, 1024³, XLA path):
+
+| cell | dominant fusions (self-time over 3 calls) | reading |
+|---|---|---|
+| cone n=2 | `input_transpose_fusion` 41.7 s + `_2` 48.0 s (**~90 s**), loop_add 52.9 s, MemcpyD2D 42.9 s, hfan gather (`input_reduce_fusion`) only **5.9 s** | transposes = the largest compute bucket; the actual projection gather is ~6% of it |
+| cone n=4 | transposes 59.4 s, MemcpyD2D **45.4 s** (grows with n), loop_add 41.6 s | same shape; D2D copies become co-dominant at n=4 |
+| parallel n=2 | `input_reduce_fusion` 31.4 s dominates; **zero transpose fusions** | the normally-scaling band path has no transpose — cone-specific, as the scaling table implied |
+
+(Stream overlap makes absolute shares fuzzy — multiple GPUs and copy streams double-count
+against wall — but the ranking is unambiguous and matches the June ncu: transpose fusions
+L1-bound at 6% HBM.)  Execution counts localize the structure: 8,020 transpose-fusion
+runs per call at n=2 ≈ views(512) × bands(8) × devices(2) — **the transposes run once per
+(view, band)**, i.e. the band-INDEPENDENT per-view work (the `sinogram_view.T` at
+cone_beam.py:650 and a second layout fusion) is recomputed for every band, and the band
+count grows with device count.  `cone_n1` traced cell crashed with
+CUDA_ERROR_LAUNCH_FAILED (the known cone-1024³-under-profiler failure, as in E1b) — its
+wall is known from the scaling bench instead.
+
+A5 candidate forms, to be picked by an HLO dump of the band jit (which ops live in each
+transpose fusion):
+1. **Pre-transpose the view shard once per call** (+1 transient sino-shard per owner,
+   no loop change) — kills the input `.T` if both fusions are view-layout ops.
+2. **Hoist the whole horizontal fan out of the band loop** (vmap bands inside one call
+   or invert the loop) — kills all per-(view,band) redundancy but needs the full
+   (pixels × slices) partial per owner (+3.4 GB at 1024³ n=2).
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
