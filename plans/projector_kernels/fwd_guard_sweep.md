@@ -237,11 +237,13 @@ findings:
 band ≤ 1280 (which is why it is the GPU default), and 6–20× SLOWER for band ≥ 1536.
 Clean crossover in (1280, 1536].
 
-### Proposed fix (minimal, robust — awaiting Greg)
+### Fix APPLIED (Greg approved 2026-07-13; commit 726b607)
 
-**Cap the sorted reduce by column width.**  Add `SORTED_CHANNEL_REDUCE_MAX_COLS`
-(~1280, the last measured-safe point, leaving the unmeasured 1281–1535 gap on the
-safe side) next to the existing `_MIN_COLS`, and gate at the ONE reduction site
+**Cap the sorted reduce by column width.**  `SORTED_CHANNEL_REDUCE_MAX_COLS = 1280`
+(the last measured-safe point, leaving the unmeasured 1281–1535 gap on the safe side)
+sits next to the existing `_MIN_COLS` — together they define the COLUMN-count WINDOW
+in which the sorted form wins (wide enough to amortize the sort, narrow enough to
+avoid the segment-sum collapse).  The gate is at the ONE reduction site
 `channel_scatter_reduce`:
 
 ```python
@@ -266,9 +268,19 @@ Everything on the shipped hot paths is unaffected: single-device H100 forward is
 pallas; the multi-device banded forward feeds 256 cols (< the cap), so it keeps
 sorted unchanged.
 
-2. Whether the multi-device banded forward (wave 2, the other session) inherits the
-   no-guard conclusion — its band is `fwd_slice_band` = 256, BELOW sweep 3's corner
-   cells; sweep 3's band-256 column is the relevant evidence.
+**Validation:** new `tests/test_channel_reduce.py::test_wide_columns_fall_back_to_scatter`
+spies on the routing — at exactly 1280 cols the sorted path still runs (inclusive
+cap), at 1281 it routes to scatter — plus a value-correctness check either way.  An
+end-to-end CPU check (`sort_by_channel` forced on, 1300-slice recon) gave the forward
+bitwise-identical to `sort_by_channel` off (rel 0), confirming the cap engages through
+the real kernel and `values.shape[1]` is num_cols in the live call path.  Full CPU
+suite: 303 passed, 2 skipped, 72 subtests.
+
+### Remaining follow-up
+
+Whether the multi-device banded forward (wave 2, the other session) inherits the
+no-guard conclusion — its band is `fwd_slice_band` = 256, BELOW sweep 3's corner
+cells; sweep 3's band-256 column is the relevant evidence.
 
 ## Library-change requests for the kernel session (none applied here)
 
