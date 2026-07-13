@@ -387,7 +387,7 @@ class TomographyModel(ParameterHandler):
         """
         return self._device_report()
 
-    def get_compute_config(self, print_results=False):
+    def get_compute_config(self, print_results=True):
         """Return the resolved COMPUTE configuration of this model as a nested dict.
 
         This reports how the model will execute -- versions, the resolved device
@@ -399,8 +399,9 @@ class TomographyModel(ParameterHandler):
         point that says which kernels a run will actually use.
 
         Args:
-            print_results (bool, optional): If True, also pretty-print the
-                configuration to stdout (matching :func:`get_memory_stats`).
+            print_results (bool, optional): If True (the default, matching
+                :func:`get_memory_stats`), also pretty-print the configuration to
+                stdout; pass False to fetch the dict silently.
 
         Returns:
             dict: Sections ``versions``, ``devices``, ``tiles``, ``kernels``,
@@ -408,7 +409,7 @@ class TomographyModel(ParameterHandler):
 
         Example:
             >>> ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
-            >>> config = ct_model.get_compute_config(print_results=True)
+            >>> config = ct_model.get_compute_config()
             >>> config['kernels']['back_pallas']
             True
         """
