@@ -22,7 +22,7 @@ import numpy as np
 BIG_SINO = (1024, 1008, 992)
 VCD_SINO = (256, 252, 248)
 VCD_ITERATIONS = 5
-OUT_DIR = os.path.expanduser('~/headroom/results/e4_ab')
+OUT_DIR = '/scratch/gautschi/buzzard/headroom_e4_ab'   # big regenerable npys: SCRATCH, not home (home quota is 25 GB)
 WARMUP, TRIALS = 1, 3
 
 
