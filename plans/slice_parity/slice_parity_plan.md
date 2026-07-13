@@ -36,6 +36,11 @@ read" section explains the metrics.
    cone forward kernel it would save only 1–6 iterations out of 15–30.  Worth
    revisiting only if that kernel ships (see the kernel-campaign section) or a
    high-sharpness quality-critical use case appears.
+   **Narrative write-up with charts:** `slice_parity_findings.html` (this directory),
+   published at `/depot/bouman/www/mbirjax/slice_parity_findings/index.html` — the
+   mechanism, the null control, the state-dependence, and the error-reduction trend
+   (charts by `plans/experiments/slice_parity/parity_findings_figs.py`; figures on
+   depot only, no PNGs in the repo).
 3. **Flat-fine sequences without a coarse start are unsafe as defaults** at
    interactive iteration budgets: flat-128 is mildly worse on Lilly and catastrophic
    on z62 (essentially still at the FDK start after 15 iterations at high sharpness).
