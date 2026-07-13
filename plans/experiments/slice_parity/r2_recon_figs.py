@@ -52,9 +52,14 @@ def dataset_window(case):
 
 
 def mid_slices(vol):
-    """(axial mid-slice, coronal mid-cut) as 2-D arrays with z vertical for coronal."""
-    return {AXIAL: vol[:, :, vol.shape[2] // 2],
-            CORONAL: vol[:, vol.shape[1] // 2, :].T}   # (slices, rows): z vertical
+    """(axial mid-slice, coronal mid-cut) as 2-D arrays with z vertical for coronal.
+
+    Returns COPIES, not views — load_mids keeps these across all cases, and a view
+    would pin the whole (up to ~670 MB) source volume in memory, OOM-killing the run
+    on the case-to-case transition.
+    """
+    return {AXIAL: vol[:, :, vol.shape[2] // 2].copy(),
+            CORONAL: vol[:, vol.shape[1] // 2, :].T.copy()}   # (slices, rows): z vert
 
 
 def load_mids(case):
