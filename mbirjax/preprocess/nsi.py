@@ -54,6 +54,7 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
             # Create the model and set parameters
             ct_model = mbirjax.ConeBeamModel(**cone_beam_params)
             ct_model.set_params(**optional_params)
+            ct_model.auto_set_recon_geometry()
             ct_model.set_params(sharpness=sharpness, verbose=1)
 
             # Generate weights and run reconstruction
