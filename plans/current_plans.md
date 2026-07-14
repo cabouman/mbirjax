@@ -1,129 +1,88 @@
 # Current forward plan — goals for the next release
 
 (The EVOLVING running list of open work, at `plans/current_plans.md`.  Rewritten
-2026-07-10 to read forward-looking; completed campaigns live in their own findings docs,
+2026-07-10 to read forward-looking; condensed 2026-07-13 (the Pallas projector-kernel
+campaign and the padding/partition-sequence work completed — summarized here with
+pointers to their findings docs).  Completed campaigns live in their own findings docs,
 cited where their results guide the work below.  Roughly ordered by likely value.
 This file should be cleaned periodically to avoid build-up of historical detail.)
 
 ## Goals for the next release
 
-* **New padding** (§1) — per-end axial extension in `auto_set_recon_geometry`, the
-  split_sino_recon h_recon formula (+ alignment opt-in, taper retirement), lateral
-  truncation detect-and-warn.
-* **New default partition sequence** (§2) — image-quality experiments to justify
-  skipping the 1-subset case by default, plus the `max_iterations` raise; runs AFTER
-  the padding lands, since padding changes both convergence and the metrics.
-* **Possible further performance improvements** (§3) — the two quantified headroom
-  pools: VCD host dispatch, and GPU kernel memory-access patterns.
+* **New padding** (§1) — DONE + real-data validated (per-end axial extension, the
+  `split_sino_recon` h_recon formula, lateral detect-and-warn); open tail = dashboard
+  re-baseline + release note, and the translation/multiaxis per-end bounds.
+* **New default partition sequence** (§2) — DONE: the default is now `[2, 4, 6, 7]`
+  (skips the 1-subset case), committed `42c0e23` per the study; open = the
+  `max_iterations` raise.
+* **Possible further performance improvements** (§3) — the GPU-kernel pool is DONE (the
+  Pallas projector-kernel campaign shipped); the VCD host-dispatch pool remains open.
 * **MAR: cache H** (§4).
-* **Capture the projector-kernel design in the dev docs** — DONE 2026-07-10: new
-  "Projector kernel design" section in `docs/source/dev_sharding_overview.rst`
-  (review welcome); the measured record stays in
-  `plans/projector_kernels/fwd_back_findings.md`.
+* **Projector kernels in the dev docs** — DONE: `docs/source/dev_projector_kernels.rst`
+  (the XLA + Pallas kernel design on one page); measured record in
+  `plans/projector_kernels/gpu_headroom_findings.md`.
 * **Cleanup** (§6).
 
 ---
 
 ## 1. Flash remediation: padding and the split seam
 
-**State:** investigation complete; implementation IN PROGRESS with real-data validation
-after each step (step 1 done + validated, below).  The synthesis with rationale,
-equations, implementation sketches, and pros/cons is
-`plans/flash_remediation/phase_2d_remedies.html` (published at
-`/depot/bouman/www/mbirjax/flash_remediation/`); the plan of record is
-`plans/flash_remediation/flash_remediation_plan.md`.
+**State:** the padding remedies are DONE + real-data validated (2026-07-11/12); open
+tail = dashboard re-baseline and the translation/multiaxis extension.  Full record with
+rationale, equations, and the per-step validation is
+`plans/flash_remediation/flash_remediation_plan.md` (synthesis + pros/cons:
+`plans/flash_remediation/phase_2d_remedies.html`, published at
+`/depot/bouman/www/mbirjax/flash_remediation/`).
 
-**Forward, in implementation order:**
+**Done + validated** (commits `a872695` / `fcc0e9e` / `41ecbc2` / `dbc9c3b`): cone-beam
+per-end axial extension in `auto_set_recon_geometry` (+ `get_support_radius`, helical-FDK
+zero-coverage fix); the `split_sino_recon` h_recon formula with the `align_split_grid`
+opt-in and taper retirement; lateral-truncation detect-and-warn (deliberately no
+auto-padding); and the NSI auto-geometry cleanup matching the zeiss convention.  Phase-3
+validation on real scans is complete — SiC/BGA (axial), Lilly (split), and the lateral
+warning (BGA fires, SiC silent, **z62 reattributed as genuinely contained**, Lilly a true
+one-sided-truncation positive).
 
-1. **Cone-beam per-end axial extension — DONE + VALIDATED 2026-07-11** (commit `a872695`:
-   extension + `get_support_radius` + a helical-FDK zero-coverage fix + tests).  SiC A/B at
-   two scales: truncated-end flash/ringing removed (the real object continuation is
-   reconstructed instead), interior <1% change, and the 0.2% stop reached at ~iter 20 vs
-   ~49 (≈2.2× faster to the default stop at +12–15%/iter).  BGA axial-only A/B: axial
-   padding cleans both slab ends but does NOT fix BGA's center-slice noise (a separate,
-   sharply localized center-slice artifact) or its lateral-dominated convergence drag.
-   Details in `flash_remediation_plan.md` (implementation record).
-2. **split_sino_recon — DONE + VALIDATED 2026-07-11** (commit `fcc0e9e`: h_recon formula,
-   taper retired, `align_split_grid` opt-in, feasibility fallback, `split_params`
-   metadata).  Lilly A/B at the P2c regimes: the default meets/beats every yardstick
-   (seam 9.5e-4 at 8× where the old taper managed 6.1e-3; 4.1e-4 at 4×) — even at the
-   worst-case half-slice mismatch — and alignment buys another ~6–12× (to ~5× background).
-   Details in `flash_remediation_plan.md`.
-3. **Lateral truncation detect-and-warn — DONE + VALIDATED 2026-07-11** (commit
-   `41ecbc2`: `_check_lateral_truncation` hook off the existing sino indicator; no-op
-   overrides for translation + denoiser; deliberately NO auto-padding).  Real-scan check:
-   BGA fires at 86% edge-fraction, SiC silent — and two expectation corrections: **z62 is
-   genuinely contained** (edge channels exactly zero → its famous ring is NOT truncation
-   flash; open question, cover-padding would not help it) and **Lilly is a true positive**
-   (mild one-sided truncation at 16%; auto-crop clamped at the raw detector edge).
-   Details in `flash_remediation_plan.md`.
-4. **NSI pipeline auto-geometry cleanup — DONE + VALIDATED 2026-07-12** (commit
-   `dbc9c3b`: NSI now matches the zeiss convention — construct → set_params →
-   `auto_set_recon_geometry()`; the hand-set `recon_slice_offset` is gone, with no
-   back-compat shims — a stale entry just passes through).  Lilly validation: ds4 shape
-   (374, 374, 572) vs the inflated 667 (~14% memory back), offset per-end +4.50 slices,
-   values preserved (z-aligned profiles, max rel 0.62%), ds8 split seam 5.6e-4 under the
-   new flow.  Applications + metrics-builder companions updated.  Details in
-   `flash_remediation_plan.md`.
-5. **Re-baseline the regression dashboards** (after 1–4: default shapes grow and values
-   shift, for the better) + a release note; record the regime change both as an
-   `annotations.yaml` marker and a policy-block padding flag.
-6. **Phase 3 validation on real scans — COMPLETE**: SiC (axial) and BGA (axial-only)
-   under step 1; Lilly (split) under step 2; the lateral warning under step 3 (BGA fires,
-   SiC silent, z62 reattributed as contained, Lilly a true positive).
-7. Later: the analogous per-end bounds for translation and multiaxis-parallel.
+**Remaining:**
+- Re-baseline the regression dashboards (default shapes grow and values shift, for the
+  better) + a release note; record the regime change as an `annotations.yaml` marker and
+  a policy-block padding flag.
+- Later: the analogous per-end bounds for translation and multiaxis-parallel.
 
 ## 2. Partition sequence and iteration defaults
 
-**State:** done at the batch level.  The prerelease keeps the old default sequence,
-with an easier knob for users to skip the 1-subset (granularity-1) case on large recons
-(the change is deliberately conservative).
+**State:** DONE — the default partition sequence is now **`[2, 4, 6, 7]`** (a
+monotone-non-decreasing ramp that skips the granularity-1 subset, so the old
+granularity-1 memory spike disappears with no size-adaptive starting policy), committed
+`42c0e23` per the 2026-07 image-quality study.  Candidates, the metric caveats, and the
+monotone-granularity theory are in
+`plans/partition_sequence/partition_sequence_plan.md`; the drafted real-data convergence
+study is `plans/experiments/partition_sequence/`.
 
-**Forward (after §1 lands — the padding changes both convergence and the metrics,
-so the deciding experiments should run with it in place):** make skip-1 the default
-for the next release of main — gated on
-**image-quality comparison experiments** (old default vs the proposed sequences on
-representative objects; visual quality first).  The 2026-07-05 study
-(`plans/partition_sequence/partition_sequence_plan.md`, PROPOSED-defaults + metric-caveat
-sections) supplies the candidates and the durable guidance:
-
-- Candidate sequences: **`[7]`** (flat-128) or **`[4, 7]`** (a cheap coarse-start hedge).
-  A fine flat tail converges faster per iteration AND never uses a coarse granularity, so
-  the old granularity-1 memory spike disappears without any size-adaptive starting
-  policy — an adaptive coarse start stays an optional advanced knob only.
-- Raise **`max_iterations` from 15 into the ~25–50 range** (the 15-cap strangles the
-  0.2% stop on hard objects); the threshold stays 0.2.
-- Metric caveat to respect in the experiments: FoV-truncation flash inflates NRMSE and
-  the change-% stop (see §1) — compare on cropped/remediated metrics or visually.
-
-Supporting experiment (drafted, not run): the real-data partition-sequence convergence
-study (`plans/experiments/partition_sequence/`), which also tests the
-monotone-non-decreasing granularity theory.
+**Remaining:** raise **`max_iterations` from 15 into the ~25–50 range** (the 15-cap
+strangles the 0.2% stop on hard objects; threshold stays 0.2).  Metric caveat for any
+follow-up experiments: FoV-truncation flash inflates NRMSE and the change-% stop (§1) —
+compare on cropped/remediated metrics or visually.
 
 ## 3. Performance
 
 Two quantified headroom pools guide any future performance work (both from the
 2026-07 profiling/kernel campaigns; details in
-`plans/projector_kernels/fwd_back_findings.md` and `plans/` profiling docs):
+`plans/projector_kernels/gpu_headroom_findings.md`, `fwd_back_findings.md`, and the
+`plans/` profiling docs):
 
 - **VCD is host-dispatch-bound at interactive sizes**: a 200³ VCD recon is ~95% host
   time (~0.1 s of device kernels in a ~2 s recon).  The large-headroom item is reducing
   per-subset dispatches / host syncs — e.g. jit a whole subset update or iteration (the
   concrete-centers plumbing supports precomputed-per-partition centers if that jit
   lands).  cProfile is the instrument, not kernel benches (`lessons.md` §3/§5).
-- **GPU kernel headroom — ACTIVE investigation** (plan of record:
-  `plans/projector_kernels/gpu_headroom_plan.md`, 2026-07-12, + five research appendices).
-  Provenance of the earlier "~10×" phrasing: BACK is a measured 10–12×
-  (`back_nogather` = 0.08–0.10× of the current kernel; `back_kernel_ab.py`,
-  `fwd_back_findings.md` back-projection section); FORWARD's control
-  (`fwd_noscatter` = 3–4%) was measured against the PRE-campaign 35 s kernel — re-based
-  against the current 8.2 s kernel it implies ~6–7×; the ncu access-pattern attribution
-  is from the June profiling of pre-campaign kernels (re-run scheduled, plan E0).
-  Recalibrated prize (published hand-CUDA SOTA + traffic model, see the plan): 2–3×
-  custom-kernel (Pallas), 1.5–3× XLA-level.  Priority (Greg 2026-07-12): multi-GPU cone
-  TIME scaling first (the band-transpose limiter), large single-device VCD wall second.
-  Next: E0 (HLO/ncu re-attribution) ∥ E1 (production-granularity VCD device share — the
-  gating number), on branch `greg/gpu_headroom`.
+- **GPU kernel headroom — DONE (the Pallas projector-kernel campaign)**: a custom-kernel
+  (Pallas/Triton) path now serves the parallel and cone projectors on allowlisted GPUs at
+  2–9× the XLA kernels, shipped across single-device and multi-device band paths for both
+  back and forward, and soak-validated end-to-end.  It hit the recalibrated prize (2–3×
+  custom-kernel) and ended cone's multi-GPU anti-scaling.  Design + measured record:
+  `docs/source/dev_projector_kernels.rst` and
+  `plans/projector_kernels/gpu_headroom_findings.md`.
 
 Small optional refinements (do only if a measured case wants them): cached
 per-(view, pixel-batch) sort permutations for the sorted reduce (now approach A1 in the
@@ -206,26 +165,12 @@ choose-N-vs-communication model; this area is potentially finicky for a modest p
 - **Suite tidiness**: seed the remaining unseeded-`np.random` tests; a pre-merge
   `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers.
 - **Suite efficiency**: simplify tests and reduce time on tests.
-- **>2^31 audit sweep**: grep for remaining flat-index / count-unsafe ops on full-size
-  arrays (`argsort`, `searchsorted`, large `cumsum` indices, `nonzero`) per
-  `lessons.md` §4 — AND the class's second face, found live 2026-07-10 (a student's
-  1600×1617×1422 run, count 3.7e9): **Python-int element counts crossing into jnp
-  arithmetic** (OverflowError at the jit boundary; invisible to the flat-index greps) —
-  sweep `/ num_`-style count divisions and int-count arguments to jitted functions too.
-  The `mar.py` `num_real_pixels` instance is FIXED (the `float()` idiom + a tiny-array
-  regression test, `test_mar.TestCorrectPlasticSinogramBigCounts` — the overflow is
-  VALUE-dependent, not size-dependent, so small tests pin it).  **SWEEP RUN 2026-07-10
-  (both faces, whole package):** loud face — only 4 reduction-division sites exist; two
-  carry the float() idiom, one divides by a jax scalar, and `_vcd_iteration_stats`'s
-  traced `real_sino_size` is float()ed by its only caller (traced args can't self-defend
-  in-jit; docstring now says callers MUST pass float).  Silent face — every
-  argsort/argmin/arange/unravel/scatter/take site audited: all operate on small axes
-  (pixel plane ≤2e6, channels, views, bands) or are host-side numpy (int64); stripe.py
-  sorts are per-axis; segmentation already uses the slab-count fix; the sino-indicator
-  histogram runs on the view-subsample by convention.  No new instances.  Residual known
-  edges (documented in lessons §4, accepted): np.histogram counts on Windows/numpy<2,
-  and the caller-enforced float contract above.  CLASS CLOSED at this code state; the
-  lessons §4 grep recipe is the re-check on new code.
+- **>2^31 audit — CLASS CLOSED 2026-07-10** (both faces swept package-wide: flat-index
+  ops on full-size arrays, and Python-int element counts crossing into jnp arithmetic;
+  the live `mar.py` `num_real_pixels` overflow was fixed with the `float()` idiom + a
+  value-pinned regression test, and no other instances were found).  The `lessons.md` §4
+  grep recipe is the re-check on new code; residual known edges (np.histogram on
+  Windows/numpy<2, the caller-enforced float contract) are documented + accepted there.
 - **Minor API opens**: `configure_devices`/`use_gpu` unification; the forward
   pixel-batch default.
 - **Residual rounding-bug risk (monitor only)**: the six vertical-fan per-slice round
@@ -276,9 +221,12 @@ auto-regularization, loose stopping on coarse levels).
 
 ---
 
-**Recently completed (records live elsewhere):** the projector-kernel campaign
-(design → `docs/source/dev_sharding_overview.rst` "Projector kernel design"; measured
-record → `plans/projector_kernels/fwd_back_findings.md`); the flash-remediation
-investigation Phases 1–2d (→ `plans/flash_remediation/`); multiaxis vertical-fan
-path-length factor (shipped); the sparse-projector batching investigation (closed with
-code unchanged → `plans/projector_batching/batching_refactor_design.md`).
+**Recently completed (records live elsewhere):** the **Pallas projector-kernel campaign**
+— the full custom-kernel path for both projectors and geometries, shipped and
+soak-validated (design → `docs/source/dev_projector_kernels.rst`; measured record →
+`plans/projector_kernels/gpu_headroom_findings.md`); the **default partition-sequence
+change to `[2, 4, 6, 7]`** (→ `plans/partition_sequence/`); the **flash-remediation
+padding remedies** (→ `plans/flash_remediation/`); the earlier projector-kernel /
+profiling campaign (→ `plans/projector_kernels/fwd_back_findings.md`); the multiaxis
+vertical-fan path-length factor (shipped); the sparse-projector batching investigation
+(closed with code unchanged → `plans/projector_batching/batching_refactor_design.md`).
