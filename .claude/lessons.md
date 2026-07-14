@@ -143,6 +143,11 @@ as suspect — and note small phantoms can never reproduce these (size-dependent
 2. **A Python int > 2^31 as a traced operand raises OverflowError at the jit boundary** (weak int →
    int32).  Counts enter traced arithmetic as FLOATS (`float(n)`; same ~1e-7 rounding `jnp.mean` had
    internally); per-run int counts passed to jitted functions are STATIC args, float()ed in the body.
+   RECURRED 2026-07-10 (`mar.py`'s padding-aware mean divided by `num_real_pixels` = 3.7e9 on a
+   student's full-size run): new count-dividing code must carry the idiom, and the flat-index greps
+   (item 1's `argsort`/`searchsorted`/...) do NOT catch this face — grep `/ num_`-style count
+   divisions too.  Regression tests need no big arrays: the overflow is in the scalar's VALUE, so a
+   tiny array divided by `2**31 + k` pins it (`test_mar.TestCorrectPlasticSinogramBigCounts`).
 3. **`np.prod` of a shape accumulates in the platform default int** — int64 on Linux/macOS, int32 on
    Windows/numpy<2 (silent wrap).  Use `math.prod` for element counts.
 4. **Integer counting: int32 wraps above 2^31, and f32 scatter-adds of unit counts SATURATE at 2^24**
