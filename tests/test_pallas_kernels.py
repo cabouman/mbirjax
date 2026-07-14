@@ -497,3 +497,106 @@ def test_cone_band_view_chunking_consistent():
     out_chunked = _pallas_kernels.cone_back_project_band(
         model, sino, idx, 2, 10, interpret=_interpret())
     assert _rel_max_err(out_chunked, out_single) < REL_TOL
+
+
+# ── The cone fused forward path (increment 6) ─────────────────────────────────
+
+@pytest.mark.parametrize('subset', [False, True])
+def test_cone_fwd_matches_xla(subset):
+    """The E6 driver must match the XLA cone forward at the floor-calibrated gates
+    (max-rel 3e-4 / here also the plain REL_TOL, achievable at test scale)."""
+    model = _make_cone_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+    rng = np.random.default_rng(16)
+    if subset:
+        idx = jnp.asarray(np.sort(rng.choice(np.asarray(idx), size=len(idx) // 6,
+                                             replace=False)))
+    vals = jnp.asarray(rng.random((len(idx), recon_shape[2]), dtype=np.float32))
+    model.tiles = model.tiles._replace(fwd_pallas=False, fwd_pallas_band=False)
+    ref = model.projector_functions.sparse_forward_project(vals, idx)
+    out = _pallas_kernels.cone_forward_project(model, vals, idx,
+                                               interpret=_interpret())
+    assert out.shape == jnp.asarray(ref).shape
+    assert _rel_max_err(out, jnp.asarray(ref)) < REL_TOL
+
+
+def test_cone_fwd_owned_views_matches_xla():
+    """Per-owner mode: global view indices (the n>=2 cylinder calls)."""
+    model = _make_cone_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)[:70]
+    rng = np.random.default_rng(17)
+    vals = jnp.asarray(rng.random((len(idx), recon_shape[2]), dtype=np.float32))
+    owned = np.arange(16, 48)
+    model.tiles = model.tiles._replace(fwd_pallas=False, fwd_pallas_band=False)
+    ref = model.projector_functions.sparse_forward_project(
+        vals, idx, owned_view_indices=owned)
+    out = _pallas_kernels.cone_forward_project(model, vals, idx,
+                                               owned_view_indices=owned,
+                                               interpret=_interpret())
+    assert out.shape == jnp.asarray(ref).shape
+    assert _rel_max_err(out, jnp.asarray(ref)) < REL_TOL
+
+
+def test_cone_pair_adjoint_identity():
+    """<A x, y> == <x, B y> with BOTH cone pallas kernels -- the shipped pair."""
+    model = _make_cone_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)
+    rng = np.random.default_rng(18)
+    x = jnp.asarray(rng.random((len(idx), recon_shape[2]), dtype=np.float32))
+    y = jnp.asarray(rng.random(SINO_SHAPE, dtype=np.float32))
+    ax = _pallas_kernels.cone_forward_project(model, x, idx, interpret=_interpret())
+    by = _pallas_kernels.cone_back_project_single_device(model, y, idx,
+                                                         interpret=_interpret())
+    lhs, rhs = float(jnp.vdot(ax, y)), float(jnp.vdot(x, by))
+    assert abs(lhs - rhs) / max(abs(lhs), 1e-30) < REL_TOL
+
+
+def test_cone_fwd_dispatch_routes(monkeypatch):
+    """The unified wrapper dispatch must route cone forward calls (flag forced)
+    through the geometry hook to the E6 driver, passing owned views through."""
+    model = _make_cone_model()
+    recon_shape = model.get_params('recon_shape')
+    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)[:50]
+    vals = jnp.asarray(np.random.default_rng(19).random(
+        (len(idx), recon_shape[2]), dtype=np.float32))
+    seen = {}
+    real = _pallas_kernels.cone_forward_project
+
+    def spy(tm, v, pix, owned_view_indices=(), interpret=False):
+        seen['owned'] = list(np.asarray(owned_view_indices)) \
+            if len(owned_view_indices) else []
+        return real(tm, v, pix, owned_view_indices=owned_view_indices,
+                    interpret=_interpret())
+
+    monkeypatch.setattr(_pallas_kernels, 'cone_forward_project', spy)
+    model.tiles = model.tiles._replace(fwd_pallas_band=True)
+    owned = np.arange(8, 24)
+    out = model.projector_functions.sparse_forward_project(
+        vals, idx, owned_view_indices=owned)
+    assert seen['owned'] == list(range(8, 24))
+    model.tiles = model.tiles._replace(fwd_pallas_band=False)
+    ref = model.projector_functions.sparse_forward_project(
+        vals, idx, owned_view_indices=owned)
+    assert _rel_max_err(jnp.asarray(out), jnp.asarray(ref)) < REL_TOL
+
+
+def test_cone_fwd_bp_guard():
+    """The policy must NOT set the fwd flags when bp_psf_radius > 2 (the static
+    tap unroll guard), while the back flags remain available."""
+    angles = np.linspace(0, 2 * np.pi, 16, endpoint=False)
+    model = mbirjax.ConeBeamModel((16, 24, 32), angles,
+                                  source_detector_dist=128, source_iso_dist=128)
+    model.set_params(delta_det_row=8.0)     # coarse rows vs voxels -> large bp
+    model.configure_devices(1)
+    gp = model.get_geometry_parameters()
+    if int(gp.bp_psf_radius) <= 2:
+        pytest.skip('geometry did not produce bp > 2')
+    from mbirjax import _pallas_kernels as pk
+    import unittest.mock as mock
+    with mock.patch.object(pk, 'is_available', return_value=True):
+        tiles = model._select_tile_policy(True, 16, 24, 1)
+    assert not tiles.fwd_pallas and not tiles.fwd_pallas_band
+    assert tiles.back_pallas

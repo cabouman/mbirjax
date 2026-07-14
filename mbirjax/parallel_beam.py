@@ -100,22 +100,14 @@ class ParallelBeamModel(TomographyModel):
             view_data[:, g0:g1, :], pixel_indices,
             owned_view_indices=owned_view_indices, coeff_power=coeff_power)
 
-    def _forward_project_band_to_view_shard(self, band, pixel_indices, owned_view_indices):
-        """Parallel-beam per-view-owner banded forward (adjoint of the back override).
-
-        The band of ``L`` slices projects to detector rows ``[g0:g1)`` of length ``L``
-        (row r <- slice r), for the caller's GLOBAL views ``owned_view_indices``.  When
-        ``fwd_pallas_band`` is set (n>=2), route through the pallas forward driver on the
-        cropped band (value-equal to the XLA path up to summation order; gated in
-        tests/test_pallas_kernels.py -- the driver already supports the per-owner mode,
-        so the band/broadcast/accumulate orchestration is unchanged).  Otherwise defer to
-        the base XLA forward."""
-        if getattr(self.tiles, 'fwd_pallas_band', False):
-            from mbirjax import _pallas_kernels
-            return _pallas_kernels.forward_project_subset(
-                self, band, pixel_indices, owned_view_indices=owned_view_indices)
-        return super()._forward_project_band_to_view_shard(
-            band, pixel_indices, owned_view_indices)
+    def _pallas_forward_project(self, voxel_values, pixel_indices,
+                                owned_view_indices=()):
+        """Parallel's pallas forward driver (all flows: n=1 whole-model and the
+        n>=2 per-owner banded calls both arrive via the wrapper's unified dispatch;
+        the increment-4 per-override dispatch was folded into it)."""
+        from mbirjax import _pallas_kernels
+        return _pallas_kernels.forward_project_subset(
+            self, voxel_values, pixel_indices, owned_view_indices=owned_view_indices)
 
     # Measured GPU forward tiling (band x pixel-batch grid: fwd_band_pixel_sweep.py; results
     # digest in plans/projector_kernels/fwd_back_findings.md).  Model-level forward

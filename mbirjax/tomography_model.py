@@ -1759,6 +1759,14 @@ class TomographyModel(ParameterHandler):
     # coeff_powers the geometry's pallas back drivers serve; others keep XLA.
     _PALLAS_BACK_COEFF_POWERS = ()
 
+    def _pallas_forward_project(self, voxel_values, pixel_indices,
+                                owned_view_indices=()):
+        """The geometry's pallas forward driver (see _pallas_kernels.py); defined
+        only by geometries whose tile policy can set fwd_pallas/fwd_pallas_band."""
+        raise NotImplementedError(
+            'a fwd pallas flag is set but {} defines no pallas forward driver'.format(
+                type(self).__name__))
+
     def _pallas_back_project_single_device(self, sinogram, pixel_indices,
                                            coeff_power=1, output_device=None):
         """The geometry's pallas n=1 back driver (see _pallas_kernels.py).  Defined

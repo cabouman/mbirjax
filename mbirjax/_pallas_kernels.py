@@ -730,3 +730,156 @@ def cone_back_project_single_device(model, sinogram, pixel_indices, coeff_power=
     if output_device is not None:
         out = jax.device_put(out, output_device)
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# The cone fused FORWARD kernel (E6): the forward segment walk with the vertical
+# fan computed in-kernel by the INVERSE affine.
+#
+# The XLA cone forward vfan is itself an inverse-affine gather with tap window
+# +-gp.bp_psf_radius (create_det_column_rows) -- this kernel transplants that exact
+# structure into the two-phase segment walk, so the tap SET matches XLA's
+# window-for-window (gate-safe by construction, including XLA's own truncation on
+# anisotropic-pixel geometries).  Per output detector row m: the contributing
+# slices are l in round((m - m0)/W_p_r) +- bp; weight = the trapezoid at
+# m_p(l) - m times the per-tap 1/cos(phi) divisor; the (0 <= l < slices) mask is
+# applied to the WEIGHT with a clamped gather index (omitting it measured order-1
+# errors).  The gather source is the raw, VIEW-INDEPENDENT x(P, slices) tile.
+# Value contract (floor-calibrated -- at 1024 rows two correct f32 implementations
+# differ by ~1.3e-4 max-rel; forward has no sqrt-V averaging): nrmse <= 2e-5,
+# max-rel <= 3e-4.  Padded output rows compute REAL garbage (the inverse affine
+# does not know padding); the chunk-fn trim is load-bearing.
+# Dispatch guard: bp_psf_radius <= 2 (set in ConeBeamModel's tile policy; beyond it
+# the tap unroll grows and XLA is kept -- the MAX_PSF_RADIUS precedent).
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Measured (e6_cone_fused_fwd.py, H100): warps=2 wins at every cell (2.60x full grid,
+# 2.65x subset) -- the register-pressure escape hatch the design pre-committed.
+CONE_FWD_NUM_WARPS = 2
+
+
+def _cone_fwd_kernel(seg_ref, wt_ref, pix_ref, m0_ref, wpr_ref, vals_ref, *rest,
+                     atomic, bp, num_slices, rows_padded, delta_det_row,
+                     det_row_offset, det_center_row, inv_sdd):
+    """One program per (view, segment); see the section comment above."""
+    out_ref = rest[-1]
+    v = pl.program_id(0)
+    start, end, c = seg_ref[0, 0, 0], seg_ref[0, 0, 1], seg_ref[0, 0, 2]
+    m_vec = jnp.arange(rows_padded).astype(jnp.float32)
+
+    def body(i, acc):
+        p = pix_ref[0, i]
+        wchan = wt_ref[0, i]
+        m0 = m0_ref[0, p]                                  # ref-gather at pixel id
+        wpr = wpr_ref[0, p]
+        l_c = jnp.floor((m_vec - m0) / wpr + 0.5).astype(jnp.int32)
+        L_max = jnp.minimum(1.0, wpr)
+        contrib = jnp.zeros((rows_padded,), jnp.float32)
+        for tl in range(-bp, bp + 1):                      # static unroll: XLA's window
+            l = l_c + tl
+            m_p = m0 + wpr * l.astype(jnp.float32)
+            v_p = (m_p - det_center_row) * delta_det_row - det_row_offset
+            inv_cos = jnp.sqrt(1.0 + (v_p * inv_sdd) ** 2)   # per-tap, Inf-safe
+            w = jnp.clip((wpr + 1.0) / 2.0 - jnp.abs(m_p - m_vec), 0.0, L_max) * inv_cos
+            w = w * ((l >= 0) & (l < num_slices))
+            contrib = contrib + w * vals_ref[p, jnp.clip(l, 0, num_slices - 1)]
+        return acc + wchan * contrib
+    acc = jax.lax.fori_loop(start, end, body, jnp.zeros((rows_padded,), jnp.float32))
+    if atomic:
+        @pl.when(end > start)
+        def _add():
+            pltriton.atomic_add(out_ref, (v, c, slice(None)), acc)
+    else:
+        out_ref[v, c, :] = acc
+
+
+@functools.cache
+def _make_cone_fwd_phase(vc, num_channels, n_seg, taps, num_pixels, num_slices,
+                         rows_padded, atomic, bp, geom_consts, interpret=False):
+    kw = ({} if interpret else
+          {'compiler_params': pltriton.CompilerParams(num_warps=CONE_FWD_NUM_WARPS)})
+    ddr, droff, dcen, isdd = geom_consts
+    specs = [pl.BlockSpec((1, 1, 4), lambda v, s: (v, s, 0)),
+             pl.BlockSpec((1, taps), lambda v, s: (v, 0)),
+             pl.BlockSpec((1, taps), lambda v, s: (v, 0)),
+             pl.BlockSpec((1, num_pixels), lambda v, s: (v, 0)),        # m0
+             pl.BlockSpec((1, num_pixels), lambda v, s: (v, 0)),        # W_p_r
+             pl.BlockSpec((num_pixels, num_slices), lambda v, s: (0, 0))]
+    alias = {}
+    if atomic:
+        specs.append(pl.BlockSpec((vc, num_channels + 1, rows_padded),
+                                  lambda v, s: (0, 0, 0)))
+        alias = {6: 0}
+    return pl.pallas_call(
+        partial(_cone_fwd_kernel, atomic=atomic, bp=bp, num_slices=num_slices,
+                rows_padded=rows_padded, delta_det_row=ddr, det_row_offset=droff,
+                det_center_row=dcen, inv_sdd=isdd),
+        out_shape=jax.ShapeDtypeStruct((vc, num_channels + 1, rows_padded),
+                                       jnp.float32),
+        grid=(vc, n_seg), in_specs=specs,
+        out_specs=pl.BlockSpec((vc, num_channels + 1, rows_padded),
+                               lambda v, s: (0, 0, 0)),
+        input_output_aliases=alias, interpret=interpret, **kw)
+
+
+@functools.cache
+def _make_cone_fwd_chunk_fn(hfan_data_fn, projector_params, vc, num_channels, n2,
+                            num_pixels, num_slices, rows, rows_padded, bp,
+                            geom_consts, interpret):
+    """One cached jit per static shape key: streams, split, vfan scalars, both
+    phases, trim -- the _make_fwd_chunk_fn contract (no sync, no retrace)."""
+    taps = (2 * projector_params.geometry_params.psf_radius + 1) * num_pixels
+    p1 = _make_cone_fwd_phase(vc, num_channels, num_channels, taps, num_pixels,
+                              num_slices, rows_padded, False, bp, geom_consts,
+                              interpret)
+    p2 = _make_cone_fwd_phase(vc, num_channels, n2, taps, num_pixels, num_slices,
+                              rows_padded, True, bp, geom_consts, interpret)
+
+    def chunk_fn(view_params_array, pixel_indices, vals, owned):
+        wts, pix, starts = _jit_compute_fwd_streams(
+            view_params_array, pixel_indices, hfan_data_fn, projector_params,
+            owned_view_indices=owned)
+        seg1, seg2 = jax.vmap(lambda s: _split_two_phase(s, FWD_SEGMENT_CAP, n2))(starts)
+        m0, wpr = _jit_compute_vfan_scalars(view_params_array, pixel_indices,
+                                            projector_params, owned_view_indices=owned)
+        out = p2(seg2, wts, pix, m0, wpr, vals, p1(seg1, wts, pix, m0, wpr, vals))
+        # Trim scratch channel + PADDED ROWS (real garbage -- load-bearing) and
+        # reorient to (views, rows, channels).
+        return jnp.swapaxes(out[:, :num_channels, :rows], 1, 2)
+    return jax.jit(chunk_fn)
+
+
+def cone_forward_project(model, voxel_values, pixel_indices, owned_view_indices=(),
+                         interpret=False):
+    """The cone pallas forward driver (all pixel counts; per-owner mode via
+    owned_view_indices, caller placement trusted -- the forward_project_subset
+    contract).  voxel_values: (P, num_slices) full cylinders."""
+    pf = model.projector_functions
+    pp = pf.projector_params
+    num_channels = pp.sinogram_shape[2]
+    num_pixels, num_slices = voxel_values.shape
+    gp = pp.geometry_params
+    rows = pp.sinogram_shape[1]
+    rows_padded = next_pow2(rows)
+    sdd = gp.source_detector_dist
+    geom_consts = (float(gp.delta_det_row), float(gp.det_row_offset),
+                   (rows - 1) / 2.0, 0.0 if np.isinf(sdd) else float(1.0 / sdd))
+    bp = int(gp.bp_psf_radius)
+
+    if len(owned_view_indices) > 0:
+        owned_all = np.asarray(owned_view_indices)
+    else:
+        owned_all = np.arange(pf.view_params_array.shape[0])
+    num_views = int(owned_all.shape[0])
+    view_chunk = min(model.tiles.fwd_view_batch, BACK_VIEW_CHUNK_CAP, num_views)
+    taps = (2 * gp.psf_radius + 1) * num_pixels
+    n2 = max(1, taps // FWD_SEGMENT_CAP)
+
+    chunks = []
+    for v0 in range(0, num_views, view_chunk):
+        owned = owned_all[v0:min(v0 + view_chunk, num_views)]
+        fn = _make_cone_fwd_chunk_fn(model.compute_hfan_data, pp, int(owned.shape[0]),
+                                     num_channels, n2, num_pixels, num_slices, rows,
+                                     rows_padded, bp, geom_consts, interpret)
+        chunks.append(fn(pf.view_params_array, pixel_indices, voxel_values, owned))
+    return chunks[0] if len(chunks) == 1 else jnp.concatenate(chunks, axis=0)

@@ -344,10 +344,17 @@ class ConeBeamModel(TomographyModel):
         # _pallas_kernels.py).  n=1 -> the single-device short-circuit; n>1 -> the
         # per-owner band path; same availability gates as parallel.
         from mbirjax import _pallas_kernels
+        ok = _pallas_kernels.is_available()
+        # Forward guard: the E6 kernel statically unrolls +-bp_psf_radius row taps;
+        # beyond bp=2 (fine-slice/coarse-row geometries) the unroll grows and the
+        # measured envelope ends -- XLA is kept (the MAX_PSF_RADIUS precedent).
+        fwd_ok = ok and int(self.get_geometry_parameters().bp_psf_radius) <= 2
         return tiles._replace(
             sort_by_channel=num_det_rows >= SORTED_CHANNEL_REDUCE_MIN_COLS,
-            back_pallas=_pallas_kernels.is_available() and n_devices == 1,
-            back_pallas_band=_pallas_kernels.is_available() and n_devices > 1)
+            back_pallas=ok and n_devices == 1,
+            back_pallas_band=ok and n_devices > 1,
+            fwd_pallas=fwd_ok and n_devices == 1,
+            fwd_pallas_band=fwd_ok and n_devices > 1)
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
@@ -809,6 +816,14 @@ class ConeBeamModel(TomographyModel):
             pixel_indices, single_view_params, projector_params)
         weight_scale = (gp.voxel_row_aspect * gp.delta_voxel * gp.delta_voxel) / footprint_xy
         return n_p, W_p_c, weight_scale
+
+    def _pallas_forward_project(self, voxel_values, pixel_indices,
+                                owned_view_indices=()):
+        """Cone's pallas forward driver: the E6 fused kernel (inverse-affine vfan
+        inside the segment walk); serves n=1 and the n>=2 per-owner cylinder calls."""
+        from mbirjax import _pallas_kernels
+        return _pallas_kernels.cone_forward_project(
+            self, voxel_values, pixel_indices, owned_view_indices=owned_view_indices)
 
     def _pallas_back_project_single_device(self, sinogram, pixel_indices,
                                            coeff_power=1, output_device=None):

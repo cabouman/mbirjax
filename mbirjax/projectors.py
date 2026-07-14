@@ -538,10 +538,13 @@ class Projectors:
             # full-grid forward is run-to-run noisy at the ~1e-6 relative level, like
             # the pallas back projector.  fwd_pixel_batch below remains the XLA
             # fallback path's pixel batching.
-            if getattr(tm.tiles, 'fwd_pallas', False):
-                from mbirjax import _pallas_kernels
-                return _pallas_kernels.forward_project_subset(
-                    tm, voxel_values, pixel_indices,
+            # ONE dispatch point for all four forward flows (n=1 whole-model calls
+            # and the n>=2 per-owner calls, both geometries): the flags encode the
+            # device-count policy, the geometry hook picks the driver.
+            if (getattr(tm.tiles, 'fwd_pallas', False)
+                    or getattr(tm.tiles, 'fwd_pallas_band', False)):
+                return tm._pallas_forward_project(
+                    voxel_values, pixel_indices,
                     owned_view_indices=owned_view_indices)
 
             def one_call(owned_chunk):
