@@ -524,7 +524,18 @@ class Projectors:
         # chunk; the threshold only chooses where the view loop lives, never values.  The
         # chunked paths may do a few eager slices (bounded by the chunk count, amortized
         # over large calls); the SINGLE-call path -- every small/frequent call -- does none.
+        def _assert_outside_jit(*arrays):
+            # The CONCRETENESS contract, hoisted ABOVE the dispatch so it holds
+            # path-independently: the pallas branches return before scatter_centers'
+            # in-path guard, yet compute the same concrete centers and carry the
+            # identical rounding-bug exposure (nightly GPU catch, 2026-07-13).
+            assert not any(isinstance(a, jax.core.Tracer) for a in arrays), (
+                'The projector wrappers must run OUTSIDE any jit: the integer scatter '
+                'centers have to reach the projector programs as CONCRETE arrays '
+                '(see plans/bugs_and_artifacts/jax rounding bug/phase_d_design.md).')
+
         def sparse_forward_project_public(voxel_values, pixel_indices, owned_view_indices=()):
+            _assert_outside_jit(voxel_values, pixel_indices)
             num_views_owned = num_owned(owned_view_indices)
             view_batch = tm.tiles.fwd_view_batch
 
@@ -567,6 +578,7 @@ class Projectors:
             return jnp.concatenate(outputs, axis=0)
 
         def sparse_back_project_public(sinogram, pixel_indices, coeff_power=1, owned_view_indices=()):
+            _assert_outside_jit(sinogram, pixel_indices)
             num_views_owned = num_owned(owned_view_indices)
             view_batch = tm.tiles.back_view_batch
 
