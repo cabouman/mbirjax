@@ -1077,6 +1077,27 @@ CPU.**  No cell failed reproducibly outside the documented `cone_vcd` expected-f
 (Benign `module: command not found` from `load_conda_cuda.sh` in the non-interactive
 shell, as in every campaign job — the jobs ran on GPU with correct results.)
 
+## Increment 6 — the cone fused forward kernel: SHIPPED AND GATED (2026-07-13; commit 8f2278f + review fixes; job 13530895)
+
+The E6 kernel integrated behind the UNIFIED wrapper dispatch (one seam for all four
+forward flows via the `_pallas_forward_project` geometry hook; increment 4's parallel
+band override folded in); cone policy gates on bp_psf_radius <= 2.  Review
+wf_fd13091b: clean on the dispatch audit (no unintended pallas routing at any
+internal caller), transplant fidelity, and policy init-order; two harness/test fixes
+applied pre-gate.
+
+| cell | XLA -> pallas | speedup | values (tol 3e-4) | per-GPU peak |
+|---|---|---|---|---|
+| fwd n=1 | 22.97 -> 8.84 s | **2.60x** | 9.0e-6 PASS | equal |
+| fwd n=2 | 13.99 -> 6.58 s | **2.13x** | 8.9e-6 PASS | -2.4 GB |
+| fwd n=4 | 10.82 -> 2.97 s | **3.64x** | 8.9e-6 PASS | **-8.7 GB** |
+| VCD n=2 (4 it) | 271.7 -> **85.0 s** | **3.20x** | 8.3e-3 INFO (intrinsic, stable) | equal |
+
+Tokens verified: n=1 `(pallas: back+fwd)`, n>=2 `(pallas: band-back+band-fwd)`.
+**Cone VCD n=2 composes to 3.20x end-to-end** (the back adoption alone gave ~1.8x;
+the forward adds ~1.76x).  The occasional convergence gate on this final
+configuration (both cone kernels) is the last box; submitted as the closing check.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
