@@ -589,7 +589,8 @@ def test_cone_fwd_bp_guard():
     angles = np.linspace(0, 2 * np.pi, 16, endpoint=False)
     model = mbirjax.ConeBeamModel((16, 24, 32), angles,
                                   source_detector_dist=128, source_iso_dist=128)
-    model.set_params(delta_det_row=8.0)     # coarse rows vs voxels -> large bp
+    # BOTH pitches: bp derives from min(delta_det_row, delta_det_channel).
+    model.set_params(delta_det_row=8.0, delta_det_channel=8.0)
     model.configure_devices(1)
     gp = model.get_geometry_parameters()
     if int(gp.bp_psf_radius) <= 2:

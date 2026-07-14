@@ -1,6 +1,6 @@
-"""Increment-6 gate: the CONE fused-vfan back kernel, integrated, model-level A/B.
+"""Increment-6 gate: the CONE fused FORWARD kernel (E6), integrated, model-level A/B.
 
-E5 spiked 9.4x on the per-owner band sweep (2.97 vs 27.8 s).  This gates the
+E6 spiked 2.60x full-grid / 2.65x subset (job 13530564).  This gates the
 INTEGRATED path (cone fwd_pallas / fwd_pallas_band through the unified wrapper dispatch): model-level walls, values flag-on vs
 kill-switch, per-GPU peaks, at n=1/2/4 (1024^3 cone cell).  The seeded VCD cell is
 the empirical trajectory check backing the Hessian-gate decision (a): rel <= 1e-4
@@ -116,6 +116,7 @@ def orchestrator():
     for cfg in CELLS:
         env = dict(os.environ, W2I6_CELL=json.dumps(cfg),
                    CUDA_VISIBLE_DEVICES=','.join(str(i) for i in range(cfg['n'])))
+        env.pop('MBIRJAX_DISABLE_PALLAS', None)   # on cells must not inherit it
         if not cfg['on']:
             env['MBIRJAX_DISABLE_PALLAS'] = '1'
         log_path = os.path.join(OUT_DIR, f"{cfg['name']}.log")
@@ -129,7 +130,7 @@ def orchestrator():
                     line += '\n    ' + row.strip()
         print(line, flush=True)
         summary.append(line)
-    print('===== inc5 A/B summary =====', flush=True)
+    print('===== inc6 A/B summary =====', flush=True)
     print('\n'.join(summary), flush=True)
     print('=== w2_inc6_ab done ===', flush=True)
 
