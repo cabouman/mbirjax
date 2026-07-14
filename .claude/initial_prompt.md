@@ -9,20 +9,14 @@ other branches stage-only).  The local `mbirjax` conda env resolves the MAIN wor
 
 ## Current task
 
-Increment 6: the CONE FORWARD kernel, architecture (C) — Greg-approved, design
-PANEL-HARDENED (wf_39d30f52).  Entry point = `plans/projector_kernels/
-gpu_headroom_findings.md`, section "Cone forward fused kernel — DESIGN" incl. the
-PANEL AMENDMENTS (tap window = gp.bp_psf_radius — the XLA vfan is itself an
-inverse-affine gather; single-shot gate must be floor-CALIBRATED, ~1e-4-class
-max-rel at 1024 rows, forward has no sqrt-V averaging; dispatch guard bp <= 2;
-register/ack pre-commitments).  E6 SPIKE PASSED (job 13530564): full-grid 23.0 -> 8.85 s (2.60x, warps=2),
-subset 2.65x, adjoint 7.6e-8, values inside the calibrated gates.  NEXT STEP =
-increment 6 INTEGRATION via the inc5 pattern: transplant e6_cone_fused_fwd.py's
-kernel+driver into _pallas_kernels.py (CONE_FWD_NUM_WARPS=2), cone fwd_pallas /
-fwd_pallas_band geometry hooks + the bp_psf_radius <= 2 dispatch guard, tests
-(mirror the parallel fwd set + bp>2 fallback), model-level gate harness
-(w2_inc6_ab from the inc5 one), occasional convergence gate on the final config.
-Findings section "E6 — the cone fused forward kernel" has the full record.
+INCREMENT 6 CLOSED 2026-07-13 — THE KERNEL CAMPAIGN'S INCREMENT SERIES IS
+COMPLETE (findings sections "Increment 6" have the full record; end-to-end VCD n=2:
+parallel 2.83x, cone 3.20x; all paths gated).  Remaining campaign items, whenever
+picked up: the findings "## Pending" list (older E-round leftovers), potential
+per-arch extension (the docs "new GPU" protocol), the fwd_view_batch memory cap if
+Greg's evaluation asks for it, and eventually the PR toward kernel_investigation /
+prerelease (re-anchor via the squash-merge ancestry recipe).  There is NO active
+kernel design task; treat new work as Greg directs.
 
 ## State (all shipped + gated on this branch, 2026-07-13)
 

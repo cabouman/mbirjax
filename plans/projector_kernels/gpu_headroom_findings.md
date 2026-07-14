@@ -1098,6 +1098,17 @@ Tokens verified: n=1 `(pallas: back+fwd)`, n>=2 `(pallas: band-back+band-fwd)`.
 the forward adds ~1.76x).  The occasional convergence gate on this final
 configuration (both cone kernels) is the last box; submitted as the closing check.
 
+## Increment 6 CLOSED: the convergence gate passes on the final configuration (2026-07-13; job 13530971)
+
+Both cone kernels active (band-back + band-fwd), real data vs the depot references:
+|on-off| NRMSE <= 6.7e-8 across lilly_ds8/z62 x iters {8,15} -- hundreds of times
+inside the control bands, dlog10 = 0.0000 everywhere.  **The kernel campaign's
+increment series is complete**: parallel back 9.1x/7.5x/7.4x and forward
+3.2-3.8x/3.2x/3.1x (n=1/2/4); cone back 3.9x/9.9x/6.0x and forward 2.6x/2.1x/3.6x;
+end-to-end VCD n=2: parallel 97.9 -> 34.9 s (2.83x), cone 271.7 -> 85.0 s (3.20x);
+both anti-scaling regimes dead; every path value-gated per-call at calibrated
+contracts and at the reconstruction level against deep references.
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
