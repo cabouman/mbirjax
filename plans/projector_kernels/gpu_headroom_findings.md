@@ -1015,6 +1015,68 @@ model-level gate (fwd n=1/2/4 off/on + the seeded cone VCD walls; value criterio
 the calibrated contract), then the occasional convergence gate on the final
 configuration.
 
+## Soak: repeated-run stability + demo sanity + CPU suite — ALL PASS (2026-07-13; jobs 13528061 soak-gates, 13528062 soak-demo; CPU suite ×3 local)
+
+Composed, repeated-run validation of everything that shipped today (fwd driver fix +
+get_compute_config; guard drop + 1280-col cap; parallel band inc3/inc4; cone fused-vfan
+inc5) — not re-deriving the individual gates, but confirming they are stable run-to-run,
+end-to-end, and on CPU.  `soak_gates.py` ran the three A/B harnesses ×3 back-to-back +
+`w2_inc5_convergence.py` ×1 in one sbatch (1 h 23 m); `soak_demo_sanity.py` ran the
+demo-1 workflow flag-on vs kill-switch at 1024³, n=1 (37 m).
+
+**Gate stability — on-cell (the pallas path), 3 reps.**  Walls in seconds, rel = value
+gate vs flag-off, peaks per-GPU.  Every per-cell wall max/min ≤ 1.026 (bar: < 1.1).
+
+| gate | on-cell | wall min–max (ratio) | rel (3 reps) | peak GB | verdict |
+|---|---|---|---|---|---|
+| inc3 | par_back_n2 | 0.714–0.717 (1.004) | 1.31e-6 | 13.7–14.1 | 3/3 PASS |
+| inc3 | par_back_n4 | 0.441–0.451 (1.023) | 8.74e-7 | 11.8–11.9 | 3/3 PASS |
+| inc3 | par_vcd_n2  | 34.66–35.56 (1.026) | 6.7–7.2e-6 | 26.7–26.8 | 3/3 PASS |
+| inc4 | par_fwd_n2  | 1.309 (1.000) | 5.8–5.9e-6 | 18.1–18.3 | 3/3 PASS |
+| inc4 | par_fwd_n4  | 0.671–0.672 (1.001) | 5.82e-6 | 17.4–17.5 | 3/3 PASS |
+| inc4 | par_vcd_n2  | 34.60–35.17 (1.016) | 6.2–8.2e-6 | 26.8 | 3/3 PASS |
+| inc5 | cone_back_n1 | 4.890 (1.000) | 6.52e-6 | 21.15 | 3/3 PASS |
+| inc5 | cone_back_n2 | 2.780–2.789 (1.003) | 6.52e-6 | 16.6 | 3/3 PASS |
+| inc5 | cone_back_n4 | 2.459–2.470 (1.004) | 6.52e-6 | 13.7–13.8 | 3/3 PASS |
+| inc5 | cone_hess_n1 | 5.011–5.022 (1.002) | 1.97e-5 | 21.15 | 3/3 PASS |
+| inc5 | cone_vcd_n2 | 117.7–120.0 (1.019) | 8.44–8.47e-3 | 27.14 | 3/3 **EXPECTED-FAIL** |
+
+Off-cell (XLA baseline) walls are equally stable (par_back_n2 5.394 exact ×3; cone_vcd
+268.9–272.6, ratio 1.014).  Speedups reproduce the shipped gates exactly (inc3 back
+7.5×/7.4×, inc4 fwd 3.2×, inc5 cone back 3.9×/9.9×/6.0×; VCD n=2 both-bands 2.8×).  The
+lone non-pass is the DOCUMENTED `cone_vcd` expected-fail (8.47/8.47/8.44e-3 — the
+intrinsic edge-conditioning of "inc5 VCD divergence" above; stable across reps, not
+chased).
+
+**Convergence-equivalence gate (once)** — all four cases PASS, reproducing
+Increment-5-CLOSED: `|on−off|` ≤ 8.2e-8 vs control bands 9.6e-6–4.4e-5 (lilly_ds8 / z62
+at iters 8 / 15).
+
+**Demo-level sanity (1024³, n=1, flag-on vs MBIRJAX_DISABLE_PALLAS=1)** — both geometries
+clear the rel-max ≤ 1e-3 real-workflow gate with large margin AND show the expected
+device tokens:
+
+| geometry | tokens | rel-max (interior) | wall off → on | peak GB off → on |
+|---|---|---|---|---|
+| parallel | (pallas: back+fwd) | 5.13e-6 (5.13e-6) | 585.1 → 149.1 s (**3.92×**) | 49.98 → 49.98 |
+| cone | (pallas: back) | 6.85e-6 (6.85e-6) | 812.8 → 547.3 s (**1.49×**) | 54.26 → 57.76 (+3.5) |
+
+Notable: the demo cone rel-max is 6.85e-6 (float-noise class), NOT the 8.5e-3 of the inc5
+`cone_vcd` cell, and the interior crop equals the full rel — the edge divergence is
+specific to the real-data minimal-coverage geometry (the flash-extension zero-coverage
+zone) and does not appear in the shepp-logan demo, where a fully-converged recon agrees
+to float noise everywhere.  This reinforces the "intrinsic edge conditioning, not a
+kernel defect" reading.  End-to-end the single-GPU pallas paths give 3.92× (parallel
+back+fwd) / 1.49× (cone back) on the whole recon.
+
+**CPU suite ×3 (local)** — 313 passed / 2 skipped / 72 subtests, identical all three runs;
+no flake among the pallas tests (the `test_qggmrf` precedent did not recur).
+
+**Verdict: the shipped configuration is stable across repeated runs, end-to-end, and on
+CPU.**  No cell failed reproducibly outside the documented `cone_vcd` expected-fail.
+(Benign `module: command not found` from `load_conda_cuda.sh` in the non-interactive
+shell, as in every campaign job — the jobs ran on GPU with correct results.)
+
 ## Pending
 - Cone 1024³ VCD iteration wall (wall-only rerun); cone fwd hfan/vfan split at 1024³.
 - A2 flatten A/B (small); the subset-call concat fast path (observation 4).
