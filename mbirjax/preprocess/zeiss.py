@@ -75,12 +75,12 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
             # Create the model and set parameters based on the scanner type
             if zeiss_metadata['scanner_type'] == 'ultra':
                 ct_model = mbirjax.ParallelBeamModel(**geometry_params)
-            else:  # 'versa' or 'unknown' (treated as cone beam)
-                if zeiss_metadata['scanner_type'] == 'unknown':
-                    warnings.warn("Unknown Zeiss scanner type; assuming cone-beam geometry. "
-                                  "Verify that this geometry is appropriate for the scan.")
+            elif zeiss_metadata['scanner_type'] == 'versa':
                 ct_model = mbirjax.ConeBeamModel(**geometry_params)
+            else:
+                raise ValueError(f"Unknown Zeiss scanner type: {zeiss_metadata['scanner_type']}")
             ct_model.set_params(**optional_params)
+            ct_model.auto_set_recon_geometry()
 
             # Run reconstruction
             recon, recon_dict = ct_model.recon(sino)
