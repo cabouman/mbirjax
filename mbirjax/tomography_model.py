@@ -71,6 +71,24 @@ ReconParams = namedtuple('ReconParams', recon_param_names)
 
 TomographyParamNames = mj.ParamNames | Literal['view_params_name']
 
+# The regularization strengths that auto_set_regularization_params computes and reports as the fields
+# of the RegularizationParams namedtuple in the recon dict.
+_AUTO_REGULARIZATION_PARAM_NAMES = ('sigma_y', 'sigma_x', 'sigma_prox')
+
+# Recon-time regularization knobs, separated out by get_all_params so a consumer (e.g.
+# save_preprocessing) can drop them and let them be re-chosen at reconstruction time: the auto-set
+# strengths plus the meta-knobs that drive them.  The qGGMRF prior SHAPE params (p, q, T,
+# qggmrf_nbr_wts) are intentionally NOT here -- they are structural (e.g. TranslationModel sets
+# qggmrf_nbr_wts as a geometry default), so they stay with optional.
+_REGULARIZATION_PARAM_NAMES = _AUTO_REGULARIZATION_PARAM_NAMES + ('snr_db', 'sharpness', 'auto_regularize_flag')
+
+# Internal bookkeeping params that are re-derived at construction, so get_all_params drops them from
+# the returned dicts (rebuilding via build_model restores them): geometry_type is moved into
+# required_params (as the class identity); the rest are set by the geometry constructors, and
+# re-setting them would only trigger a spurious recompile (or, for use_gpu, a deprecation warning).
+_CONSTRUCTION_DERIVED_PARAM_NAMES = ('geometry_type', 'view_params_name',
+                                     'view_params_component_names', 'file_format', 'version', 'use_gpu')
+
 
 class TomographyModel(ParameterHandler):
     """
@@ -175,6 +193,64 @@ class TomographyModel(ParameterHandler):
             names = names[1:]
 
         return names
+
+    def get_all_params(self):
+        """
+        Return this model's parameters as ``(required_params, optional_params, regularization)``.
+
+        This is the single source of truth for reading a model's parameters back out.  The three
+        dicts partition the parameters so a caller can reconstruct or serialize the model and choose
+        which parts to apply (see :func:`mbirjax.build_model`):
+
+        * **required_params** -- the arguments the model constructor takes (from its ``__init__``
+          signature), with the view-dependent arguments reconstructed from storage (e.g. ``angles``
+          and ``helical_z_shifts`` are unpacked from the stored ``view_params_array``), plus a
+          ``geometry_type`` entry so the model class can be resolved.  ``build_model(required_params)``
+          alone rebuilds the model.
+        * **optional_params** -- the remaining geometry/detector parameters that are applied with
+          ``set_params`` (detector pitches, offsets, ``delta_voxel``, ``recon_shape``, voxel aspects).
+        * **regularization** -- the recon-time regularization knobs (``sigma_y``, ``sigma_x``,
+          ``sigma_prox``, ``snr_db``, ``sharpness``, ``auto_regularize_flag``), separated so a
+          consumer such as ``save_preprocessing`` can drop them and let them be re-chosen at
+          reconstruction time.
+
+        Returns:
+            tuple: ``(required_params, optional_params, regularization)`` -- three dicts of values.
+        """
+        required_names = list(self.get_required_param_names())
+
+        # The view-dependent constructor arguments are stored as a single array.  Cone packs several
+        # of them (angles, helical_z_shifts) into one ``view_params_array`` under names listed in
+        # ``view_params_component_names``; the other geometries store their single view array under
+        # its constructor-argument name, so no reconstruction is needed there.
+        has_components = 'view_params_component_names' in self.params
+        if has_components:
+            component_names = self.get_params('view_params_component_names')
+            for name in component_names:
+                required_names.remove(name)
+
+        required_params, optional_params = self.get_required_params_from_dict(
+            self.params, required_param_names=required_names, values_only=True)
+
+        if has_components:
+            view_params_name = self.get_params('view_params_name')
+            view_array = self.get_params(view_params_name)
+            for i, name in enumerate(component_names):
+                required_params[name] = view_array[:, i]
+            # The packed array is rebuilt from its components at construction; do not persist it too.
+            optional_params.pop(view_params_name, None)
+
+        # Drop the construction-derived bookkeeping params (rebuilding restores them); geometry_type
+        # is instead carried in required_params, as str(type(self)), so (required, optional) is a
+        # self-contained model description that build_model can reconstruct the class from.
+        for name in _CONSTRUCTION_DERIVED_PARAM_NAMES:
+            optional_params.pop(name, None)
+        required_params['geometry_type'] = str(type(self))
+
+        regularization = {name: optional_params.pop(name)
+                          for name in _REGULARIZATION_PARAM_NAMES if name in optional_params}
+
+        return required_params, optional_params, regularization
 
     @overload
     def get_params(self, parameter_names: Union[TomographyParamNames, list[TomographyParamNames]]): ...
@@ -2232,10 +2308,9 @@ class TomographyModel(ParameterHandler):
             self.auto_set_sigma_x(recon_std)
             self.auto_set_sigma_prox(recon_std)
 
-        regularization_param_names = ['sigma_y', 'sigma_x', 'sigma_prox']
-        RegularizationParams = namedtuple('RegularizationParams', regularization_param_names)
+        RegularizationParams = namedtuple('RegularizationParams', _AUTO_REGULARIZATION_PARAM_NAMES)
         regularization_param_values = [float(val) for val in self.get_params(
-            regularization_param_names)]  # These should be floats, but the user may have set them to jnp.float
+            _AUTO_REGULARIZATION_PARAM_NAMES)]  # These should be floats, but the user may have set them to jnp.float
         regularization_params = RegularizationParams(*tuple(regularization_param_values))._asdict()
 
         return regularization_params

@@ -15,6 +15,9 @@ import sys
 
 # Ensure autodoc imports the local package from this checkout.
 sys.path.insert(0, os.path.abspath('../..'))
+# Design-proposal stub modules (not part of the package) autodoc'd by dev proposal pages,
+# e.g. _proposals/preprocessing_api.py -> dev_preprocessing_api.rst.  Remove when a proposal lands.
+sys.path.insert(0, os.path.abspath('_proposals'))
 
 # -- Project information -----------------------------------------------------
 
