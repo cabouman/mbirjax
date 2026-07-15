@@ -7,12 +7,12 @@ import warnings
 import mbirjax
 import mbirjax.preprocess as mjp
 import pprint
-import logging
 import olefile
-import struct
-from pathlib import Path
+from . import _xradia_ole
+from ._xradia_ole import (_check_read, _get_ole_data_type, _log_imported_data, _read_ole_struct,
+                          _read_ole_value, _read_ole_arr, _read_ole_image, _read_ole_str,
+                          get_index_in_list)
 pp = pprint.PrettyPrinter(indent=4)
-logger = logging.getLogger(__name__)
 
 
 def get_sino_and_model(dataset_dir, *, downsample_factor=(1, 1), subsample_view_factor=1,
@@ -468,148 +468,24 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
         raise FileNotFoundError(dataset_dir)
 
 
-def _check_read(fname):
+def read_xrm(fname, normalize_to_float32=True):
     """
-    Validate the file path and ensure it has a recognized extension.
+    Read a single Xradia ``.xrm`` radiograph and its metadata (zeiss reader).
 
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        fname (str) : Path to the file to be read. Must be a string and have one of the recognized file extensions:
-        ['.edf', '.tiff', '.tif', '.h5', '.hdf', '.npy', '.nc', '.xrm', '.txrm', '.txm', '.xmt', '.nxs'].
-
-
-    Returns:
-        str: Absolute path to the file.
+    Thin wrapper over :func:`mbirjax.preprocess._xradia_ole.read_xrm` that binds this module's
+    :func:`read_metadata`.  See that function for argument and return details.
     """
-    known_extensions = {
-        '.edf', '.tiff', '.tif', '.h5', '.hdf', '.npy', '.nc',
-        '.xrm', '.txrm', '.txm', '.xmt', '.nxs'
-    }
-
-    if not isinstance(fname, str):
-        logger.error('File name must be a string')
-    else:
-        _, ext = os.path.splitext(fname)
-        ext = ext.lower()
-        if ext not in known_extensions:
-            logger.error('Unknown file extension')
-
-    return os.path.abspath(fname)
-
-
-def read_xrm(fname):
-    """
-    Read data from xrm file.
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        fname (str): String defining the path of file or file name.
-
-    Returns:
-        np.ndarray: Output 2D image with shape (num_det_rows, num_det_channels).
-        dict: Output metadata.
-    """
-    fname = _check_read(fname)
-    try:
-        ole = olefile.OleFileIO(fname)
-    except IOError:
-        print('No such file or directory: %s', fname)
-        return False
-
-    # Read metadata from xrm file
-    metadata = read_metadata(ole)
-
-    # Read scan data from xrm file
-    stream = ole.openstream("ImageData1/Image1")
-    data = stream.read()
-
-    # Get the data type of scan data
-    data_type = _get_ole_data_type(metadata)
-    data_type = data_type.newbyteorder('<')
-
-    # Reshape the scan data into 2D array
-    arr = np.reshape(
-        np.frombuffer(data, data_type),
-        (
-            metadata["num_det_rows"],
-            metadata["num_det_channels"]
-        )
-    )
-
-    _log_imported_data(fname, arr)
-
-    # Normalize the scan data
-    arr = mjp.utilities._normalize_to_float32(arr)
-
-    ole.close()
-    return arr, metadata
+    return _xradia_ole.read_xrm(fname, read_metadata, normalize_to_float32=normalize_to_float32)
 
 
 def read_xrm_dir(dir_path):
     """
-    Read all .xrm files in a directory (filesystem order), stack into (num_views, num_det_rows, num_det_cols),
-    and concatenate selected metadata.
+    Read all ``.xrm`` files in a directory and stack them (zeiss reader).
 
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        dir_path (str) : Path to the directory to be read.
-
-    Returns:
-        np.ndarray: Output 3D image with shape (num_views, num_det_rows, num_det_channels).
-        dict: Output metadata
+    Thin wrapper over :func:`mbirjax.preprocess._xradia_ole.read_xrm_dir` that binds this module's
+    :func:`read_metadata`.  See that function for argument and return details.
     """
-    dir_path = Path(dir_path)
-    files = [p for p in dir_path.iterdir() if p.is_file()]
-
-    # Load the scan data and metadata from first file
-    proj0, md0 = read_xrm(str(files[0]))
-    num_views = len(files)
-    num_det_rows, num_det_channels = proj0.shape
-    arr = np.empty((num_views, num_det_rows, num_det_channels), dtype=proj0.dtype)
-    arr[0] = proj0
-
-    # Load the x, y, z object positions of the first file
-    x0 = md0['x_positions'][0]
-    y0 = md0['y_positions'][0]
-    z0 = md0['z_positions'][0]
-
-    # Load the rotation angle of the object of the first file
-    angle0 = md0['thetas'][0]
-
-    metadata = dict(md0)
-    metadata['num_views'] = num_views
-    metadata['x_positions'] = [x0]
-    metadata['y_positions'] = [y0]
-    metadata['z_positions'] = [z0]
-    metadata['thetas'] = [angle0]
-    # Per-view alignment shifts: accumulated like the positions (metadata starts as a copy of
-    # the FIRST file's dict, whose shift entries cover only that file).
-    metadata['x_shifts'] = [md0['x_shifts'][0]]
-    metadata['y_shifts'] = [md0['y_shifts'][0]]
-
-    # Load the remaining files and stack them together
-    for i, p in enumerate(files[1:], start=1):
-        proj, md = read_xrm(str(p))
-        arr[i] = proj
-        metadata['x_positions'].append(md['x_positions'][0])
-        metadata['y_positions'].append(md['y_positions'][0])
-        metadata['z_positions'].append(md['z_positions'][0])
-        metadata['thetas'].append(md['thetas'][0])
-        metadata['x_shifts'].append(md['x_shifts'][0])
-        metadata['y_shifts'].append(md['y_shifts'][0])
-
-    _log_imported_data(str(dir_path), arr)
-
-    # Normalize the scan data
-    arr = mjp.utilities._normalize_to_float32(arr)
-
-    return arr, metadata
+    return _xradia_ole.read_xrm_dir(dir_path, read_metadata)
 
 def read_metadata(ole):
     """
@@ -695,171 +571,6 @@ def read_metadata(ole):
     metadata['reference'] = reference
 
     return metadata
-
-
-def _log_imported_data(fname, arr):
-    """
-    Log information about imported data.
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        fname (str) : Path of the file from which data was imported.
-        arr (np.ndarray) : Array containing the image data.
-    """
-    logger.debug('Data shape & type: %s %s', arr.shape, arr.dtype)
-    logger.info('Data successfully imported: %s', fname)
-
-
-def get_index_in_list(input_list, target):
-    """
-    Find the index of target in the given list.
-    Return -1 if not present.
-    """
-    if target in input_list:
-        idx = input_list.index(target)
-    else:
-        idx = -1  # or None
-
-    return idx
-
-
-def _get_ole_data_type(metadata, datatype=None):
-    """
-    Determine the Numpy data type for image data stored in a Zeiss OLE (.xrm, .txrm, .txm) file.
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        metadata (dict) : Dictionary containing metadata extracted from the OLE file.
-                          Must include the key "data_type" which is an integer code indicating the pixel data format.
-        datatype (int, optional): Integer code for the data type. If None, the function uses `metadata["data_type"]`.
-
-    Returns:
-        np.dtype: The data type of the image data.
-    """
-    # 10 float; 5 uint16 (unsigned 16-bit (2-byte) integers)
-    if datatype is None:
-        datatype = metadata["data_type"]
-    if datatype == 10:
-        return np.dtype(np.float32)
-    elif datatype == 5:
-        return np.dtype(np.uint16)
-    else:
-        raise Exception("Unsupport XRM datatype: %s" % str(datatype))
-
-
-def _read_ole_struct(ole, label, struct_fmt):
-    """
-    Reads the struct associated with label in an ole file
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        ole (OleFileIO) : An ole file to read from.
-        label (str) : Label associated with the OLE file.
-        struct_fmt (str) : Format of the OLE file.
-
-    Returns:
-        tuple or None: A tuple of unpacked values from the binary stream if the label exists.
-    """
-    value = None
-    if ole.exists(label):
-        stream = ole.openstream(label)
-        data = stream.read()
-        value = struct.unpack(struct_fmt, data)
-    return value
-
-
-def _read_ole_value(ole, label, struct_fmt):
-    """
-    Reads the value associated with label in an ole file
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        ole (OleFileIO) : An ole file to read from.
-        label (str) : Label associated with the OLE file.
-        struct_fmt (str) : Format of the OLE file.
-
-    Returns:
-        int or float : The unpacked scalar value from the binary stream if the label exists,
-    """
-    value = _read_ole_struct(ole, label, struct_fmt)
-    if value is not None:
-        value = value[0]
-    return value
-
-
-def _read_ole_arr(ole, label, struct_fmt):
-    """
-    Reads the numpy array associated with label in an ole file
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        ole (OleFileIO) : An ole file to read from.
-        label (str) : Label associated with the OLE file.
-        struct_fmt (str) : Format of the OLE file.
-
-    Returns:
-        np.ndarray: The unpacked numpy array from the binary stream if the label exists.
-    """
-    arr = _read_ole_struct(ole, label, struct_fmt)
-    if arr is not None:
-        arr = np.array(arr)
-    return arr
-
-
-def _read_ole_image(ole, label, metadata, datatype=None):
-    """
-    Reads the image data associated with label in an ole file
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        ole (OleFileIO) : An ole file to read from.
-        label (str) : Label associated with the OLE file.
-        metadata (dict) : Dictionary containing metadata extracted from the OLE file.
-        datatype: Data type of the image data. Defaults to None.
-
-    Returns:
-        np.ndarray: Output 2D image with shape (num_det_rows, num_det_channels).
-    """
-    stream = ole.openstream(label)
-    data = stream.read()
-    data_type = _get_ole_data_type(metadata, datatype)
-    data_type = data_type.newbyteorder('<')
-    image = np.reshape(
-        np.frombuffer(data, data_type),
-        (metadata["num_det_rows"], metadata["num_det_channels"], )
-    )
-    return image
-
-
-def _read_ole_str(ole, label):
-    """
-    Reads the string associated with label in an ole file
-
-    Args:
-        ole (OleFileIO) : An ole file to read from.
-        label (str) : Label associated with the OLE file.
-
-    Returns:
-        list: A list contain all the strings from the binary stream if the label exists
-    """
-    str = None
-    if ole.exists(label):
-        stream = ole.openstream(label)
-        data = stream.read()
-        str = [name.decode('utf-8') for name in data.split(b'\x00') if name]
-    return str
 
 
 def _read_ole_reference(ole, labels, struct_fmt):
