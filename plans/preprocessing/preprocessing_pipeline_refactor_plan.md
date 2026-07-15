@@ -165,12 +165,36 @@ code is affected; the breaks are research scripts + the external mbirjax_applica
 **PHASE 3 COMPLETE.** All four readers (nsi, pymbir, zeiss, zeiss_tct) converted to get_sino_and_model +
 private _compute_sino_and_params, each adversarially reviewed clean. Full CPU suite green (257 passed).
 
-## DRY pass (Greg-requested) -- IN PROGRESS
+## DRY pass (Greg-requested) -- A/B/D DONE; C (OLE) deferred
 
-After the reader refactor, scan the preprocessing files for duplication left/introduced (known: the
-config-crop temp-dict + apply_detector_crop marshaling copied into convert_nsi/convert_zeiss/
-convert_zeiss_tct -> candidate scalar helper `apply_config_crop(...)`). Fan-out scan + adversarial judge
-(reject over-abstraction) running; present a ranked list for Greg's pick before implementing.
+Fan-out scan (23 candidates) + adversarial judge rejected the over-abstraction traps (geometry_type
+one-liners, downsample blocks with guard divergence, look-alikes with real behavioral differences).
+Four distinct wins surfaced; Greg picked A + B + D now, C as a follow-up. All three new helpers live in
+`preprocess/utilities.py` (exported), probe-confirmed byte-identical convert output, tests green:
+
+- **A `apply_config_crop(...)`** -- scalar-in/out adapter around apply_detector_crop; collapses the 3x
+  copy-pasted temp-dict marshaling in convert_nsi/convert_zeiss/convert_zeiss_tct. Keyword-only crop args
+  (per the judge, to avoid a wide-positional footgun).
+- **B `finalize_model(sino, required, optional, *, auto_crop=False)`** -- the shared get_sino_and_model
+  tail (_auto_crop_sino + build_model); all four readers call it, which also RETIRES the awkward
+  `mjp.utilities._auto_crop_sino` private reach-in (now contained inside utilities.py). Dropped the
+  now-unused `import mbirjax` from nsi/pymbir/zeiss get_sino_and_model (kept in _compute for
+  str(GeometryModel)).
+- **D `to_alu(value, from_unit, alu_unit)` + `_ALU_UNIT_CONVERSION`** -- one shared unit table; replaced
+  the duplicated dict + the `*= conv[u]/conv[alu]` idiom in convert_zeiss (5x) and convert_zeiss_tct (8x).
+- New tests: `test_apply_config_crop_matches_formula`, `test_to_alu` (helpers covered indirectly by the
+  reader tests too).
+
+### C -- FOLLOW-UP (do NOT lose): shared Xradia/OLE reader module
+
+Biggest single duplication and NOT yet done (Greg deferred it): **9 byte-identical OLE-reader helpers**
+duplicated between `zeiss.py` and `zeiss_tct.py` -- `_check_read`, `_get_ole_data_type`, `_log_imported_data`,
+`_read_ole_struct`, `_read_ole_value`, `_read_ole_arr`, `_read_ole_image`, `_read_ole_str`,
+`get_index_in_list` -- plus near-identical `read_xrm` / `read_xrm_dir`. Extract to a shared private module
+(e.g. `mbirjax/preprocess/_xradia_ole.py`) and import into both. KEEP `read_metadata` per-reader (zeiss
+handles ReferenceData/MultiReferenceData, tct is scalar) -- real behavioral divergence, do not merge.
+Medium effort, low behavior risk, BUT this layer has NO test coverage -- do it as its own focused change
+with careful verification, not bundled into the API refactor.
 
 ## Phase 4 — docs + review
 

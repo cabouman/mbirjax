@@ -67,10 +67,7 @@ def get_sino_and_model(dataset_dir, *, downsample_factor=(1, 1), subsample_view_
         crop_pixels_sides=crop_pixels_sides, crop_pixels_top=crop_pixels_top,
         crop_pixels_bottom=crop_pixels_bottom, alu_unit=alu_unit, bg_option=bg_option,
         zinger_correction=zinger_correction, verbose=verbose)
-    if auto_crop:
-        sino, required_params, optional_params = mjp.utilities._auto_crop_sino(sino, required_params, optional_params)
-    model = mbirjax.build_model(required_params, optional_params)
-    return sino, model
+    return mjp.finalize_model(sino, required_params, optional_params, auto_crop=auto_crop)
 
 
 def _compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_view_factor=1, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit='mm', bg_option="global", zinger_correction=True, verbose=1):
@@ -354,21 +351,17 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     angles, angle_unit = itemgetter('angles', 'angle_unit')(zeiss_params)
     det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
-    # Create unit conversion table for all units used in the txrm files
-    unit_conversion = {'um': 1.0, 'mm': 1000.0, 'cm': 1e4, 'm': 1e6}
-
-    # Create a dictionary to store MBIR parameters
     scanner_type = zeiss_params['scanner_type']
 
     # Define 1 ALU as 1 unit of alu_unit
     alu_value = 1
 
     # Convert physical units to ALU
-    source_iso_dist *= unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
-    iso_det_dist *= unit_conversion[iso_det_dist_unit] / unit_conversion[alu_unit]
-    delta_det_channel *= unit_conversion[delta_det_channel_unit] / unit_conversion[alu_unit]
-    delta_det_row *= unit_conversion[delta_det_row_unit] / unit_conversion[alu_unit]
-    iso_pixel_pitch *= unit_conversion[iso_pixel_pitch_unit] / unit_conversion[alu_unit]
+    source_iso_dist = mjp.to_alu(source_iso_dist, source_iso_dist_unit, alu_unit)
+    iso_det_dist = mjp.to_alu(iso_det_dist, iso_det_dist_unit, alu_unit)
+    delta_det_channel = mjp.to_alu(delta_det_channel, delta_det_channel_unit, alu_unit)
+    delta_det_row = mjp.to_alu(delta_det_row, delta_det_row_unit, alu_unit)
+    iso_pixel_pitch = mjp.to_alu(iso_pixel_pitch, iso_pixel_pitch_unit, alu_unit)
 
     # Compute default value of source to detector distance
     source_detector_dist = source_iso_dist + iso_det_dist
@@ -397,17 +390,13 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, downsample_factor=(1, 1), crop
     det_channel_offset *= delta_det_channel
     det_row_offset *= delta_det_row
 
-    # Route the configuration crop through the shared detector-plane primitive: it reduces the shape
-    # and, for an asymmetric top/bottom crop, shifts det_row_offset to follow the detector center
-    # (symmetric crops are a no-op).  Offsets are already in ALU here and the crop is in raw detector
-    # pixels (matched by the raw pitch); downsampling is applied afterward.
-    crop_geometry = {'sinogram_shape': (len(angles), num_det_rows, num_det_channels)}
-    crop_offsets = {'delta_det_row': delta_det_row, 'delta_det_channel': delta_det_channel,
-                    'det_row_offset': det_row_offset, 'det_channel_offset': det_channel_offset}
-    crop_geometry, crop_offsets = mjp.apply_detector_crop(crop_geometry, crop_offsets, crop_pixels_top,
-                                                          crop_pixels_bottom, crop_pixels_sides, crop_pixels_sides)
-    _, num_det_rows, num_det_channels = crop_geometry['sinogram_shape']
-    det_row_offset, det_channel_offset = crop_offsets['det_row_offset'], crop_offsets['det_channel_offset']
+    # Apply the configuration crop through the shared primitive: it reduces the shape and, for an
+    # asymmetric top/bottom crop, shifts det_row_offset (symmetric crops are a no-op).  Offsets are
+    # already in ALU and the crop is in raw detector pixels (matched by the raw pitch); downsampling is
+    # applied afterward.
+    num_det_rows, num_det_channels, det_row_offset, det_channel_offset = mjp.apply_config_crop(
+        num_det_rows, num_det_channels, det_row_offset, det_channel_offset, delta_det_row, delta_det_channel,
+        crop_pixels_top=crop_pixels_top, crop_pixels_bottom=crop_pixels_bottom, crop_pixels_sides=crop_pixels_sides)
 
     # Adjust detector size and pixel pitch params w.r.t. downsampling arguments
     num_det_rows = num_det_rows // downsample_factor[0]

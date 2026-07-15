@@ -331,6 +331,19 @@ class TestDetectorCrop(unittest.TestCase):
         with self.assertRaises(AssertionError):
             preprocess.apply_detector_crop(dict(required), {}, 0, 0, 0, -1)      # negative crop
 
+    def test_apply_config_crop_matches_formula(self):
+        # apply_config_crop is the scalar adapter around apply_detector_crop used by the convert_* readers.
+        nr, nc, dro, dco = preprocess.apply_config_crop(
+            64, 128, 1.0, 2.0, 0.5, 0.25, crop_pixels_top=4, crop_pixels_bottom=10, crop_pixels_sides=6)
+        self.assertEqual((nr, nc), (64 - 14, 128 - 12))
+        self.assertAlmostEqual(dro, 1.0 + (10 - 4) / 2 * 0.5)      # asymmetric top/bottom -> row shift
+        self.assertAlmostEqual(dco, 2.0)                          # sides symmetric -> no channel shift
+
+    def test_to_alu(self):
+        self.assertAlmostEqual(preprocess.to_alu(1.0, 'mm', 'um'), 1000.0)
+        self.assertAlmostEqual(preprocess.to_alu(2.0, 'cm', 'mm'), 20.0)
+        self.assertAlmostEqual(preprocess.to_alu(5.0, 'mm', 'mm'), 5.0)   # identity when units match
+
     def test_detect_blank_margins_exact_and_deterministic(self):
         sino = np.zeros((8, 80, 100), dtype=np.float32)
         sino[:, 25:60, 30:75] = 5.0                                        # object block, off-center

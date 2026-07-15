@@ -36,13 +36,9 @@ def get_sino_and_model(filename, *, bh_correction=True, auto_crop=False):
     Note:
         Reconstruction weights are not returned; generate them with ``mbirjax.gen_weights``.
     """
-    import mbirjax
     import mbirjax.preprocess as mjp
     sino, required_params, optional_params = _compute_sino_and_params(filename, bh_correction=bh_correction)
-    if auto_crop:
-        sino, required_params, optional_params = mjp.utilities._auto_crop_sino(sino, required_params, optional_params)
-    model = mbirjax.build_model(required_params, optional_params)
-    return sino, model
+    return mjp.finalize_model(sino, required_params, optional_params, auto_crop=auto_crop)
 
 
 def _compute_sino_and_params(filename, bh_correction=True):

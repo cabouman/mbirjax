@@ -55,10 +55,7 @@ def get_sino_and_model(dataset_dir, *, downsample_factor=(1, 1), subsample_view_
         dataset_dir, downsample_factor=downsample_factor, subsample_view_factor=subsample_view_factor,
         crop_pixels_sides=crop_pixels_sides, crop_pixels_top=crop_pixels_top,
         crop_pixels_bottom=crop_pixels_bottom, verbose=verbose, offset_correction=offset_correction)
-    if auto_crop:
-        sino, required_params, optional_params = mjp.utilities._auto_crop_sino(sino, required_params, optional_params)
-    model = mbirjax.build_model(required_params, optional_params)
-    return sino, model
+    return mjp.finalize_model(sino, required_params, optional_params, auto_crop=auto_crop)
 
 
 def _compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_view_factor=1,
@@ -425,17 +422,13 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pix
     det_channel_offset, det_row_offset = calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_det_row, num_det_channels, num_det_rows, magnification)
     recon_slice_offset = - det_row_offset / magnification
 
-    # Route the configuration crop through the shared detector-plane primitive: it reduces the shape
-    # and, for an asymmetric top/bottom crop, shifts det_row_offset to follow the detector center.
-    # NSI forces a symmetric crop upstream, so this is byte-identical for NSI.  The crop is in raw
-    # detector pixels (matched by the raw pitch here); downsampling is applied afterward.
-    crop_geometry = {'sinogram_shape': (len(angles), num_det_rows, num_det_channels)}
-    crop_offsets = {'delta_det_row': delta_det_row, 'delta_det_channel': delta_det_channel,
-                    'det_row_offset': det_row_offset, 'det_channel_offset': det_channel_offset}
-    crop_geometry, crop_offsets = mjp.apply_detector_crop(crop_geometry, crop_offsets, crop_pixels_top,
-                                                          crop_pixels_bottom, crop_pixels_sides, crop_pixels_sides)
-    _, num_det_rows, num_det_channels = crop_geometry['sinogram_shape']
-    det_row_offset, det_channel_offset = crop_offsets['det_row_offset'], crop_offsets['det_channel_offset']
+    # Apply the configuration crop through the shared primitive: it reduces the shape and, for an
+    # asymmetric top/bottom crop, shifts det_row_offset (NSI forces a symmetric crop upstream, so this is
+    # byte-identical for NSI).  The crop is in raw detector pixels (matched by the raw pitch);
+    # downsampling is applied afterward.
+    num_det_rows, num_det_channels, det_row_offset, det_channel_offset = mjp.apply_config_crop(
+        num_det_rows, num_det_channels, det_row_offset, det_channel_offset, delta_det_row, delta_det_channel,
+        crop_pixels_top=crop_pixels_top, crop_pixels_bottom=crop_pixels_bottom, crop_pixels_sides=crop_pixels_sides)
 
     # Adjust detector size and pixel pitch params w.r.t. downsampling arguments
     num_det_rows = num_det_rows // downsample_factor[0]
