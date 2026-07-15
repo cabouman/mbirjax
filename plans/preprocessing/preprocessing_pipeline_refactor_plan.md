@@ -196,11 +196,45 @@ handles ReferenceData/MultiReferenceData, tct is scalar) -- real behavioral dive
 Medium effort, low behavior risk, BUT this layer has NO test coverage -- do it as its own focused change
 with careful verification, not bundled into the API refactor.
 
-## Phase 4 — docs + review
+## Phase 4 — docs + review  (IN PROGRESS)
 
-Fold the proposal into `usr_preprocess.rst`; retire the `_proposals/` scaffolding + conf.py sys.path +
-index.rst toctree entry; full CPU suite; adversarial review on the full diff; migrate the flagged
-experiments/ callers.
+- DONE: folded a concise one-call-API narrative into `usr_preprocess.rst` (get_sino_and_model pattern,
+  class auto-selection, weights note, auto_crop); retired the proposal scaffolding -- reverted the
+  `conf.py` `_proposals` sys.path and the `index.rst` `dev_preprocessing_api` toctree entry (both were
+  committed referencing the UNcommitted proposal page, so a fresh checkout would have broken; now clean),
+  and moved the untracked `_proposals/preprocessing_api.py` + `dev_preprocessing_api.rst` to scratchpad
+  (Greg to permanently delete). Nitpicky docs build CLEAN. Full suite still 259 (docs-only changes).
+- DONE: final holistic adversarial review of the whole refactor vs prerelease (~1700-line diff). It
+  earned its keep -- found 3 REAL CROSS-PHASE findings no per-phase review could see (all fixed):
+  1. [medium] save_preprocessing/load_preprocessing docstrings still showed the old reload
+     `ConeBeamModel(**cone_beam_params)` + set_params -- which now TypeErrors because get_all_params
+     injects geometry_type (not a constructor arg). Fixed -> `mbirjax.build_model(cone_beam_params,
+     optional_params)` in both docstrings.
+  2. [low] build_model applied ALL params with `no_warning=True`, which also disabled the param-NAME
+     validation guard (a typo'd reader/round-trip key was silently accepted). Fixed: validate `optional`
+     (no_warning=False -> typo raises ValueError, verified) and apply `regularization` separately with
+     no_warning=True to suppress only the "directly setting regularization" advisory; copy_ct_model now
+     passes reg as the separate arg (was merging into optional). 43 utilities+preprocessing tests green.
+  3. [low] usr_preprocess.rst "auto_crop to a cone-beam reader" was imprecise (it is on nsi/pymbir/zeiss;
+     zeiss can be parallel). Reworded to name the readers. (Refuted: a public/private-split "inconsistency"
+     -- the split is intentional and consistent.)
+  Docs build clean; full suite re-run after fixes.
+- DONE: migrated the 9 LIVE experiments/ scripts (Greg's "live ones only" -- skipped the 2 ephemeral
+  capture scripts collect_sibling_baseline.py + collect_nsi_golden.py). Fan-out (1 agent/script) ->
+  get_sino_and_model; all 9 py_compile-clean; no compute_sino_and_params CALLS remain (only .md plan-doc
+  text). CANNOT run them (no scanner data) -- py_compile + pattern-reviewed only; Greg validates on data.
+  Notes: (a) 7 clean; the "old code never called auto_set_recon_geometry -> now correctly sized" recon-grid
+  fix applies to demo_split_sino_recon, offset_correction, alignment_exp_ORNL (flagged, intended). (b) raw
+  param-dict reads recovered via model.get_all_params() in bh_curve_fit, center_slice_zeiss, TCT_BGA. (c)
+  the two TCT scripts kept `weights = None` (deliberate authorial choice preserved; the new data-specific
+  mask is now available if wanted -- delete the `weights = None` line to opt in). TWO JUDGMENT CALLS for
+  Greg: (1) exp_view_offset_gradient.py READER changed zeiss -> zeiss_tct (a real bug fix: it built a
+  TranslationModel on TCT data but called the cone/parallel zeiss reader whose params lack
+  translation_vectors -> was hard-broken); (2) center_slice_zeiss.py load_file/else branch restructured +
+  get_all_params recovery for its pickle.dump (more involved -- review).
+
+**PREPROCESSING REFACTOR COMPLETE** (Phases 1-4 + DRY). Follow-ups in flight: OLE dedup chip (C, separate
+session) and the mbirjax_applications migration (separate repo).
 
 ## Follow-up (separate repo)
 

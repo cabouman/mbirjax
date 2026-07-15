@@ -1569,7 +1569,7 @@ def save_preprocessing(file_path, sinogram, cone_beam_params, optional_params, w
     This lets preprocessing run once and write its result to disk, so reconstruction can be launched as
     a separate process -- useful for debugging (inspect/reuse the preprocessed sinogram) and so the
     memory-tight recon starts with a clean GPU allocator.  Reload with :func:`load_preprocessing` and
-    rebuild the model with ``ConeBeamModel(**cone_beam_params)`` + ``set_params(**optional_params)``.
+    rebuild the model with ``mbirjax.build_model(cone_beam_params, optional_params)``.
 
     Only the GEOMETRY/preprocessing parameters are saved (the two dicts above); regularization
     parameters (sharpness, sigma_x, snr_db, ...) are deliberately NOT saved -- they are a recon-time
@@ -1627,8 +1627,8 @@ def load_preprocessing(file_path):
 
     Returns:
         tuple: ``(sinogram, cone_beam_params, optional_params, weights)`` -- a host NumPy sinogram, the
-        two parameter dicts (ready for ``ConeBeamModel(**cone_beam_params)`` +
-        ``set_params(**optional_params)``), and ``weights`` (a host NumPy array if custom weights were
+        two parameter dicts (ready for ``mbirjax.build_model(cone_beam_params, optional_params)``), and
+        ``weights`` (a host NumPy array if custom weights were
         saved, else ``None`` -- in which case the recon should regenerate them with ``gen_weights``).
     """
     import json

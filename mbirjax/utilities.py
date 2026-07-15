@@ -1703,19 +1703,18 @@ def build_model(required_params, optional_params=None, regularization=None):
     model_class = _resolve_geometry_class(required_params.pop('geometry_type'))
     model = model_class(**required_params)
 
-    set_kwargs = dict()
-    if optional_params:
-        set_kwargs.update(optional_params)
-    if regularization:
-        set_kwargs.update(regularization)
+    optional_params = dict(optional_params) if optional_params else {}
     # A pinned recon_shape must be applied AFTER auto_set_recon_geometry, or the automatic pass would
     # overwrite it (the translation reader pins recon_shape; a faithful save/load round-trip relies
     # on this ordering).
-    pinned_recon_shape = set_kwargs.pop('recon_shape', None)
-    # no_warning: these params come from a real model (get_all_params) or a preprocessor, so the
-    # "directly setting regularization" advisory does not apply -- this is a faithful rebuild.
-    if set_kwargs:
-        model.set_params(no_warning=True, **set_kwargs)
+    pinned_recon_shape = optional_params.pop('recon_shape', None)
+    # Apply the structural/optional params WITH name validation, so a typo'd key still raises; then
+    # apply the regularization knobs with no_warning to suppress the "directly setting regularization"
+    # advisory (this is a faithful rebuild, not a user hand-setting sigma_x).
+    if optional_params:
+        model.set_params(**optional_params)
+    if regularization:
+        model.set_params(no_warning=True, **regularization)
     model.auto_set_recon_geometry()
     if pinned_recon_shape is not None:
         model.set_params(no_warning=True, recon_shape=pinned_recon_shape)
@@ -1784,7 +1783,7 @@ def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_
 
     # The sinogram shape changed, so drop recon_shape and let build_model's auto pass recompute it.
     optional.pop('recon_shape', None)
-    return build_model(required, {**optional, **regularization})
+    return build_model(required, optional, regularization)
 
 
 def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors, voxel_row_aspect=1.0, voxel_slice_aspect=1.0):

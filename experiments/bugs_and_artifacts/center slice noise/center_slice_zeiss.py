@@ -64,16 +64,19 @@ def main():
             sinogram = sinogram[:, ::-1, :]
     else:
         crop_size = 400
-        sinogram, cone_beam_params, optional_params, zeiss_metadata = mjp.zeiss.compute_sino_and_params(dataset_path, downsample_factor=(downsample_factor, downsample_factor),
-                                                                                           subsample_view_factor=subsample_view_factor, crop_pixels_bottom=crop_size, crop_pixels_top=crop_size)
+        sinogram, ct_model = mjp.zeiss.get_sino_and_model(dataset_path, downsample_factor=(downsample_factor, downsample_factor),
+                                                          subsample_view_factor=subsample_view_factor, crop_pixels_bottom=crop_size, crop_pixels_top=crop_size)
+        # Recover the raw parameter dicts (required, optional) for the pickle.dump below
+        cone_beam_params, optional_params, _ = ct_model.get_all_params()
 
     # Construct cone beam model
     print("\n********** Construct cone beam model **************")
-    ct_model = mj.ConeBeamModel(**cone_beam_params)
-    ct_model.set_params(**optional_params)
+    if load_file:
+        ct_model = mj.ConeBeamModel(**cone_beam_params)
+        ct_model.set_params(**optional_params)
 
-    # Rerun auto-parameter functions because we changed the assumed detector pitch
-    ct_model.auto_set_recon_geometry(sinogram.shape) # Reset default recon shape
+        # Rerun auto-parameter functions because we changed the assumed detector pitch
+        ct_model.auto_set_recon_geometry(sinogram.shape) # Reset default recon shape
 
     # Sharpness and snr_db
     ct_model.set_params(sharpness=sharpness, snr_db=snr_db)

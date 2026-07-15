@@ -96,7 +96,6 @@ MBIRJAX: High-performance tomographic reconstruction
 
    dev_performance_dashboard
    dev_sharding_overview
-   dev_preprocessing_api
    dev_api
    dev_maintenance
 
