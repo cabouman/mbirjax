@@ -13,7 +13,7 @@ NorthStar Instrument (NSI) reader
 
 .. currentmodule:: mbirjax.preprocess.nsi
 
-.. autofunction:: compute_sino_and_params
+.. autofunction:: get_sino_and_model
 .. autofunction:: load_scans_and_params
 
 
@@ -22,7 +22,7 @@ Zeiss Versa and Ultra reader
 
 .. currentmodule:: mbirjax.preprocess.zeiss
 
-.. autofunction:: compute_sino_and_params
+.. autofunction:: get_sino_and_model
 .. autofunction:: load_scans_and_params
 
 
@@ -31,7 +31,8 @@ Zeiss translation tomography functions
 
 .. currentmodule:: mbirjax.preprocess.zeiss_tct
 
-.. autofunction:: compute_sino_and_params
+.. autofunction:: get_sino_and_model
+.. autofunction:: compute_weight
 .. autofunction:: load_scans_and_params
 
 
@@ -40,7 +41,7 @@ PYMBIR functions
 
 .. currentmodule:: mbirjax.preprocess.pymbir
 
-.. autofunction:: compute_sino_and_params
+.. autofunction:: get_sino_and_model
 
 
 General preprocess functions

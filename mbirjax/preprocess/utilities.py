@@ -1506,8 +1506,8 @@ def save_preprocessing(file_path, sinogram, cone_beam_params, optional_params, w
         file_path (str): Output HDF5 path (parent directories are created).
         sinogram (ndarray or jax.Array): The preprocessed sinogram (gathered to the host and cast to
             float32 before writing).
-        cone_beam_params (dict): Parameters for the model constructor (as returned by, e.g.,
-            ``mbirjax.preprocess.nsi.compute_sino_and_params``).
+        cone_beam_params (dict): Parameters for the model constructor (e.g. the ``required_params``
+            from ``TomographyModel.get_all_params``).
         optional_params (dict): Parameters applied via ``set_params`` after construction.
         weights (ndarray or jax.Array, optional): Custom reconstruction weights to save alongside the
             sinogram.  Defaults to None -- omit them when the recon will regenerate standard weights with

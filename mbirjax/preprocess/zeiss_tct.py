@@ -16,49 +16,72 @@ pp = pprint.PrettyPrinter(indent=4)
 logger = logging.getLogger(__name__)
 
 
-def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit='mm', verbose=1):
+def get_sino_and_model(dataset_dir, *, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0,
+                       alu_unit='mm', verbose=1):
     """
-    Load Zeiss sinogram data and prepare arrays ana parameters for TranslationModel reconstruction.
+    Load a Zeiss translation-CT (TCT) dataset, compute its sinogram, and return a ready-to-reconstruct
+    model together with a data-specific weight mask.
 
-    This function computes the sinogram and geometry parameters from a Zeiss scan directory. It performs the following:
+    One-call replacement for the ``compute_sino_and_params -> TranslationModel(...) -> set_params ->
+    auto_set_recon_geometry`` sequence: it constructs the TranslationModel, applies the detector
+    parameters, and computes the reconstruction geometry, so the returned model can never be left with a
+    stale (default-pitch) reconstruction grid.
 
-    1. Load object, blank, and dark scans, and geometry parameters from the dataset.
-    2. Computes the sinogram from the scan images.
-    3. Applies background offset correction.
+    Unlike the other scanner readers, this one returns ``weights``: a data-specific mask (from
+    :func:`compute_weight`) that zeros the dark detector-boundary regions of the TCT detector.  Pass it
+    to ``model.recon(sino, weights=weights)``.
 
     Args:
-        dataset_dir (str): Path to the Zeiss scan directory. Expected structure.
-            - "obj_scan" (a subfolder containing the object scan)
-            - "blank_scan" (a subfolder containing the blank scan)
-            - "dark_scan" (a subfolder containing the dark scan)
-        crop_pixels_sides (int, optional): Pixels to crop from each side of the sinogram. Defaults to None.
-        crop_pixels_top (int, optional): Pixels to crop from top of the sinogram. Defaults to None.
-        crop_pixels_bottom (int, optional): Pixels to crop from bottom of the sinogram. Defaults to None.
-        alu_unit (str, optional): The physical unit used to define 1 ALU (Arbitrary Length Unit). Defaults to 'mm'.
-            Supported units input: 'um', 'mm', 'cm', 'm'.
+        dataset_dir (str): Path to the Zeiss TCT scan directory (``obj_scan`` / ``blank_scan`` /
+            ``dark_scan`` subfolders).
+        crop_pixels_sides (int, optional): Pixels to crop from each lateral side of the detector. Defaults to 0.
+        crop_pixels_top (int, optional): Pixels to crop from the top of the detector. Defaults to 0.
+        crop_pixels_bottom (int, optional): Pixels to crop from the bottom of the detector. Defaults to 0.
+        alu_unit (str, optional): Physical unit for 1 ALU (``'um'``, ``'mm'``, ``'cm'``, ``'m'``). Defaults to ``'mm'``.
         verbose (int, optional): Verbosity level. Defaults to 1.
 
     Returns:
-        tuple: (sino, translation_params, optional_params, weights)
-            - ``sino`` (jax.numpy.ndarray): Sinogram of shape (num_views, num_det_rows, num_channels)
-            - ``translation_params`` (dict): Parameters for initializing TranslationModel.
-            - ``optional_params`` (dict): Parameters to be passed via ``set_params``.
-            -  ``weights`` (numpy.ndarray): A 3D array of weights with the same shape as the sinogram.
+        tuple: ``(sino, model, weights)`` where
+
+            - ``sino`` (jax array): the computed sinogram, shape (num_views, num_det_rows, num_channels).
+            - ``model`` (TranslationModel): a model with its reconstruction geometry already set.
+            - ``weights`` (numpy.ndarray): a 3D weight mask (same shape as ``sino``) that excludes the
+              dark detector boundary.
 
     Example:
         .. code-block:: python
 
-            # Get data and reconstruction parameters
-            sino, translation_params, optional_params, weights = mbirjax.preprocess.zeiss_tct.compute_sino_and_params(dataset_dir)
+            sino, model, weights = mbirjax.preprocess.zeiss_tct.get_sino_and_model(dataset_dir)
+            recon, recon_dict = model.recon(sino, weights=weights)
+    """
+    sino, required_params, optional_params, weights = _compute_sino_and_params(
+        dataset_dir, crop_pixels_sides=crop_pixels_sides, crop_pixels_top=crop_pixels_top,
+        crop_pixels_bottom=crop_pixels_bottom, alu_unit=alu_unit, verbose=verbose)
+    model = mj.build_model(required_params, optional_params)
+    return sino, model, weights
 
-            # Create the model and set parameters
-            tct_model = mbirjax.TranslationModel(**translation_params)
-            tct_model.set_params(**optional_params)
-            tct_model.auto_set_recon_geometry()
-            tct_model.set_params(sharpness=sharpness, verbose=1)
 
-            # Run reconstruction
-            recon, recon_dict = tct_model.recon(sino)
+def _compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit='mm', verbose=1):
+    """
+    Load Zeiss TCT scans and compute the sinogram, build_model-ready parameters, and a weight mask.
+
+    Private helper for :func:`get_sino_and_model`.  Loads object/blank/dark scans and geometry, computes
+    the sinogram (transmission + background-offset correction), and builds a dark-boundary weight mask.
+
+    Args:
+        dataset_dir (str): Path to the Zeiss TCT scan directory (``obj_scan`` / ``blank_scan`` /
+            ``dark_scan`` subfolders).
+        crop_pixels_sides (int, optional): Pixels to crop from each side of the detector. Defaults to 0.
+        crop_pixels_top (int, optional): Pixels to crop from the top of the detector. Defaults to 0.
+        crop_pixels_bottom (int, optional): Pixels to crop from the bottom of the detector. Defaults to 0.
+        alu_unit (str, optional): The physical unit used to define 1 ALU. Defaults to ``'mm'``.
+        verbose (int, optional): Verbosity level. Defaults to 1.
+
+    Returns:
+        tuple: ``(sino, required_params, optional_params, weights)`` where ``required_params`` holds the
+        TranslationModel constructor arguments plus a ``geometry_type`` entry so ``build_model`` can
+        resolve the class, ``optional_params`` holds the ``set_params`` arguments, and ``weights`` is the
+        dark-boundary weight mask (same shape as ``sino``).
     """
     if verbose > 0:
         print("\n\n########## Loading object, blank, dark scans, and geometry parameters from Zeiss dataset directory")
@@ -96,6 +119,8 @@ def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0,
         print('blank_scan shape = ', blank_scan.shape)
         print('dark_scan shape = ', dark_scan.shape)
 
+    # Normalize for build_model: tag the constructor dict with the geometry class identity.
+    translation_params['geometry_type'] = str(mj.TranslationModel)
     return sino, translation_params, optional_params, weights
 
 
@@ -334,16 +359,25 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, crop_pixels_sides=0, crop_pixe
     delta_det_channel = magnification * iso_pixel_pitch
     delta_det_row = magnification * iso_pixel_pitch
 
-    # Adjust detector size params w.r.t. cropping arguments
-    num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
-    num_det_channels = num_det_channels - 2 * crop_pixels_sides
-
-    # Convert offset parameters to ALU: This assumes that the det_channel_offset and det_row_offset have units of pixels.
+    # Convert offset parameters to ALU (using the raw pitch) BEFORE cropping, so the configuration crop
+    # can be routed through the shared detector-plane primitive.  Assumes det_channel_offset /
+    # det_row_offset have units of pixels.
     det_channel_offset *= delta_det_channel
     det_row_offset *= delta_det_row
 
-    # Calculate recon_shape, delta_voxel, and voxel_row_aspect parameters
+    # Route the configuration crop through the shared primitive: it reduces the shape and, for an
+    # asymmetric top/bottom crop, shifts det_row_offset to follow the detector center (symmetric crops
+    # are a no-op).  Translation CT has no downsampling, so the raw pitch is the final pitch.
     num_views = len(translation_vectors)
+    crop_geometry = {'sinogram_shape': (num_views, num_det_rows, num_det_channels)}
+    crop_offsets = {'delta_det_row': delta_det_row, 'delta_det_channel': delta_det_channel,
+                    'det_row_offset': det_row_offset, 'det_channel_offset': det_channel_offset}
+    crop_geometry, crop_offsets = mjp.apply_detector_crop(crop_geometry, crop_offsets, crop_pixels_top,
+                                                          crop_pixels_bottom, crop_pixels_sides, crop_pixels_sides)
+    _, num_det_rows, num_det_channels = crop_geometry['sinogram_shape']
+    det_row_offset, det_channel_offset = crop_offsets['det_row_offset'], crop_offsets['det_channel_offset']
+
+    # Calculate recon_shape, delta_voxel, and voxel_row_aspect parameters from the cropped sinogram.
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
     recon_shape, delta_voxel, voxel_row_aspect = mj.utilities.calc_tct_recon_params(source_detector_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors)
 

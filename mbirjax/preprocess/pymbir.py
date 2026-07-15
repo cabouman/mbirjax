@@ -4,15 +4,54 @@ import jax.numpy as jnp
 import h5py
 
 
-def compute_sino_and_params(filename, bh_correction=True):
+def get_sino_and_model(filename, *, bh_correction=True, auto_crop=False):
     """
-    Load ORNL sinogram data from an HDF5 file and prepare all required parameters for cone‐beam reconstruction.
+    Load an ORNL HDF5 scan, compute its sinogram, and return a ready-to-reconstruct model.
 
-    This function performs the following steps in one call:
+    One-call replacement for the old ``compute_sino_and_params -> ConeBeamModel(...) -> set_params ->
+    auto_set_recon_geometry`` sequence: it constructs the ConeBeamModel, applies the detector
+    parameters, and computes the reconstruction geometry, so the returned model can never be left with a
+    stale (default-pitch) reconstruction grid.
 
-      1. Extracts geometry parameters and defaults via `create_proj_params_dict_ornl`.
-      2. Reads the raw sinogram data via `load_projection_data_ornl`.
-      3. Optionally applies beam hardening correction to the sinogram via `apply_bh_correction`.
+    Args:
+        filename (str): Path to the ORNL HDF5 file containing projection data and geometry attributes.
+        bh_correction (bool, optional): Apply beam hardening correction using the file's stored
+            parameters. Defaults to True.
+        auto_crop (bool, optional): If True, detect and remove blank sinogram margins after the sinogram
+            is computed, shrinking the reconstruction. Defaults to False.
+
+    Returns:
+        tuple: ``(sino, model)`` where
+
+            - ``sino`` (jax array): the computed sinogram, shape (num_views, num_det_rows, num_det_channels).
+            - ``model`` (ConeBeamModel): a model with its reconstruction geometry already set.
+
+    Example:
+        .. code-block:: python
+
+            sino, model = mbirjax.preprocess.pymbir.get_sino_and_model("scan.h5")
+            weights = mbirjax.gen_weights(sino, weight_type='transmission_root')
+            recon, recon_dict = model.recon(sino, weights=weights)
+
+    Note:
+        Reconstruction weights are not returned; generate them with ``mbirjax.gen_weights``.
+    """
+    import mbirjax
+    import mbirjax.preprocess as mjp
+    sino, required_params, optional_params = _compute_sino_and_params(filename, bh_correction=bh_correction)
+    if auto_crop:
+        sino, required_params, optional_params = mjp.utilities._auto_crop_sino(sino, required_params, optional_params)
+    model = mbirjax.build_model(required_params, optional_params)
+    return sino, model
+
+
+def _compute_sino_and_params(filename, bh_correction=True):
+    """
+    Load ORNL sinogram data from an HDF5 file and prepare build_model-ready cone-beam parameters.
+
+    Private helper for :func:`get_sino_and_model`.  It extracts geometry via
+    ``create_proj_params_dict_ornl``, reads the raw sinogram via ``load_projection_data_ornl``, and
+    optionally applies beam hardening correction and detector-rotation correction.
 
     Args:
         filename (str):
@@ -21,32 +60,16 @@ def compute_sino_and_params(filename, bh_correction=True):
             If True, apply beam hardening correction using the file’s stored parameters. Defaults to True.
 
     Returns:
-        tuple:
-            sino (numpy.ndarray):
-                sinogram data of shape (num_views, num_det_rows, num_det_channels).
-            cone_beam_params (dict):
-                Dictionary of mandatory parameters for mbirjax.ConeBeamModel, including:
-                  - "sinogram_shape"
-                  - "angles"
-                  - "source_detector_dist"
-                  - "source_iso_dist"
-            optional_params (dict):
-                Additional model settings for set_params(), including:
-                  - "delta_det_channel"
-                  - "delta_det_row"
-                  - "delta_voxel"
-                  - "det_channel_offset"
-                  - "det_row_offset"
+        tuple: ``(sino, required_params, optional_params)`` where
 
-    Example:
-        .. code-block:: python
-
-            sino, cone_beam_params, optional_params = compute_sino_and_params("scan.h5", bh_correction=True)
-            ct_model = mbirjax.ConeBeamModel(**cone_beam_params)
-            ct_model.set_params(**optional_params)
-            ct_model.auto_set_recon_geometry()
-            recon, recon_dict = ct_model.recon(sino, weights=weights)
+            - ``sino`` (numpy.ndarray): sinogram of shape (num_views, num_det_rows, num_det_channels).
+            - ``required_params`` (dict): ConeBeamModel constructor arguments (``sinogram_shape``,
+              ``angles``, ``source_detector_dist``, ``source_iso_dist``) plus a ``geometry_type`` entry
+              so ``build_model`` can resolve the model class.
+            - ``optional_params`` (dict): ``set_params()`` settings (``delta_det_channel``,
+              ``delta_det_row``, ``delta_voxel``, ``det_channel_offset``, ``det_row_offset``).
     """
+    import mbirjax
     import mbirjax.preprocess as mjp
     with h5py.File(filename, 'r') as h5_file:
         cone_beam_params, optional_params, det_rotation = create_proj_params_dict_ornl(h5_file)
@@ -61,6 +84,8 @@ def compute_sino_and_params(filename, bh_correction=True):
             sinogram = mjp.correct_det_rotation(sinogram, det_rotation=det_rotation)
             warnings.warn('TODO: Verify the direction of sinogram rotation.')
 
+    # Normalize for build_model: tag the constructor dict with the geometry class identity.
+    cone_beam_params['geometry_type'] = str(mbirjax.ConeBeamModel)
     return sinogram, cone_beam_params, optional_params
 
 

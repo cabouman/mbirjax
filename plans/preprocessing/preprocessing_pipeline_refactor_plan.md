@@ -101,16 +101,82 @@ Known cosmetic wrinkle (moot): NSI computes `recon_slice_offset = −det_row_off
 so it would be stale for a hypothetical asymmetric NSI crop — but NSI blocks asymmetric upstream and auto
 overwrites recon_slice_offset, so it is unreachable/harmless.
 
-## Phase 3 — per-reader `get_sino_and_model`
+## Phase 3 — per-reader `get_sino_and_model`  (NSI DONE = the template; zeiss/zeiss_tct/pymbir next)
 
-Model-class selection inside each reader (nsi/zeiss/zeiss_tct/pymbir); rename `compute_sino_and_params`
--> `_compute_sino_and_params` (private helper) with normalized return; `compute_weight` stays public for
-zeiss_tct. auto_crop wired ON for cone (and parallel is a clean candidate), OFF by default for translation
-(zeiss_tct) pending real-TCT validation.
+Template established on NSI (full suite green 251; adversarial review clean — 0 library/test/doc defects):
+
+- `get_sino_and_model(dataset_dir, *, ..., auto_crop=False, ...)` -> `(sino, model)`: a thin wrapper =
+  `_compute_sino_and_params` -> optional `mjp.utilities._auto_crop_sino` -> `mbirjax.build_model`.
+- `compute_sino_and_params` -> `_compute_sino_and_params` (private). NORMALIZED return: it appends
+  `required_params['geometry_type'] = str(mbirjax.ConeBeamModel)` so `build_model` resolves the class.
+  Putting the class identity in `_compute` (not the wrapper) is what generalizes to Zeiss's
+  parallel-vs-cone choice (each reader's `_compute` knows its geometry).
+- `import mbirjax` added to nsi.py; `_auto_crop_sino` reached via `mjp.utilities._auto_crop_sino`
+  (private, not star-exported); `build_model` via `mbirjax.build_model`.
+- Behavior-equivalence verified: `get_sino_and_model(auto_crop=False)` == old
+  `ConeBeamModel(**cbp)+set_params(**opt)+auto` (NSI optional has no recon_shape, so build_model's auto
+  sizes the grid; no recon_shape pin).
+- Tests: `TestGetSinoAndModel` mocks `_compute_sino_and_params` (no real dataset needed) -> builds a
+  ready ConeBeamModel; auto_crop shrinks + stays consistent. Docs: NSI autofunction -> get_sino_and_model,
+  stale save_preprocessing docstring ref -> get_all_params; nitpicky build clean.
+
+Readers: NSI DONE, **pymbir DONE** (cone-only, no crop/downsample; `filename` arg; deferred imports).
+**zeiss DONE** (parallel/cone; `_compute` resolves geometry_type from scanner_type mirroring
+convert_zeiss: `'ultra'` -> parallel, else -> cone; return went 4-tuple -> normalized TRIPLE, dropping
+`zeiss_metadata` which only held `scanner_type`, now encoded as the model class; Greg-decided
+`'unknown'` -> CONE (behavior-preserving vs the old convert else-branch + the classify_zeiss_system
+"assuming cone" warning; the earlier end-of-function `raise ValueError` was removed). Adversarial review
+of zeiss+pymbir: behavior-equivalence (both branches), geometry_type registry match, zeiss_metadata drop,
+pymbir deferred imports, blast radius all CLEAN; only real finding was the `'unknown'` behavior, now
+resolved.  Remaining: **zeiss_tct** (translation; folds in the deferred Phase-2 config-crop + its
+offset-reorder; auto_crop OFF by default pending real-TCT validation). `compute_weight` stays public for
+zeiss_tct.
+
+## Migration list — callers of the REMOVED public `compute_sino_and_params` (clean break, no alias)
+
+Greg chose a hard rename (no deprecated alias), so every caller of a renamed reader's public
+`compute_sino_and_params` must move to `get_sino_and_model(...) -> (sino, model)` (or the private
+`_compute_sino_and_params` if the raw `(sino, required, optional)` triple is needed). No library/test
+code is affected; the breaks are research scripts + the external mbirjax_applications repo.
+
+- NSI (renamed): `experiments/sharding/collect_nsi_golden.py:82`,
+  `experiments/split_sino_recon/demo_split_sino_recon.py:44`,
+  `experiments/preprocessing/offset_correction.py:31,45`.
+- pymbir (renamed): `experiments/bh_curve_fit/bh_curve_fit_experiment_nozzle_data.py:123,128`.
+- zeiss / zeiss_tct: TBD when renamed.
+- External (separate repo, per the earlier plan): mbirjax_applications `nsi/Lilly_recon_ps.py`,
+  `nsi/demo_split_sino_recon.py`, `vcls/build_reference_object.py`.
+
+### zeiss_tct DONE (last reader; translation)
+
+- `get_sino_and_model(dataset_dir, *, ...) -> (sino, model, weights)` -- Greg-decided 3-tuple return, since
+  zeiss_tct produces a data-specific `compute_weight` dark-boundary mask (kept public). No `auto_crop`
+  param (translation auto-crop deferred pending real-TCT validation).
+- Deferred Phase-2 config-crop folded in: `convert` now converts offsets to ALU BEFORE the crop and
+  routes it through `apply_detector_crop`; recon_shape from the cropped shape. Probe: symmetric/default
+  byte-identical (det_row_offset 0.15 unchanged), asymmetric shifts (-> -0.1). No downsample, so raw
+  pitch = final pitch.
+- recon_shape equivalence VERIFIED empirically: build_model PINS recon_shape (optional carries it from
+  convert) and pinned == auto-sized (3,43,41) -- calc_tct_recon_params is aspect-idempotent -- so the pin
+  matches the old auto flow.
+- Adversarial review: 3 findings, ALL out-of-scope experiments/ callers; behavior-equivalence + crop
+  reorder + recon_shape + weights + geometry_type + blast radius all CLEAN.
+
+**PHASE 3 COMPLETE.** All four readers (nsi, pymbir, zeiss, zeiss_tct) converted to get_sino_and_model +
+private _compute_sino_and_params, each adversarially reviewed clean. Full CPU suite green (257 passed).
+
+## DRY pass (Greg-requested) -- IN PROGRESS
+
+After the reader refactor, scan the preprocessing files for duplication left/introduced (known: the
+config-crop temp-dict + apply_detector_crop marshaling copied into convert_nsi/convert_zeiss/
+convert_zeiss_tct -> candidate scalar helper `apply_config_crop(...)`). Fan-out scan + adversarial judge
+(reject over-abstraction) running; present a ranked list for Greg's pick before implementing.
 
 ## Phase 4 — docs + review
 
-Fold the proposal into `usr_preprocess.rst`; full CPU suite; adversarial review on the diff.
+Fold the proposal into `usr_preprocess.rst`; retire the `_proposals/` scaffolding + conf.py sys.path +
+index.rst toctree entry; full CPU suite; adversarial review on the full diff; migrate the flagged
+experiments/ callers.
 
 ## Follow-up (separate repo)
 

@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 import numpy as np
 import jax.numpy as jnp
 import mbirjax as mj
@@ -484,6 +485,36 @@ class TestConfigCropUnification(unittest.TestCase):
         self.assertAlmostEqual(op['det_row_offset'], base['det_row_offset'] + (0 - 10) / 2 * base['delta_det_row'])
         self.assertAlmostEqual(op['det_channel_offset'], base['det_channel_offset'])
 
+    @staticmethod
+    def _tct_params():
+        n = 20
+        return dict(source_iso_dist=50.0, iso_det_dist=150.0, source_iso_dist_unit='mm', iso_det_dist_unit='mm',
+                    delta_det_channel=0.1, delta_det_row=0.1, delta_det_channel_unit='mm', delta_det_row_unit='mm',
+                    iso_pixel_pitch=0.05, iso_pixel_pitch_unit='mm', opt_mag=None,
+                    num_det_rows=64, num_det_channels=80,
+                    object_x_positions=np.linspace(-5, 5, n), object_x_position_unit='mm',
+                    object_y_positions=np.zeros(n), object_y_position_unit='mm',
+                    object_z_positions=np.linspace(-2, 2, n), object_z_position_unit='mm',
+                    det_row_offset=3.0, det_channel_offset=2.0)
+
+    def test_zeiss_tct_symmetric_crop_is_byte_identical(self):
+        from mbirjax.preprocess.zeiss_tct import convert_zeiss_to_mbirjax_params as conv
+        p = self._tct_params()
+        _, base = conv(p, 0, 0, 0)
+        tp, op = conv(p, 3, 5, 5)                                # sides=3, top=bottom=5 (symmetric)
+        self.assertEqual(tp['sinogram_shape'], (20, 54, 74))
+        self.assertAlmostEqual(op['det_row_offset'], base['det_row_offset'])
+        self.assertAlmostEqual(op['det_channel_offset'], base['det_channel_offset'])
+
+    def test_zeiss_tct_asymmetric_crop_shifts_row_offset(self):
+        from mbirjax.preprocess.zeiss_tct import convert_zeiss_to_mbirjax_params as conv
+        p = self._tct_params()
+        _, base = conv(p, 0, 0, 0)
+        tp, op = conv(p, 0, 10, 0)                               # sides=0, top=10, bottom=0 (asymmetric)
+        self.assertEqual(tp['sinogram_shape'], (20, 54, 80))
+        self.assertAlmostEqual(op['det_row_offset'], base['det_row_offset'] + (0 - 10) / 2 * base['delta_det_row'])
+        self.assertAlmostEqual(op['det_channel_offset'], base['det_channel_offset'])
+
     def test_zeiss_ultra_parallel_symmetric_crop(self):
         # The 'ultra' (parallel) branch shares the crop code that runs before the branch: a symmetric
         # crop reduces the shape and leaves the offsets unchanged.
@@ -495,6 +526,95 @@ class TestConfigCropUnification(unittest.TestCase):
         self.assertNotIn('source_detector_dist', gp)           # parallel: no source distances
         self.assertAlmostEqual(op['det_row_offset'], base['det_row_offset'])
         self.assertAlmostEqual(op['det_channel_offset'], base['det_channel_offset'])
+
+
+class TestGetSinoAndModel(unittest.TestCase):
+    """Phase 3: the NSI get_sino_and_model wrapper turns the (sino, required, optional) triple from
+    _compute_sino_and_params into a ready-to-reconstruct model via build_model, optionally auto-cropping
+    first.  _compute_sino_and_params is mocked so the wrapper is exercised without a real NSI dataset."""
+
+    @staticmethod
+    def _fake_compute(with_margins):
+        # A real ConeBeamModel's params (required already carries geometry_type via get_all_params),
+        # plus a matching synthetic sinogram.
+        angles = np.linspace(0, np.pi, 12, endpoint=False)
+        model = mj.ConeBeamModel((12, 80, 100), angles, source_detector_dist=200, source_iso_dist=100)
+        required, optional, _ = model.get_all_params()
+        optional.pop('recon_shape', None)                 # let build_model's auto size the recon
+        sino = np.zeros((12, 80, 100), dtype=np.float32)
+        if with_margins:
+            sino[:, 25:60, 30:70] = 5.0                   # blank margins -> auto_crop shrinks the sino
+        else:
+            sino[:] = 1.0
+        return sino, required, optional
+
+    def test_builds_ready_cone_model(self):
+        from mbirjax.preprocess import nsi
+        with mock.patch.object(nsi, '_compute_sino_and_params', return_value=self._fake_compute(False)):
+            sino, model = nsi.get_sino_and_model('/unused', verbose=0)
+        self.assertIsInstance(model, mj.ConeBeamModel)
+        self.assertEqual(tuple(model.get_params('sinogram_shape')), sino.shape)        # geometry matches sino
+        self.assertGreater(int(np.prod(model.get_params('recon_shape'))), 0)           # recon geometry is set
+
+    def test_auto_crop_shrinks_and_stays_consistent(self):
+        from mbirjax.preprocess import nsi
+        with mock.patch.object(nsi, '_compute_sino_and_params', return_value=self._fake_compute(True)):
+            sino_full, _ = nsi.get_sino_and_model('/unused', auto_crop=False, verbose=0)
+        with mock.patch.object(nsi, '_compute_sino_and_params', return_value=self._fake_compute(True)):
+            sino_crop, model_crop = nsi.get_sino_and_model('/unused', auto_crop=True, verbose=0)
+        self.assertEqual(sino_full.shape, (12, 80, 100))                               # default: no crop
+        self.assertLess(sino_crop.shape[1], 80)                                        # auto_crop removed blank rows
+        self.assertEqual(tuple(model_crop.get_params('sinogram_shape')), sino_crop.shape)  # model tracks the crop
+
+    def test_pymbir_builds_ready_cone_model(self):
+        # The pymbir reader follows the same template; mock its _compute_sino_and_params.
+        from mbirjax.preprocess import pymbir
+        with mock.patch.object(pymbir, '_compute_sino_and_params', return_value=self._fake_compute(False)):
+            sino, model = pymbir.get_sino_and_model('/unused.h5')
+        self.assertIsInstance(model, mj.ConeBeamModel)
+        self.assertEqual(tuple(model.get_params('sinogram_shape')), sino.shape)
+        self.assertGreater(int(np.prod(model.get_params('recon_shape'))), 0)
+
+    @staticmethod
+    def _fake_zeiss(parallel):
+        # A real model's params (required carries geometry_type via get_all_params, encoding the class
+        # the zeiss _compute selects from scanner_type) + a matching sinogram.
+        angles = np.linspace(0, np.pi, 12, endpoint=False)
+        if parallel:
+            model = mj.ParallelBeamModel((12, 80, 100), angles)
+        else:
+            model = mj.ConeBeamModel((12, 80, 100), angles, source_detector_dist=200, source_iso_dist=100)
+        required, optional, _ = model.get_all_params()
+        optional.pop('recon_shape', None)
+        return np.ones((12, 80, 100), dtype=np.float32), required, optional
+
+    def test_zeiss_versa_builds_cone_model(self):
+        from mbirjax.preprocess import zeiss
+        with mock.patch.object(zeiss, '_compute_sino_and_params', return_value=self._fake_zeiss(parallel=False)):
+            sino, model = zeiss.get_sino_and_model('/unused')
+        self.assertIsInstance(model, mj.ConeBeamModel)                       # 'versa' -> cone
+        self.assertEqual(tuple(model.get_params('sinogram_shape')), sino.shape)
+
+    def test_zeiss_ultra_builds_parallel_model(self):
+        from mbirjax.preprocess import zeiss
+        with mock.patch.object(zeiss, '_compute_sino_and_params', return_value=self._fake_zeiss(parallel=True)):
+            sino, model = zeiss.get_sino_and_model('/unused')
+        self.assertIsInstance(model, mj.ParallelBeamModel)                   # 'ultra' -> parallel
+        self.assertEqual(tuple(model.get_params('sinogram_shape')), sino.shape)
+
+    def test_zeiss_tct_builds_translation_model_and_returns_weights(self):
+        # zeiss_tct is the special case: get_sino_and_model returns (sino, model, weights).
+        from mbirjax.preprocess import zeiss_tct
+        tv = np.random.RandomState(0).randn(20, 3) * 5
+        model_src = mj.TranslationModel((20, 64, 80), tv, source_detector_dist=500, source_iso_dist=250)
+        required, optional, _ = model_src.get_all_params()
+        sino = np.ones((20, 64, 80), dtype=np.float32)
+        weights = np.ones((20, 64, 80), dtype=np.float32)
+        with mock.patch.object(zeiss_tct, '_compute_sino_and_params', return_value=(sino, required, optional, weights)):
+            out_sino, model, out_weights = zeiss_tct.get_sino_and_model('/unused')
+        self.assertIsInstance(model, mj.TranslationModel)
+        self.assertEqual(tuple(model.get_params('sinogram_shape')), out_sino.shape)
+        self.assertEqual(out_weights.shape, out_sino.shape)                  # data-specific weights returned
 
 
 if __name__ == '__main__':
