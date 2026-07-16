@@ -49,9 +49,8 @@ def get_sino_and_model(dataset_dir, *, downsample_factor=(1, 1), subsample_view_
         tuple: ``(sino, model)`` where
 
             - ``sino`` (jax array): the computed sinogram, shape (num_views, num_det_rows, num_channels).
-            - ``model`` (ParallelBeamModel or ConeBeamModel): a model, of the class selected from the
-              scanner type (``'ultra'`` -> parallel, otherwise cone), with its reconstruction geometry
-              already set.
+            - ``model`` (ParallelBeamModel or ConeBeamModel): a CT model with its reconstruction geometry already set.
+            (``'ultra'`` -> parallel; ``'versa'`` -> cone; ``'unknown'`` -> cone)
 
     Example:
         .. code-block:: python
