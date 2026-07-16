@@ -16,17 +16,14 @@ def main():
     dataset_dir = mj.download_and_extract(dataset_url, download_dir)
 
     # Load and preprocess data
-    sino, translation_params, optional_params = mjp.zeiss_tct.compute_sino_and_params(dataset_dir, crop_pixels_bottom=53)
+    sino, tct_model, weights = mjp.zeiss_tct.get_sino_and_model(dataset_dir, crop_pixels_bottom=53)
 
     # Estimate and subtract the per-view background
     # background = [np.mean(sino[j][sino[j]<0.04]) for j in range(sino.shape[0])]
     # sino = sino - np.array(background)[:, None, None]
 
     # Initialize model for reconstruction.
-    tct_model = mj.TranslationModel(**translation_params)
-    tct_model.set_params(**optional_params)
     tct_model.set_params(sharpness=2.0)
-    # tct_model.auto_set_recon_geometry()
     recon_shape = tct_model.get_params('recon_shape')
     delta_det_channel = tct_model.get_params('delta_det_channel')
 
@@ -38,7 +35,7 @@ def main():
     tct_model.set_params(qggmrf_nbr_wts=[0.1, 1, 1])
 
     # Print model parameters and display translation array
-    translation_vectors = translation_params['translation_vectors']
+    translation_vectors = np.array(tct_model.get_params('translation_vectors'))
     tct_model.print_params()
     delta_voxel, delta_recon_row = tct_model.get_params(['delta_voxel', 'delta_recon_row'])
     translation_vectors_display = translation_vectors.copy()

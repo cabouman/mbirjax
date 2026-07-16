@@ -822,22 +822,24 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
 
     return recon
 
-def est_crop_width(sino, safety_buffer=20, max_views_to_use=20):
-    """Estimate crop widths for removing blank margins in a 3D sinogram.
+def detect_blank_margins(sino, safety_buffer=20, max_views_to_use=20):
+    """
+    Detect how many blank detector rows/channels frame the object in a sinogram.
+
+    The detected amounts feed :func:`apply_detector_crop` to assemble the automatic-crop step.
+    Detection uses a support mask computed over a subsample of views, so it stays cheap on large
+    sinograms.
 
     Args:
-        sino (np.ndarray): Input sinogram array .
-        safety_buffer (int, optional): Safety buffer (in pixels) to keep around the
-            detected object region on each boundary. Defaults to 20.
-        max_views_to_use (int, optional): Cap on the number of views sampled for the support
-            estimate. Defaults to 20.
+        sino (np.ndarray): Sinogram, shape ``(num_views, num_det_rows, num_det_channels)``.
+        safety_buffer (int, optional): Blank margin, in pixels, to keep on each side of the detected
+            object region. Defaults to 20.
+        max_views_to_use (int, optional): Cap on the number of views sampled for detection.
+            Defaults to 20.
 
     Returns:
-        crop_top (int): Number of detector rows to crop from the top.
-        crop_bottom (int): Number of detector rows to crop from the bottom.
-        crop_left (int): Number of detector channels to crop from the left.
-        crop_right (int): Number of detector channels to crop from the right.
-
+        tuple: ``(crop_top, crop_bottom, crop_left, crop_right)`` -- detector rows to crop from the
+        top and bottom, and detector channels to crop from the left and right.
     """
     # The crop boundaries need full detector row/column resolution, but support detection is
     # statistical across views -- so subsample VIEWS (axis 0), exactly as auto_set_regularization_params
@@ -869,56 +871,173 @@ def est_crop_width(sino, safety_buffer=20, max_views_to_use=20):
     return crop_pixels_top, crop_pixels_bottom, crop_pixels_left, crop_pixels_right
 
 
-def auto_crop_sino_conebeam(sino, cone_beam_params, optional_params, safety_buffer=20):
+def apply_detector_crop(required_params, optional_params, crop_top, crop_bottom, crop_left, crop_right):
     """
-    Automatically crop unused sinogram margins and update cone-beam geometry parameters.
+    Update the geometry for a detector-region crop: shrink the sinogram shape and shift the
+    detector offsets by the amount the crop moves the detector center.
 
-    This reduces the reconstruction volume by removing blank detector margins in the sinogram and
-    updating the corresponding geometry offsets so the physical coordinate system remains consistent.
+    This is the single source of the crop-to-geometry bookkeeping, so a manual (configuration) crop
+    and the automatic margin crop stay consistent and asymmetric crops are correct for every
+    geometry.  It is *detector-plane only*: it updates ``sinogram_shape`` and, for the geometries
+    that have them, ``det_row_offset`` / ``det_channel_offset``.  It deliberately does not set
+    ``recon_slice_offset``: for cone geometry ``auto_set_recon_geometry`` (which every reader runs,
+    via ``build_model``) re-derives it from the scan, and the other geometries either have no
+    ``recon_slice_offset`` or keep it at its default, so a detector crop never needs to touch it.
+
+    The caller slices the array with the SAME crop amounts -- the raw scans in the configuration
+    crop path, the computed sinogram in the automatic crop path -- while this function owns the
+    geometry, so the array and the geometry can never drift.
 
     Args:
-        sino (np.ndarray): Input sinogram array with shape (num_views, num_det_rows, num_det_channels).
-        cone_beam_params (dict): Cone-beam geometry parameters that can be passed to the model constructor.
-        optional_params (dict): Optional geometry parameters set after the model is constructed.
-        safety_buffer (int, optional): Safety buffer (in pixels) to keep around the detected object region.
-            Defaults to 20.
+        required_params (dict): Constructor parameters, read for ``sinogram_shape`` (the returned copy
+            has it reduced by the crop).
+        optional_params (dict): Parameters applied with ``set_params``; in the returned copy,
+            ``det_row_offset`` / ``det_channel_offset`` are compensated when present for this geometry,
+            using the detector pitches ``delta_det_row`` / ``delta_det_channel`` (each defaulting to
+            1.0, the model default, when a reader leaves it unset).
+        crop_top (int): Detector rows removed from the top.
+        crop_bottom (int): Detector rows removed from the bottom.
+        crop_left (int): Detector channels removed from the left.
+        crop_right (int): Detector channels removed from the right.
 
     Returns:
-        tuple:
-            A 3-tuple ``(sino, cone_beam_params, optional_params)`` where:
-
-            * **sino** (*np.ndarray*): Cropped sinogram with updated shape.
-            * **cone_beam_params** (*dict*): Updated parameters with adjusted ``'sinogram_shape'``.
-            * **optional_params** (*dict*): Updated parameters with adjusted ``'det_row_offset'``,
-              ``'det_channel_offset'``, and ``'recon_slice_offset'``.
+        tuple: new ``(required_params, optional_params)`` dicts -- copies of the inputs (which are left
+        unchanged) with the reduced ``sinogram_shape`` and the compensated detector offsets.  There is
+        no in-place side effect, so callers must use the returned dicts.
     """
-    crop_pixels_top, crop_pixels_bottom, crop_pixels_left, crop_pixels_right = est_crop_width(sino, safety_buffer)
+    num_views, num_det_rows, num_det_channels = required_params['sinogram_shape']
+    # Guard the geometry path independently of the array path (crop_view_data has the matching assert):
+    # a crop >= the detector dimension would otherwise silently produce a negative sinogram_shape.
+    assert (crop_top >= 0 and crop_bottom >= 0 and crop_left >= 0 and crop_right >= 0 and
+            crop_top + crop_bottom < num_det_rows and crop_left + crop_right < num_det_channels), \
+        ('apply_detector_crop: crop amounts must be nonnegative with crop_top + crop_bottom < num_det_rows'
+         ' and crop_left + crop_right < num_det_channels (got top={}, bottom={}, left={}, right={} for a'
+         ' {}x{} detector).'.format(crop_top, crop_bottom, crop_left, crop_right, num_det_rows, num_det_channels))
+    # Work on copies and return them, so the crop is an explicit data flow with no silent mutation of
+    # the caller's dicts.
+    required_params = dict(required_params)
+    optional_params = dict(optional_params)
+    required_params['sinogram_shape'] = (int(num_views),
+                                         int(num_det_rows - crop_top - crop_bottom),
+                                         int(num_det_channels - crop_left - crop_right))
 
-    Nr_lo = crop_pixels_top
-    Nr_hi = sino.shape[1] - crop_pixels_bottom
+    # Shift each detector offset by the crop-induced move of the detector center.  Only geometries
+    # that carry the offset get it compensated (parallel beam, for instance, has no det_row_offset).
+    if 'det_row_offset' in optional_params:
+        delta_det_row = optional_params.get('delta_det_row', 1.0)
+        optional_params['det_row_offset'] += (crop_bottom - crop_top) / 2 * delta_det_row
+    if 'det_channel_offset' in optional_params:
+        delta_det_channel = optional_params.get('delta_det_channel', 1.0)
+        optional_params['det_channel_offset'] += (crop_right - crop_left) / 2 * delta_det_channel
 
-    Nc_lo = crop_pixels_left
-    Nc_hi = sino.shape[2] - crop_pixels_right
+    return required_params, optional_params
 
-    sino = sino[:, Nr_lo:Nr_hi, Nc_lo:Nc_hi]
 
-    # Correct geometry parameters det_row_offset and det_channel_offset after cropping
-    cone_beam_params['sinogram_shape'] = sino.shape
-    delta_det_row, delta_det_channel = optional_params['delta_det_row'], optional_params['delta_det_channel']
-    optional_params['det_row_offset'] += (crop_pixels_bottom - crop_pixels_top)/2 * delta_det_row
-    optional_params['det_channel_offset'] += (crop_pixels_right - crop_pixels_left)/2 * delta_det_channel
+def _auto_crop_sino(sino, required_params, optional_params, safety_buffer=20):
+    """
+    Detect and remove blank sinogram margins, updating the detector-plane geometry to match.
 
-    # Correct geometry parameter recon_slice_offset
-    recon_slice_offset = optional_params['recon_slice_offset']
-    source_detector_dist = cone_beam_params["source_detector_dist"]
-    source_iso_dist = cone_beam_params["source_iso_dist"]
-    magnification = source_detector_dist / source_iso_dist
+    This packages :func:`detect_blank_margins` (find the blank margins), array slicing, and
+    :func:`apply_detector_crop` (update ``sinogram_shape`` and the detector offsets) into the
+    automatic-crop step.  It is geometry-general and detector-plane only, so ``recon_slice_offset``
+    is (re)derived by the subsequent ``auto_set_recon_geometry``: run it before ``build_model``
+    (or before ``auto_set_recon_geometry`` when constructing a model by hand).
 
-    # Sign convention: positive recon_slice_offset reconstructs below the iso, vice versa
-    recon_slice_offset -= (crop_pixels_bottom - crop_pixels_top)/2 * delta_det_row / magnification
-    optional_params['recon_slice_offset'] = recon_slice_offset
+    Args:
+        sino (np.ndarray): Sinogram, shape ``(num_views, num_det_rows, num_det_channels)``.
+        required_params (dict): Constructor parameters, including ``sinogram_shape``.
+        optional_params (dict): Parameters applied with ``set_params`` (detector pitches/offsets).
+        safety_buffer (int, optional): Blank margin, in pixels, to keep around the detected object
+            region. Defaults to 20.
 
-    return sino, cone_beam_params, optional_params
+    Returns:
+        tuple: ``(sino, required_params, optional_params)`` with the sinogram cropped and the
+        geometry updated consistently (``required_params['sinogram_shape'] == sino.shape``).
+    """
+    crop_top, crop_bottom, crop_left, crop_right = detect_blank_margins(sino, safety_buffer)
+    sino = sino[:, crop_top:sino.shape[1] - crop_bottom, crop_left:sino.shape[2] - crop_right]
+    required_params, optional_params = apply_detector_crop(
+        required_params, optional_params, crop_top, crop_bottom, crop_left, crop_right)
+    return sino, required_params, optional_params
+
+
+def apply_config_crop(num_det_rows, num_det_channels, det_row_offset, det_channel_offset,
+                      delta_det_row, delta_det_channel, *,
+                      crop_pixels_top, crop_pixels_bottom, crop_pixels_sides):
+    """
+    Apply a configuration (manual) detector crop to a reader's SCALAR geometry values.
+
+    Scalar-in / scalar-out adapter around :func:`apply_detector_crop` -- the readers' configuration crop
+    acts on loose scalars (not a param dict) at conversion time, so this packs them, applies the shared
+    detector-plane crop (shape reduction + offset compensation for an asymmetric top/bottom crop), and
+    unpacks the results.  A detector crop does not change the number of views, so it is neither taken nor
+    returned.  ``crop_pixels_sides`` crops each lateral side symmetrically.
+
+    Args:
+        num_det_rows (int): Detector rows before the crop.
+        num_det_channels (int): Detector channels before the crop.
+        det_row_offset (float): Detector row offset (ALU) before the crop.
+        det_channel_offset (float): Detector channel offset (ALU) before the crop.
+        delta_det_row (float): Detector row pitch (scales the row-offset compensation).
+        delta_det_channel (float): Detector channel pitch (scales the channel-offset compensation).
+        crop_pixels_top (int): Detector rows cropped from the top.
+        crop_pixels_bottom (int): Detector rows cropped from the bottom.
+        crop_pixels_sides (int): Detector channels cropped from EACH lateral side.
+
+    Returns:
+        tuple: ``(num_det_rows, num_det_channels, det_row_offset, det_channel_offset)`` after the crop.
+    """
+    required, optional = apply_detector_crop(
+        {'sinogram_shape': (0, num_det_rows, num_det_channels)},   # 0 = num_views placeholder (crop preserves it)
+        {'delta_det_row': delta_det_row, 'delta_det_channel': delta_det_channel,
+         'det_row_offset': det_row_offset, 'det_channel_offset': det_channel_offset},
+        crop_pixels_top, crop_pixels_bottom, crop_pixels_sides, crop_pixels_sides)
+    _, num_det_rows, num_det_channels = required['sinogram_shape']
+    return num_det_rows, num_det_channels, optional['det_row_offset'], optional['det_channel_offset']
+
+
+def finalize_model(sino, required_params, optional_params, *, auto_crop=False, safety_buffer=20):
+    """
+    Build a ready-to-reconstruct model from a reader's ``(sino, required_params, optional_params)``.
+
+    The shared tail of each scanner reader's ``get_sino_and_model``: optionally remove blank sinogram
+    margins (:func:`_auto_crop_sino`), then build the model (construct -> set_params ->
+    auto_set_recon_geometry).  ``required_params`` must carry a ``geometry_type`` entry so the model class
+    can be resolved.
+
+    Args:
+        sino (jax array): The computed sinogram.
+        required_params (dict): Model constructor arguments plus ``geometry_type``.
+        optional_params (dict): ``set_params`` arguments.
+        auto_crop (bool, optional): If True, remove blank sinogram margins before building. Defaults to False.
+        safety_buffer (int, optional): Blank margin (pixels) to keep when auto-cropping. Defaults to 20.
+
+    Returns:
+        tuple: ``(sino, model)`` -- the (possibly cropped) sinogram and the ready model.
+    """
+    if auto_crop:
+        sino, required_params, optional_params = _auto_crop_sino(sino, required_params, optional_params, safety_buffer)
+    model = mj.build_model(required_params, optional_params)
+    return sino, model
+
+
+# Conversion of a length unit to micrometers; 1 ALU is defined as 1 unit of the caller's alu_unit.
+_ALU_UNIT_CONVERSION = {'um': 1.0, 'mm': 1000.0, 'cm': 1e4, 'm': 1e6}
+
+
+def to_alu(value, from_unit, alu_unit):
+    """
+    Rescale a physical ``value`` from ``from_unit`` to ALU, where 1 ALU = 1 unit of ``alu_unit``.
+
+    Args:
+        value (float or array): The value(s) to rescale.
+        from_unit (str): Unit of ``value`` (``'um'``, ``'mm'``, ``'cm'``, ``'m'``).
+        alu_unit (str): The unit defining 1 ALU.
+
+    Returns:
+        ``value * conversion[from_unit] / conversion[alu_unit]``.
+    """
+    return value * _ALU_UNIT_CONVERSION[from_unit] / _ALU_UNIT_CONVERSION[alu_unit]
 
 
 def estimate_sino_view_offset(ct_model, sino, direct_recon):
@@ -1450,7 +1569,7 @@ def save_preprocessing(file_path, sinogram, cone_beam_params, optional_params, w
     This lets preprocessing run once and write its result to disk, so reconstruction can be launched as
     a separate process -- useful for debugging (inspect/reuse the preprocessed sinogram) and so the
     memory-tight recon starts with a clean GPU allocator.  Reload with :func:`load_preprocessing` and
-    rebuild the model with ``ConeBeamModel(**cone_beam_params)`` + ``set_params(**optional_params)``.
+    rebuild the model with ``mbirjax.build_model(cone_beam_params, optional_params)``.
 
     Only the GEOMETRY/preprocessing parameters are saved (the two dicts above); regularization
     parameters (sharpness, sigma_x, snr_db, ...) are deliberately NOT saved -- they are a recon-time
@@ -1466,8 +1585,8 @@ def save_preprocessing(file_path, sinogram, cone_beam_params, optional_params, w
         file_path (str): Output HDF5 path (parent directories are created).
         sinogram (ndarray or jax.Array): The preprocessed sinogram (gathered to the host and cast to
             float32 before writing).
-        cone_beam_params (dict): Parameters for the model constructor (as returned by, e.g.,
-            ``mbirjax.preprocess.nsi.compute_sino_and_params``).
+        cone_beam_params (dict): Parameters for the model constructor (e.g. the ``required_params``
+            from ``TomographyModel.get_all_params``).
         optional_params (dict): Parameters applied via ``set_params`` after construction.
         weights (ndarray or jax.Array, optional): Custom reconstruction weights to save alongside the
             sinogram.  Defaults to None -- omit them when the recon will regenerate standard weights with
@@ -1508,8 +1627,8 @@ def load_preprocessing(file_path):
 
     Returns:
         tuple: ``(sinogram, cone_beam_params, optional_params, weights)`` -- a host NumPy sinogram, the
-        two parameter dicts (ready for ``ConeBeamModel(**cone_beam_params)`` +
-        ``set_params(**optional_params)``), and ``weights`` (a host NumPy array if custom weights were
+        two parameter dicts (ready for ``mbirjax.build_model(cone_beam_params, optional_params)``), and
+        ``weights`` (a host NumPy array if custom weights were
         saved, else ``None`` -- in which case the recon should regenerate them with ``gen_weights``).
     """
     import json

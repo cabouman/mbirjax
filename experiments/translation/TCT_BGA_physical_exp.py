@@ -15,14 +15,10 @@ def main():
     dataset_url = "/depot/bouman/data/Translation/purdue_BGA_xrm.tgz"
     dataset_dir = mj.download_and_extract(dataset_url, download_dir)
 
-    # Load and preprocess data
-    sino, translation_params, optional_params, weights = mjp.zeiss_tct.compute_sino_and_params(dataset_dir)
+    # Load and preprocess data (returns a ready-to-reconstruct model and a data-specific weight mask)
+    sino, tct_model, weights = mjp.zeiss_tct.get_sino_and_model(dataset_dir)
 
-    # Initialize model for reconstruction.
-    tct_model = mj.TranslationModel(**translation_params)
-    tct_model.set_params(**optional_params)
     # tct_model.set_params(sharpness=2.0)
-    # tct_model.auto_set_recon_geometry()
     recon_shape = tct_model.get_params('recon_shape')
     voxel_row_aspect = tct_model.get_params('voxel_row_aspect')
     delta_det_channel = tct_model.get_params('delta_det_channel')
@@ -35,7 +31,7 @@ def main():
     tct_model.set_params(qggmrf_nbr_wts=[0.1, 1, 1])
 
     # Print model parameters and display translation array
-    translation_vectors = translation_params['translation_vectors']
+    translation_vectors = np.array(tct_model.get_params('translation_vectors'))
     tct_model.print_params()
     delta_voxel, voxel_row_aspect, voxel_slice_aspect = tct_model.get_params(['delta_voxel', 'voxel_row_aspect', 'voxel_slice_aspect'])
     translation_vectors_display = translation_vectors.copy()
