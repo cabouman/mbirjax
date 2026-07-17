@@ -513,7 +513,7 @@ def read_metadata(ole):
         'num_views': number_of_images,
         'num_reference': number_of_reference,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
-        'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
+        'det_pixel_pitch': _read_ole_value(ole, 'DetAssemblyInfo/CamPixelSize', '<f'),
         'iso_det_dist': _read_ole_value(ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
         'source_iso_dist': _read_ole_value(ole,'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
         'thetas': _read_ole_arr(
