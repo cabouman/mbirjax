@@ -3,7 +3,6 @@
 import os
 import sys, os
 import numpy as np
-import jax.numpy as jnp
 import pprint
 import mbirjax as mj
 import mbirjax.preprocess as mjp
