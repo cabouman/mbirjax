@@ -430,26 +430,11 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
 def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
                  downsample_factor=(1, 1), det_rotation=0.0, zinger_pixel_ratio=None,
                  batch_size=90, devices=None, max_views_to_use=20):
-    """Fused scan -> sinogram for cropped scan data, view-sharded across devices.
+    """
+    Compute the sinogram from the object, blank, and dark scans.
+    This function also performs down-sampling, detector rotation, and zinger correction.
 
-    Runs (optional downsample) -> transmission -> (optional detector rotation) -> (optional zinger
-    correction) as a single on-device pass per view-batch, so the object scan is uploaded once and the
-    sinogram gathered once -- instead of a separate host round-trip for each stage.  Equivalent to
-    calling ``downsample_view_data`` (when ``downsample_factor`` exceeds 1), then
-    ``compute_sino_transmission``, then ``correct_det_rotation`` (and ``interpolate_zinger_pixels`` when
-    ``zinger_pixel_ratio`` is set), but without materializing the intermediates on the host.
-    Background-offset correction is left to the caller (a cheap host pass).
-
-    Every stage here is **per-view** (the defective/zinger interpolation uses within-view neighbors), so
-    the views are split into contiguous shards across ``devices`` and processed concurrently with no
-    cross-device communication; the result is identical regardless of device count (and to the
-    single-device sequential path).  Detector rotation is skipped entirely when ``det_rotation == 0``.
-
-    Zinger correction (``zinger_pixel_ratio`` not None) is folded in here so it costs no extra host
-    round-trip, and it runs **before** the caller's offset/shift passes -- correct, since a zinger should
-    be removed before a sub-pixel detector shift could interpolate it into its neighbors.  Its threshold
-    is ``-ratio * RMS(sino over support)`` estimated from a cheap pre-pass over a ~``max_views_to_use``
-    view subsample (the threshold is statistical; detection then runs on every view in the main pass).
+    Fused scan -> sinogram for cropped scan data, view-sharded across devices.
 
     Args:
         obj_scan, blank_scan, dark_scan (ndarray): cropped scans (object batched along axis 0).
