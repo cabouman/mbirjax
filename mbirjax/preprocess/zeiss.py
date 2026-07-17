@@ -74,7 +74,7 @@ def _compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vi
     Compute the sinogram and build_model-ready parameters from a Zeiss Ultra/Versa ``.txrm`` dataset.
 
     Private helper for :func:`get_sino_and_model`.  Loads scans and geometry, computes the sinogram
-    (downsample -> transmission -> optional zinger, then background-offset and sinogram-shift
+    (downsample -> transmission, then background-offset, optional zinger, and sinogram-shift
     corrections), and resolves the geometry class from the scanner type.
 
     Thanks to contributions of Amir Koushyar Ziabari of Oak Ridge National Laboratory (ORNL).
@@ -117,20 +117,23 @@ def _compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vi
                                                                                 crop_pixels_bottom=crop_pixels_bottom)
 
     if verbose > 0:
-        print("\n\n########## Computing sinogram (downsample -> transmission -> zinger, fused and view-sharded)")
-    # Downsample + transmission (+ zinger) via the shared, view-sharded core (zeiss has no detector
-    # rotation).  Zinger correction is folded into this single pass when enabled -- no extra host
-    # round-trip -- and runs before the offset/shift passes below, so a zinger is removed before a
-    # sub-pixel detector shift could interpolate it into its neighbors.
+        print("\n\n########## Computing sinogram")
     sino = mjp.scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array,
-                            downsample_factor=downsample_factor, det_rotation=0.0,
-                            zinger_pixel_ratio=0.1 if zinger_correction else None)
+                            downsample_factor=downsample_factor, det_rotation=0.0)
 
     if verbose > 0:
-        print("\n\n########## Correcting sinogram data to account for background offset and sino offset")
+        print("\n\n########## Correcting any residual background sinogram offset")
     sino = mjp.correct_background_offset(sino, option=bg_option)
 
-    # Correct sino offset
+    # Zinger detection needs the background-corrected sinogram, and must run before the view
+    # shifts below resample (and spread) any zinger pixels.
+    if zinger_correction:
+        if verbose > 0:
+            print("\n\n########## Correcting zinger pixels")
+        sino = mjp.correct_zinger_pixels(sino, zinger_pixel_ratio=0.1)
+
+    if verbose > 0:
+        print("\n\n########## Correcting per-view sinogram shifts")
     sino = correct_sino_shifts(sino, zeiss_params, downsample_factor, subsample_view_factor)
 
     if verbose > 0:
@@ -513,7 +516,7 @@ def read_metadata(ole):
         'num_views': number_of_images,
         'num_reference': number_of_reference,
         'iso_pixel_pitch': _read_ole_value(ole, 'ImageInfo/PixelSize', '<f'),
-        'det_pixel_pitch': _read_ole_value(ole, 'ImageInfo/CamPixelSize', '<f'),
+        'det_pixel_pitch': _read_ole_value(ole, 'DetAssemblyInfo/CamPixelSize', '<f'),
         'iso_det_dist': _read_ole_value(ole, 'ImageInfo/DtoRADistance', "<{0}f".format(number_of_images)),
         'source_iso_dist': _read_ole_value(ole,'ImageInfo/StoRADistance', "<{0}f".format(number_of_images)),
         'thetas': _read_ole_arr(

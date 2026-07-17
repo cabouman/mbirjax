@@ -133,9 +133,8 @@ def _fill_nan_pixels(sino, num_passes=3):
 
 
 def _zinger_fill(sino, zinger_threshold, num_passes=3):
-    """Mark zinger pixels (anomalously negative: ``value < zinger_threshold``) and non-finite values NaN,
-    then fill them from their finite 3x3 in-view neighbors via :func:`_fill_nan_pixels`.  Pure +
-    fixed-shape -> jittable (per view-batch); ``zinger_threshold`` is a precomputed scalar."""
+    """Mark zinger pixels (``value < zinger_threshold``) and non-finite values NaN, then fill them from
+    their finite 3x3 in-view neighbors.  Jittable; ``zinger_threshold`` is a precomputed scalar."""
     sino = jnp.where(jnp.isfinite(sino), sino, jnp.nan)        # +-inf / NaN -> NaN
     sino = jnp.where(sino < zinger_threshold, jnp.nan, sino)   # flag zingers
     return _fill_nan_pixels(sino, num_passes)
@@ -428,38 +427,21 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
 
 
 def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
-                 downsample_factor=(1, 1), det_rotation=0.0, zinger_pixel_ratio=None,
-                 batch_size=90, devices=None, max_views_to_use=20):
-    """Fused scan -> sinogram for cropped scan data, view-sharded across devices.
+                 downsample_factor=(1, 1), det_rotation=0.0,
+                 batch_size=90, devices=None):
+    """
+    Compute the sinogram from the object, blank, and dark scans, with optional down-sampling and
+    detector rotation.
 
-    Runs (optional downsample) -> transmission -> (optional detector rotation) -> (optional zinger
-    correction) as a single on-device pass per view-batch, so the object scan is uploaded once and the
-    sinogram gathered once -- instead of a separate host round-trip for each stage.  Equivalent to
-    calling ``downsample_view_data`` (when ``downsample_factor`` exceeds 1), then
-    ``compute_sino_transmission``, then ``correct_det_rotation`` (and ``interpolate_zinger_pixels`` when
-    ``zinger_pixel_ratio`` is set), but without materializing the intermediates on the host.
-    Background-offset correction is left to the caller (a cheap host pass).
-
-    Every stage here is **per-view** (the defective/zinger interpolation uses within-view neighbors), so
-    the views are split into contiguous shards across ``devices`` and processed concurrently with no
-    cross-device communication; the result is identical regardless of device count (and to the
-    single-device sequential path).  Detector rotation is skipped entirely when ``det_rotation == 0``.
-
-    Zinger correction (``zinger_pixel_ratio`` not None) is folded in here so it costs no extra host
-    round-trip, and it runs **before** the caller's offset/shift passes -- correct, since a zinger should
-    be removed before a sub-pixel detector shift could interpolate it into its neighbors.  Its threshold
-    is ``-ratio * RMS(sino over support)`` estimated from a cheap pre-pass over a ~``max_views_to_use``
-    view subsample (the threshold is statistical; detection then runs on every view in the main pass).
+    The steps run as one fused kernel per view batch, view-sharded across devices.
 
     Args:
         obj_scan, blank_scan, dark_scan (ndarray): cropped scans (object batched along axis 0).
         defective_pixel_array (ndarray or tuple): shared defective-pixel (row, col) coords, or ().
         downsample_factor (tuple[int, int]): detector row/channel downsample; (1, 1) skips downsampling.
         det_rotation (float): detector rotation in radians; 0 skips the rotation.
-        zinger_pixel_ratio (float or None): if set, fold in zinger correction with this ratio; None skips it.
         batch_size (int): number of views per on-device batch.
         devices (sequence or None): devices to spread the views over; ``None`` uses ``jax.devices()``.
-        max_views_to_use (int): views sampled for the zinger threshold estimate (when zinger is enabled).
 
     Returns:
         numpy.ndarray: the sinogram, shape (num_views, num_det_rows, num_det_channels).
@@ -473,17 +455,13 @@ def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
         blank_scan, dark_scan, defective_pixel_array, obj_flat_indices, new_size1, new_size2, block_shape = \
             _downsample_blank_dark(blank_scan, dark_scan, downsample_factor, defective_pixel_array)
 
-    # Transmission constants kept as HOST NumPy so the fused kernel is device-agnostic: each value
-    # auto-promotes to its batch's device, which is what lets the SAME kernel run on every view shard.
-    # mean/abs are the identical IEEE float32 ops whether evaluated here on the host or on a device, so
-    # this matches the single-device (jnp-constant) result bit-for-bit.  blank_minus_dark does not vary
-    # across batches, so precompute it once.
+    # Keep the transmission constants as host NumPy so the kernel is device-agnostic (each value
+    # auto-promotes to its batch's device).
     blank_scan_mean = np.mean(blank_scan, axis=0, keepdims=True)
     dark_scan_mean = np.mean(dark_scan, axis=0, keepdims=True)
     blank_minus_dark = np.abs(blank_scan_mean - dark_scan_mean)
 
-    # Defective-pixel indices for the transmission kernel, raveled against the detector grid the kernel
-    # sees (the downsampled grid when downsampling; blank/dark share the object scan's detector dims).
+    # Ravel defective-pixel indices against the detector grid the kernel sees (downsampled if downsampling).
     trans_det_shape = blank_scan.shape[1:]
     if len(defective_pixel_array) > 0:
         defective_pixel_array = np.asarray(defective_pixel_array)
@@ -493,43 +471,19 @@ def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
         trans_flat_indices = None
 
     do_rotation = det_rotation != 0.0
-    do_zinger = zinger_pixel_ratio is not None
 
-    # The whole per-batch kernel -- (downsample) -> transmission -> interpolate -> (rotation) ->
-    # (zinger) -- is jittable (interpolate/zinger use a fixed-iteration dense fill instead of
-    # argwhere/while), so we wrap it in a single jax.jit.  XLA then fuses the stages, reuses buffers, and
-    # dispatches one kernel per batch instead of dozens of eager ops (lower memory + faster, esp.
-    # multi-device).  The host constants (blank_minus_dark, etc.), the do_* flags, det_rotation, and the
-    # zinger threshold are captured as compile constants.  Run under each worker's jax.default_device,
-    # the kernel compiles per device with its constants on that device (one compile per shape per device,
-    # reused per batch).  ``zinger_threshold`` is built fresh per call so we can compile a no-zinger
-    # variant for the threshold pre-pass below.
-    def build_fused_kernel(zinger_threshold):
-        @jax.jit
-        def fused_kernel(obj_batch):
-            if do_downsample:
-                obj_batch = _downsample_obj_kernel(obj_batch, obj_flat_indices, new_size1, new_size2, block_shape)
-            sino_batch = _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean,
-                                              trans_flat_indices, defective_pixel_array)
-            if do_rotation:
-                sino_batch = _rotation_kernel(sino_batch, det_rotation)
-            if zinger_threshold is not None:
-                sino_batch = _zinger_fill(sino_batch, zinger_threshold)
-            return sino_batch
-        return fused_kernel
+    # One jitted kernel per view batch: (downsample) -> transmission -> (rotation).
+    @jax.jit
+    def fused_kernel(obj_batch):
+        if do_downsample:
+            obj_batch = _downsample_obj_kernel(obj_batch, obj_flat_indices, new_size1, new_size2, block_shape)
+        sino_batch = _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean,
+                                          trans_flat_indices, defective_pixel_array)
+        if do_rotation:
+            sino_batch = _rotation_kernel(sino_batch, det_rotation)
+        return sino_batch
 
-    # Zinger threshold pre-pass: the threshold is the RMS over the sinogram support, which we estimate by
-    # running the kernel (without zinger) on a ~max_views_to_use even view subsample -- cheap, single
-    # device.  This avoids a second full pass over the sinogram (the standalone interpolate_zinger_pixels
-    # path) by folding the correction into the main pass below.
-    zinger_threshold = None
-    if do_zinger:
-        obj_sub = mj.TomographyModel.subsample_views(obj_scan, max_views_to_use)
-        sino_sub = pipeline.map_view_batches(obj_sub, build_fused_kernel(None),
-                                             batch_size, devices=[devices[0]])
-        zinger_threshold = _zinger_threshold(sino_sub, zinger_pixel_ratio, max_views_to_use)
-
-    sino = pipeline.map_view_batches(obj_scan, build_fused_kernel(zinger_threshold), batch_size, devices=devices)
+    sino = pipeline.map_view_batches(obj_scan, fused_kernel, batch_size, devices=devices)
     print("Sinogram computation complete.")
     return sino
 
@@ -1492,70 +1446,37 @@ def apply_inverse_beam_hardening_curve(beam_hardened_projection, cheb_coeffs, y_
 
 
 def _zinger_threshold(sino, zinger_pixel_ratio, max_views_to_use=20):
-    """Zinger-detection threshold = ``-zinger_pixel_ratio * RMS(sino over its support)``.
-
-    The threshold is a STATISTICAL quantity, so it is estimated from a view subsample (via
-    ``TomographyModel.subsample_views``) -- pass the FULL sinogram; the subsampling happens here, which
-    avoids running ``_get_sino_indicator`` + ``sino**2`` over the whole (possibly ~20 GB) sinogram.
-    Returns a Python float (negative; zingers are anomalously negative)."""
+    """Zinger-detection threshold = ``-zinger_pixel_ratio * RMS(sino over its support)``, estimated
+    from a subsample of at most ``max_views_to_use`` views.  Returns a negative Python float."""
     sino_sub = mj.TomographyModel.subsample_views(sino, max_views_to_use)
     sino_indicator = mj.TomographyModel._get_sino_indicator(sino_sub)
     typical_sino_value = float(np.average(sino_sub ** 2, None, sino_indicator) ** 0.5)
     return -zinger_pixel_ratio * typical_sino_value
 
 
-def detect_zinger_pixels(sino, zinger_pixel_ratio=0.1, max_views_to_use=20):
+def correct_zinger_pixels(sino, zinger_pixel_ratio=0.1, num_passes=3, batch_size=90, devices=None,
+                          max_views_to_use=20):
     """
-    Detect zinger pixels from sinogram.
+    Detect and correct zinger pixels in a background-corrected sinogram.
 
-    Zinger pixels are identified as unusually negative values. A pixel is
-    classified as a zinger if:
-
-        value < -zinger_pixel_ratio * typical_sino_value
+    A pixel is a zinger if ``value < -zinger_pixel_ratio * RMS(sino over its support)``; the threshold
+    is estimated from a small view subsample, so the sinogram background offset must be removed first
+    (see :func:`correct_background_offset`).  Zingers and non-finite pixels are replaced by the mean of
+    their finite 3x3 in-view neighbors in ``num_passes`` fill passes.  Runs per view-batch, so device
+    memory stays bounded and multiple devices can be used.
 
     Args:
-        sino (numpy.ndarray): A 3D sinogram of shape (num_views, num_det_rows, num_det_channels).
-        zinger_pixel_ratio (float, optional): Ratio used for zinger pixels detection. Defaults to 0.1.
-        max_views_to_use (int, optional): Cap on the number of views sampled for the typical-value
-            (threshold) estimate. Defaults to 20.
-
-    Returns:
-        ndarray:
-            Array of zinger pixel indices with shape (num_zinger_pixels, 3). Format in (view_idx, row_idx, channel_idx).
-    """
-    # Estimate the threshold from a view subsample (statistical; done inside _zinger_threshold), then
-    # DETECT across ALL views (a zinger can occur in any view).
-    zinger_threshold = _zinger_threshold(sino, zinger_pixel_ratio, max_views_to_use)
-    zinger_pixel_array = np.argwhere(np.asarray(sino) < zinger_threshold).astype(int)
-
-    return zinger_pixel_array.reshape((-1, 3))
-
-
-def interpolate_zinger_pixels(sino, zinger_pixel_ratio=0.1, num_passes=3, batch_size=90, devices=None,
-                              max_views_to_use=20):
-    """
-    Detect and interpolate zinger sinogram entries (anomalously negative values) with the MEAN of their
-    finite 3x3 in-view neighbors.
-
-    A pixel is a zinger if ``value < -zinger_pixel_ratio * RMS(sino over support)`` (the threshold is
-    estimated once from a cheap view subsample).  Detection + fill run **per view-batch through the
-    shared pipeline driver** -- memory-bounded and optionally multi-device -- reusing the same
-    :func:`_zinger_fill` / :func:`_fill_nan_pixels` machinery as :func:`interpolate_defective_pixels`
-    (dense ``reduce_window`` passes; no ``argwhere``, no data-dependent loop).  This is a thin wrapper:
-    the same zinger correction is also available folded into :func:`scan_to_sino` via its
-    ``zinger_pixel_ratio`` argument (one pass, no extra host round-trip).
-
-    Args:
-        sino (numpy or jax array): A 3D sinogram of shape (num_views, num_det_rows, num_det_channels).
+        sino (numpy or jax array): Background-corrected 3D sinogram of shape
+            (num_views, num_det_rows, num_det_channels).
         zinger_pixel_ratio (float, optional): Ratio used for zinger detection. Defaults to 0.1.
-        num_passes (int, optional): Dense fill passes = max fillable zinger-cluster radius. Defaults to 3.
+        num_passes (int, optional): Fill passes = max correctable zinger-cluster radius. Defaults to 3.
         batch_size (int, optional): Views per on-device batch. Defaults to 90.
         devices (sequence or None, optional): Devices to spread the views over; None = single device.
         max_views_to_use (int, optional): Views sampled for the threshold estimate. Defaults to 20.
 
     Returns:
-        numpy.ndarray: Corrected 3D sinogram; any pixel still NaN after ``num_passes`` is set to 0 (with
-        a warning).
+        numpy.ndarray: Sinogram with zinger pixels corrected; any pixel still NaN after ``num_passes``
+        is set to 0 (with a warning).
     """
     zinger_threshold = _zinger_threshold(sino, zinger_pixel_ratio, max_views_to_use)
     kernel = jax.jit(lambda b: _zinger_fill(b, zinger_threshold, num_passes))
