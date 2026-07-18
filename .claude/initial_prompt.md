@@ -1,4 +1,5 @@
-We're continuing work on `mbirjax` (branch `greg/gpu_headroom`), with a focus on axial padding.
+We're continuing work on `mbirjax` (branches `prelease` and `greg/gpu_headroom`), with a focus on
+cleaning and robustifying in preparation for a release.
 
 **IMPORTANT — workflow reminder:** discussion first for code AND doc changes; propose and
 wait for approval (read `.claude/claude_prompt.md` closely for more).  Stage only, never
@@ -14,14 +15,11 @@ Also skim for context:
 6. `plans/README.md` — the index of all internal plans/findings docs (docs at
    `plans/<area>/`, supporting scripts at `plans/experiments/<area>/`).
 
-Current task:  The original padding investigation is described in 
-/Users/gbuzzard/Documents/PyCharm Projects/Research/mbirjax/plans/flash_remediation/flash_remediation_plan.md.
-However, the default axial padding as implemented based on those findings can
-lead to unreasonably large expansions:  from 1432 slices to 4007 slices in the case of 
-/depot/bouman/data/Lilly/Connected_Autoinjector_Horizontal/, which then led to OOM.  So, we need to determine
-a more practical approach to axial padding.  
-
-Secondarily, we need to call mj.get_memory_stats() on OOM to provide context. 
+Current task:  First, make a plan to merge prerelease into greg/gpu_headroom.  
+gpu_headroom has all the work on pallas kernels, padding, and some other misc items.
+prerelease has refactored preprocessing and was merged into gpu_headroom just before 
+the work on preprocessing.  Please identify any conflicts to a merge, and also create 
+a high-level draft PR message from the resulting merge back to prerelease.
 
 ## Standing context
 
