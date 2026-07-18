@@ -30,8 +30,8 @@ dependencies = [
     # incompatible skew that pip does NOT flag (jax checks the pairing only at runtime).  The floor
     # forces jax up to the 0.10 line; jax's own metadata then pulls a matching jaxlib.  Keep the two
     # bounds identical, and bump the floor (not an upper cap) as the supported baseline advances.
-    "jax>=0.10,!=0.10.2",
-    "jaxlib>=0.10,!=0.10.2",
+    "jax>=0.10,!=0.10.2,!=0.11.0",
+    "jaxlib>=0.10,!=0.10.2,!=0.11.0",
     "matplotlib",
     "numpy",
     "scipy",
