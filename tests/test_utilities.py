@@ -217,5 +217,62 @@ class TestIsOomClassifier(unittest.TestCase):
         self.assertFalse(mj._utils.is_oom(fake_traceback))
 
 
+class TestGetAllParamsBuildModel(unittest.TestCase):
+    """get_all_params is the single source of truth for reading a model's params back out; build_model
+    reconstructs a model from (required, optional, regularization).  The round-trip must reproduce the
+    model, and (required, optional) alone must be a self-contained model description (build_model
+    resolves the class from required['geometry_type'])."""
+
+    @staticmethod
+    def _angles(n=20):
+        return np.linspace(0, np.pi, n, endpoint=False)
+
+    def _assert_roundtrip(self, model):
+        req, opt, reg = model.get_all_params()
+        self.assertEqual(req['geometry_type'], str(type(model)))
+        self.assertNotIn('geometry_type', opt)
+        rebuilt = mj.build_model(req, opt, reg)
+        self.assertIs(type(rebuilt), type(model))
+        self.assertEqual(tuple(rebuilt.get_params('recon_shape')), tuple(model.get_params('recon_shape')))
+        self.assertAlmostEqual(float(rebuilt.get_params('delta_voxel')), float(model.get_params('delta_voxel')))
+
+    def test_cone_roundtrip_unpacks_view_components(self):
+        m = mj.ConeBeamModel((20, 32, 32), self._angles(), source_detector_dist=128, source_iso_dist=64)
+        req, opt, reg = m.get_all_params()
+        self.assertIn('angles', req)              # view components unpacked into constructor args
+        self.assertIn('helical_z_shifts', req)
+        self.assertNotIn('view_params_array', opt)   # the packed array is rebuilt from the components
+        self._assert_roundtrip(m)
+
+    def test_parallel_and_translation_roundtrip(self):
+        self._assert_roundtrip(mj.ParallelBeamModel((20, 32, 32), self._angles()))
+        tv = np.random.RandomState(0).randn(20, 3) * 5
+        self._assert_roundtrip(mj.TranslationModel((20, 24, 24), tv, source_detector_dist=500, source_iso_dist=250))
+
+    def test_regularization_bucket_membership(self):
+        _, opt, reg = mj.ConeBeamModel((20, 32, 32), self._angles(),
+                                       source_detector_dist=128, source_iso_dist=64).get_all_params()
+        self.assertEqual(set(reg),
+                         {'sigma_y', 'sigma_x', 'sigma_prox', 'snr_db', 'sharpness', 'auto_regularize_flag'})
+        for k in ('p', 'q', 'T', 'qggmrf_nbr_wts'):   # prior SHAPE params are structural -> optional
+            self.assertIn(k, opt)
+            self.assertNotIn(k, reg)
+
+    def test_build_model_from_required_only(self):
+        req, _, _ = mj.ConeBeamModel((20, 32, 32), self._angles(),
+                                     source_detector_dist=128, source_iso_dist=64).get_all_params()
+        self.assertIs(type(mj.build_model(req)), mj.ConeBeamModel)   # optional/regularization default None
+
+    def test_pinned_recon_shape_survives_auto(self):
+        req, opt, _ = mj.ConeBeamModel((20, 32, 32), self._angles(),
+                                       source_detector_dist=128, source_iso_dist=64).get_all_params()
+        opt['recon_shape'] = (40, 40, 40)
+        self.assertEqual(tuple(mj.build_model(req, opt).get_params('recon_shape')), (40, 40, 40))
+
+    def test_build_model_unknown_geometry_type_raises(self):
+        with self.assertRaises(ValueError):
+            mj.build_model({'geometry_type': 'not-a-class', 'sinogram_shape': (1, 1, 1), 'angles': [0.0]})
+
+
 if __name__ == '__main__':
     unittest.main()

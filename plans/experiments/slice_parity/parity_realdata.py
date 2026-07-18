@@ -83,14 +83,14 @@ def stage_dir(case_name):
 def load_case(case_name):
     """Load (sino, weights, geom_params, optional_params); cache slow NSI preprocessing.
 
-    h5 cases (partition-study caches) load directly via load_preprocessing — the h5 IS
+    h5 cases (partition-study caches) load directly via load_cone_preprocessing — the h5 IS
     the cache; weights regenerate per call (one cheap op) when none were saved.
     """
     c, stage = CASES[case_name], stage_dir(case_name)
     import mbirjax as mj
     import mbirjax.preprocess as mjp
     if c['loader'] == 'h5':
-        sino, geom_params, optional_params, weights = mjp.load_preprocessing(c['h5_path'])
+        sino, geom_params, optional_params, weights = mjp.load_cone_preprocessing(c['h5_path'])
         sino = np.asarray(sino)
         if weights is None:
             weights = np.asarray(mj.gen_weights(sino, 'transmission_root'))

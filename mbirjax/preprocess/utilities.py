@@ -133,9 +133,8 @@ def _fill_nan_pixels(sino, num_passes=3):
 
 
 def _zinger_fill(sino, zinger_threshold, num_passes=3):
-    """Mark zinger pixels (anomalously negative: ``value < zinger_threshold``) and non-finite values NaN,
-    then fill them from their finite 3x3 in-view neighbors via :func:`_fill_nan_pixels`.  Pure +
-    fixed-shape -> jittable (per view-batch); ``zinger_threshold`` is a precomputed scalar."""
+    """Mark zinger pixels (``value < zinger_threshold``) and non-finite values NaN, then fill them from
+    their finite 3x3 in-view neighbors.  Jittable; ``zinger_threshold`` is a precomputed scalar."""
     sino = jnp.where(jnp.isfinite(sino), sino, jnp.nan)        # +-inf / NaN -> NaN
     sino = jnp.where(sino < zinger_threshold, jnp.nan, sino)   # flag zingers
     return _fill_nan_pixels(sino, num_passes)
@@ -428,38 +427,21 @@ def downsample_view_data(obj_scan, blank_scan, dark_scan, downsample_factor, def
 
 
 def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
-                 downsample_factor=(1, 1), det_rotation=0.0, zinger_pixel_ratio=None,
-                 batch_size=90, devices=None, max_views_to_use=20):
-    """Fused scan -> sinogram for cropped scan data, view-sharded across devices.
+                 downsample_factor=(1, 1), det_rotation=0.0,
+                 batch_size=90, devices=None):
+    """
+    Compute the sinogram from the object, blank, and dark scans, with optional down-sampling and
+    detector rotation.
 
-    Runs (optional downsample) -> transmission -> (optional detector rotation) -> (optional zinger
-    correction) as a single on-device pass per view-batch, so the object scan is uploaded once and the
-    sinogram gathered once -- instead of a separate host round-trip for each stage.  Equivalent to
-    calling ``downsample_view_data`` (when ``downsample_factor`` exceeds 1), then
-    ``compute_sino_transmission``, then ``correct_det_rotation`` (and ``interpolate_zinger_pixels`` when
-    ``zinger_pixel_ratio`` is set), but without materializing the intermediates on the host.
-    Background-offset correction is left to the caller (a cheap host pass).
-
-    Every stage here is **per-view** (the defective/zinger interpolation uses within-view neighbors), so
-    the views are split into contiguous shards across ``devices`` and processed concurrently with no
-    cross-device communication; the result is identical regardless of device count (and to the
-    single-device sequential path).  Detector rotation is skipped entirely when ``det_rotation == 0``.
-
-    Zinger correction (``zinger_pixel_ratio`` not None) is folded in here so it costs no extra host
-    round-trip, and it runs **before** the caller's offset/shift passes -- correct, since a zinger should
-    be removed before a sub-pixel detector shift could interpolate it into its neighbors.  Its threshold
-    is ``-ratio * RMS(sino over support)`` estimated from a cheap pre-pass over a ~``max_views_to_use``
-    view subsample (the threshold is statistical; detection then runs on every view in the main pass).
+    The steps run as one fused kernel per view batch, view-sharded across devices.
 
     Args:
         obj_scan, blank_scan, dark_scan (ndarray): cropped scans (object batched along axis 0).
         defective_pixel_array (ndarray or tuple): shared defective-pixel (row, col) coords, or ().
         downsample_factor (tuple[int, int]): detector row/channel downsample; (1, 1) skips downsampling.
         det_rotation (float): detector rotation in radians; 0 skips the rotation.
-        zinger_pixel_ratio (float or None): if set, fold in zinger correction with this ratio; None skips it.
         batch_size (int): number of views per on-device batch.
         devices (sequence or None): devices to spread the views over; ``None`` uses ``jax.devices()``.
-        max_views_to_use (int): views sampled for the zinger threshold estimate (when zinger is enabled).
 
     Returns:
         numpy.ndarray: the sinogram, shape (num_views, num_det_rows, num_det_channels).
@@ -473,17 +455,13 @@ def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
         blank_scan, dark_scan, defective_pixel_array, obj_flat_indices, new_size1, new_size2, block_shape = \
             _downsample_blank_dark(blank_scan, dark_scan, downsample_factor, defective_pixel_array)
 
-    # Transmission constants kept as HOST NumPy so the fused kernel is device-agnostic: each value
-    # auto-promotes to its batch's device, which is what lets the SAME kernel run on every view shard.
-    # mean/abs are the identical IEEE float32 ops whether evaluated here on the host or on a device, so
-    # this matches the single-device (jnp-constant) result bit-for-bit.  blank_minus_dark does not vary
-    # across batches, so precompute it once.
+    # Keep the transmission constants as host NumPy so the kernel is device-agnostic (each value
+    # auto-promotes to its batch's device).
     blank_scan_mean = np.mean(blank_scan, axis=0, keepdims=True)
     dark_scan_mean = np.mean(dark_scan, axis=0, keepdims=True)
     blank_minus_dark = np.abs(blank_scan_mean - dark_scan_mean)
 
-    # Defective-pixel indices for the transmission kernel, raveled against the detector grid the kernel
-    # sees (the downsampled grid when downsampling; blank/dark share the object scan's detector dims).
+    # Ravel defective-pixel indices against the detector grid the kernel sees (downsampled if downsampling).
     trans_det_shape = blank_scan.shape[1:]
     if len(defective_pixel_array) > 0:
         defective_pixel_array = np.asarray(defective_pixel_array)
@@ -493,43 +471,19 @@ def scan_to_sino(obj_scan, blank_scan, dark_scan, defective_pixel_array=(),
         trans_flat_indices = None
 
     do_rotation = det_rotation != 0.0
-    do_zinger = zinger_pixel_ratio is not None
 
-    # The whole per-batch kernel -- (downsample) -> transmission -> interpolate -> (rotation) ->
-    # (zinger) -- is jittable (interpolate/zinger use a fixed-iteration dense fill instead of
-    # argwhere/while), so we wrap it in a single jax.jit.  XLA then fuses the stages, reuses buffers, and
-    # dispatches one kernel per batch instead of dozens of eager ops (lower memory + faster, esp.
-    # multi-device).  The host constants (blank_minus_dark, etc.), the do_* flags, det_rotation, and the
-    # zinger threshold are captured as compile constants.  Run under each worker's jax.default_device,
-    # the kernel compiles per device with its constants on that device (one compile per shape per device,
-    # reused per batch).  ``zinger_threshold`` is built fresh per call so we can compile a no-zinger
-    # variant for the threshold pre-pass below.
-    def build_fused_kernel(zinger_threshold):
-        @jax.jit
-        def fused_kernel(obj_batch):
-            if do_downsample:
-                obj_batch = _downsample_obj_kernel(obj_batch, obj_flat_indices, new_size1, new_size2, block_shape)
-            sino_batch = _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean,
-                                              trans_flat_indices, defective_pixel_array)
-            if do_rotation:
-                sino_batch = _rotation_kernel(sino_batch, det_rotation)
-            if zinger_threshold is not None:
-                sino_batch = _zinger_fill(sino_batch, zinger_threshold)
-            return sino_batch
-        return fused_kernel
+    # One jitted kernel per view batch: (downsample) -> transmission -> (rotation).
+    @jax.jit
+    def fused_kernel(obj_batch):
+        if do_downsample:
+            obj_batch = _downsample_obj_kernel(obj_batch, obj_flat_indices, new_size1, new_size2, block_shape)
+        sino_batch = _transmission_kernel(obj_batch, blank_minus_dark, dark_scan_mean,
+                                          trans_flat_indices, defective_pixel_array)
+        if do_rotation:
+            sino_batch = _rotation_kernel(sino_batch, det_rotation)
+        return sino_batch
 
-    # Zinger threshold pre-pass: the threshold is the RMS over the sinogram support, which we estimate by
-    # running the kernel (without zinger) on a ~max_views_to_use even view subsample -- cheap, single
-    # device.  This avoids a second full pass over the sinogram (the standalone interpolate_zinger_pixels
-    # path) by folding the correction into the main pass below.
-    zinger_threshold = None
-    if do_zinger:
-        obj_sub = mj.TomographyModel.subsample_views(obj_scan, max_views_to_use)
-        sino_sub = pipeline.map_view_batches(obj_sub, build_fused_kernel(None),
-                                             batch_size, devices=[devices[0]])
-        zinger_threshold = _zinger_threshold(sino_sub, zinger_pixel_ratio, max_views_to_use)
-
-    sino = pipeline.map_view_batches(obj_scan, build_fused_kernel(zinger_threshold), batch_size, devices=devices)
+    sino = pipeline.map_view_batches(obj_scan, fused_kernel, batch_size, devices=devices)
     print("Sinogram computation complete.")
     return sino
 
@@ -822,22 +776,24 @@ def apply_cylindrical_mask(recon, radial_margin=0, top_margin=0, bottom_margin=0
 
     return recon
 
-def est_crop_width(sino, safety_buffer=20, max_views_to_use=20):
-    """Estimate crop widths for removing blank margins in a 3D sinogram.
+def detect_blank_margins(sino, safety_buffer=20, max_views_to_use=20):
+    """
+    Detect how many blank detector rows/channels frame the object in a sinogram.
+
+    The detected amounts feed :func:`apply_detector_crop` to assemble the automatic-crop step.
+    Detection uses a support mask computed over a subsample of views, so it stays cheap on large
+    sinograms.
 
     Args:
-        sino (np.ndarray): Input sinogram array .
-        safety_buffer (int, optional): Safety buffer (in pixels) to keep around the
-            detected object region on each boundary. Defaults to 20.
-        max_views_to_use (int, optional): Cap on the number of views sampled for the support
-            estimate. Defaults to 20.
+        sino (np.ndarray): Sinogram, shape ``(num_views, num_det_rows, num_det_channels)``.
+        safety_buffer (int, optional): Blank margin, in pixels, to keep on each side of the detected
+            object region. Defaults to 20.
+        max_views_to_use (int, optional): Cap on the number of views sampled for detection.
+            Defaults to 20.
 
     Returns:
-        crop_top (int): Number of detector rows to crop from the top.
-        crop_bottom (int): Number of detector rows to crop from the bottom.
-        crop_left (int): Number of detector channels to crop from the left.
-        crop_right (int): Number of detector channels to crop from the right.
-
+        tuple: ``(crop_top, crop_bottom, crop_left, crop_right)`` -- detector rows to crop from the
+        top and bottom, and detector channels to crop from the left and right.
     """
     # The crop boundaries need full detector row/column resolution, but support detection is
     # statistical across views -- so subsample VIEWS (axis 0), exactly as auto_set_regularization_params
@@ -869,48 +825,173 @@ def est_crop_width(sino, safety_buffer=20, max_views_to_use=20):
     return crop_pixels_top, crop_pixels_bottom, crop_pixels_left, crop_pixels_right
 
 
-def auto_crop_sino_conebeam(sino, cone_beam_params, optional_params, safety_buffer=20):
+def apply_detector_crop(required_params, optional_params, crop_top, crop_bottom, crop_left, crop_right):
     """
-    Automatically crop unused sinogram margins and update cone-beam geometry parameters.
+    Update the geometry for a detector-region crop: shrink the sinogram shape and shift the
+    detector offsets by the amount the crop moves the detector center.
 
-    This reduces the reconstruction volume by removing blank detector margins in the sinogram and
-    updating the corresponding geometry offsets so the physical coordinate system remains consistent.
+    This is the single source of the crop-to-geometry bookkeeping, so a manual (configuration) crop
+    and the automatic margin crop stay consistent and asymmetric crops are correct for every
+    geometry.  It is *detector-plane only*: it updates ``sinogram_shape`` and, for the geometries
+    that have them, ``det_row_offset`` / ``det_channel_offset``.  It deliberately does not set
+    ``recon_slice_offset``: for cone geometry ``auto_set_recon_geometry`` (which every reader runs,
+    via ``build_model``) re-derives it from the scan, and the other geometries either have no
+    ``recon_slice_offset`` or keep it at its default, so a detector crop never needs to touch it.
+
+    The caller slices the array with the SAME crop amounts -- the raw scans in the configuration
+    crop path, the computed sinogram in the automatic crop path -- while this function owns the
+    geometry, so the array and the geometry can never drift.
 
     Args:
-        sino (np.ndarray): Input sinogram array with shape (num_views, num_det_rows, num_det_channels).
-        cone_beam_params (dict): Cone-beam geometry parameters that can be passed to the model constructor.
-        optional_params (dict): Optional geometry parameters set after the model is constructed.
-        safety_buffer (int, optional): Safety buffer (in pixels) to keep around the detected object region.
-            Defaults to 20.
+        required_params (dict): Constructor parameters, read for ``sinogram_shape`` (the returned copy
+            has it reduced by the crop).
+        optional_params (dict): Parameters applied with ``set_params``; in the returned copy,
+            ``det_row_offset`` / ``det_channel_offset`` are compensated when present for this geometry,
+            using the detector pitches ``delta_det_row`` / ``delta_det_channel`` (each defaulting to
+            1.0, the model default, when a reader leaves it unset).
+        crop_top (int): Detector rows removed from the top.
+        crop_bottom (int): Detector rows removed from the bottom.
+        crop_left (int): Detector channels removed from the left.
+        crop_right (int): Detector channels removed from the right.
 
     Returns:
-        tuple:
-            A 3-tuple ``(sino, cone_beam_params, optional_params)`` where:
-
-            * **sino** (*np.ndarray*): Cropped sinogram with updated shape.
-            * **cone_beam_params** (*dict*): Updated parameters with adjusted ``'sinogram_shape'``.
-            * **optional_params** (*dict*): Updated parameters with adjusted ``'det_row_offset'``
-              and ``'det_channel_offset'``.  (Any other entries pass through untouched; call
-              ``auto_set_recon_geometry()`` after applying the parameters so the recon grid
-              tracks the adjusted offsets.)
+        tuple: new ``(required_params, optional_params)`` dicts -- copies of the inputs (which are left
+        unchanged) with the reduced ``sinogram_shape`` and the compensated detector offsets.  There is
+        no in-place side effect, so callers must use the returned dicts.
     """
-    crop_pixels_top, crop_pixels_bottom, crop_pixels_left, crop_pixels_right = est_crop_width(sino, safety_buffer)
+    num_views, num_det_rows, num_det_channels = required_params['sinogram_shape']
+    # Guard the geometry path independently of the array path (crop_view_data has the matching assert):
+    # a crop >= the detector dimension would otherwise silently produce a negative sinogram_shape.
+    assert (crop_top >= 0 and crop_bottom >= 0 and crop_left >= 0 and crop_right >= 0 and
+            crop_top + crop_bottom < num_det_rows and crop_left + crop_right < num_det_channels), \
+        ('apply_detector_crop: crop amounts must be nonnegative with crop_top + crop_bottom < num_det_rows'
+         ' and crop_left + crop_right < num_det_channels (got top={}, bottom={}, left={}, right={} for a'
+         ' {}x{} detector).'.format(crop_top, crop_bottom, crop_left, crop_right, num_det_rows, num_det_channels))
+    # Work on copies and return them, so the crop is an explicit data flow with no silent mutation of
+    # the caller's dicts.
+    required_params = dict(required_params)
+    optional_params = dict(optional_params)
+    required_params['sinogram_shape'] = (int(num_views),
+                                         int(num_det_rows - crop_top - crop_bottom),
+                                         int(num_det_channels - crop_left - crop_right))
 
-    Nr_lo = crop_pixels_top
-    Nr_hi = sino.shape[1] - crop_pixels_bottom
+    # Shift each detector offset by the crop-induced move of the detector center.  Only geometries
+    # that carry the offset get it compensated (parallel beam, for instance, has no det_row_offset).
+    if 'det_row_offset' in optional_params:
+        delta_det_row = optional_params.get('delta_det_row', 1.0)
+        optional_params['det_row_offset'] += (crop_bottom - crop_top) / 2 * delta_det_row
+    if 'det_channel_offset' in optional_params:
+        delta_det_channel = optional_params.get('delta_det_channel', 1.0)
+        optional_params['det_channel_offset'] += (crop_right - crop_left) / 2 * delta_det_channel
 
-    Nc_lo = crop_pixels_left
-    Nc_hi = sino.shape[2] - crop_pixels_right
+    return required_params, optional_params
 
-    sino = sino[:, Nr_lo:Nr_hi, Nc_lo:Nc_hi]
 
-    # Correct geometry parameters det_row_offset and det_channel_offset after cropping
-    cone_beam_params['sinogram_shape'] = sino.shape
-    delta_det_row, delta_det_channel = optional_params['delta_det_row'], optional_params['delta_det_channel']
-    optional_params['det_row_offset'] += (crop_pixels_bottom - crop_pixels_top)/2 * delta_det_row
-    optional_params['det_channel_offset'] += (crop_pixels_right - crop_pixels_left)/2 * delta_det_channel
+def _auto_crop_sino(sino, required_params, optional_params, safety_buffer=20):
+    """
+    Detect and remove blank sinogram margins, updating the detector-plane geometry to match.
 
-    return sino, cone_beam_params, optional_params
+    This packages :func:`detect_blank_margins` (find the blank margins), array slicing, and
+    :func:`apply_detector_crop` (update ``sinogram_shape`` and the detector offsets) into the
+    automatic-crop step.  It is geometry-general and detector-plane only, so ``recon_slice_offset``
+    is (re)derived by the subsequent ``auto_set_recon_geometry``: run it before ``build_model``
+    (or before ``auto_set_recon_geometry`` when constructing a model by hand).
+
+    Args:
+        sino (np.ndarray): Sinogram, shape ``(num_views, num_det_rows, num_det_channels)``.
+        required_params (dict): Constructor parameters, including ``sinogram_shape``.
+        optional_params (dict): Parameters applied with ``set_params`` (detector pitches/offsets).
+        safety_buffer (int, optional): Blank margin, in pixels, to keep around the detected object
+            region. Defaults to 20.
+
+    Returns:
+        tuple: ``(sino, required_params, optional_params)`` with the sinogram cropped and the
+        geometry updated consistently (``required_params['sinogram_shape'] == sino.shape``).
+    """
+    crop_top, crop_bottom, crop_left, crop_right = detect_blank_margins(sino, safety_buffer)
+    sino = sino[:, crop_top:sino.shape[1] - crop_bottom, crop_left:sino.shape[2] - crop_right]
+    required_params, optional_params = apply_detector_crop(
+        required_params, optional_params, crop_top, crop_bottom, crop_left, crop_right)
+    return sino, required_params, optional_params
+
+
+def apply_config_crop(num_det_rows, num_det_channels, det_row_offset, det_channel_offset,
+                      delta_det_row, delta_det_channel, *,
+                      crop_pixels_top, crop_pixels_bottom, crop_pixels_sides):
+    """
+    Apply a configuration (manual) detector crop to a reader's SCALAR geometry values.
+
+    Scalar-in / scalar-out adapter around :func:`apply_detector_crop` -- the readers' configuration crop
+    acts on loose scalars (not a param dict) at conversion time, so this packs them, applies the shared
+    detector-plane crop (shape reduction + offset compensation for an asymmetric top/bottom crop), and
+    unpacks the results.  A detector crop does not change the number of views, so it is neither taken nor
+    returned.  ``crop_pixels_sides`` crops each lateral side symmetrically.
+
+    Args:
+        num_det_rows (int): Detector rows before the crop.
+        num_det_channels (int): Detector channels before the crop.
+        det_row_offset (float): Detector row offset (ALU) before the crop.
+        det_channel_offset (float): Detector channel offset (ALU) before the crop.
+        delta_det_row (float): Detector row pitch (scales the row-offset compensation).
+        delta_det_channel (float): Detector channel pitch (scales the channel-offset compensation).
+        crop_pixels_top (int): Detector rows cropped from the top.
+        crop_pixels_bottom (int): Detector rows cropped from the bottom.
+        crop_pixels_sides (int): Detector channels cropped from EACH lateral side.
+
+    Returns:
+        tuple: ``(num_det_rows, num_det_channels, det_row_offset, det_channel_offset)`` after the crop.
+    """
+    required, optional = apply_detector_crop(
+        {'sinogram_shape': (0, num_det_rows, num_det_channels)},   # 0 = num_views placeholder (crop preserves it)
+        {'delta_det_row': delta_det_row, 'delta_det_channel': delta_det_channel,
+         'det_row_offset': det_row_offset, 'det_channel_offset': det_channel_offset},
+        crop_pixels_top, crop_pixels_bottom, crop_pixels_sides, crop_pixels_sides)
+    _, num_det_rows, num_det_channels = required['sinogram_shape']
+    return num_det_rows, num_det_channels, optional['det_row_offset'], optional['det_channel_offset']
+
+
+def finalize_model(sino, required_params, optional_params, *, auto_crop=False, safety_buffer=20):
+    """
+    Build a ready-to-reconstruct model from a reader's ``(sino, required_params, optional_params)``.
+
+    The shared tail of each scanner reader's ``get_sino_and_model``: optionally remove blank sinogram
+    margins (:func:`_auto_crop_sino`), then build the model (construct -> set_params ->
+    auto_set_recon_geometry).  ``required_params`` must carry a ``geometry_type`` entry so the model class
+    can be resolved.
+
+    Args:
+        sino (jax array): The computed sinogram.
+        required_params (dict): Model constructor arguments plus ``geometry_type``.
+        optional_params (dict): ``set_params`` arguments.
+        auto_crop (bool, optional): If True, remove blank sinogram margins before building. Defaults to False.
+        safety_buffer (int, optional): Blank margin (pixels) to keep when auto-cropping. Defaults to 20.
+
+    Returns:
+        tuple: ``(sino, model)`` -- the (possibly cropped) sinogram and the ready model.
+    """
+    if auto_crop:
+        sino, required_params, optional_params = _auto_crop_sino(sino, required_params, optional_params, safety_buffer)
+    model = mj.build_model(required_params, optional_params)
+    return sino, model
+
+
+# Conversion of a length unit to micrometers; 1 ALU is defined as 1 unit of the caller's alu_unit.
+_ALU_UNIT_CONVERSION = {'um': 1.0, 'mm': 1000.0, 'cm': 1e4, 'm': 1e6}
+
+
+def to_alu(value, from_unit, alu_unit):
+    """
+    Rescale a physical ``value`` from ``from_unit`` to ALU, where 1 ALU = 1 unit of ``alu_unit``.
+
+    Args:
+        value (float or array): The value(s) to rescale.
+        from_unit (str): Unit of ``value`` (``'um'``, ``'mm'``, ``'cm'``, ``'m'``).
+        alu_unit (str): The unit defining 1 ALU.
+
+    Returns:
+        ``value * conversion[from_unit] / conversion[alu_unit]``.
+    """
+    return value * _ALU_UNIT_CONVERSION[from_unit] / _ALU_UNIT_CONVERSION[alu_unit]
 
 
 def estimate_sino_view_offset(ct_model, sino, direct_recon):
@@ -1365,84 +1446,51 @@ def apply_inverse_beam_hardening_curve(beam_hardened_projection, cheb_coeffs, y_
 
 
 def _zinger_threshold(sino, zinger_pixel_ratio, max_views_to_use=20):
-    """Zinger-detection threshold = ``-zinger_pixel_ratio * RMS(sino over its support)``.
-
-    The threshold is a STATISTICAL quantity, so it is estimated from a view subsample (via
-    ``TomographyModel.subsample_views``) -- pass the FULL sinogram; the subsampling happens here, which
-    avoids running ``_get_sino_indicator`` + ``sino**2`` over the whole (possibly ~20 GB) sinogram.
-    Returns a Python float (negative; zingers are anomalously negative)."""
+    """Zinger-detection threshold = ``-zinger_pixel_ratio * RMS(sino over its support)``, estimated
+    from a subsample of at most ``max_views_to_use`` views.  Returns a negative Python float."""
     sino_sub = mj.TomographyModel.subsample_views(sino, max_views_to_use)
     sino_indicator = mj.TomographyModel._get_sino_indicator(sino_sub)
     typical_sino_value = float(np.average(sino_sub ** 2, None, sino_indicator) ** 0.5)
     return -zinger_pixel_ratio * typical_sino_value
 
 
-def detect_zinger_pixels(sino, zinger_pixel_ratio=0.1, max_views_to_use=20):
+def correct_zinger_pixels(sino, zinger_pixel_ratio=0.1, num_passes=3, batch_size=90, devices=None,
+                          max_views_to_use=20):
     """
-    Detect zinger pixels from sinogram.
+    Detect and correct zinger pixels in a background-corrected sinogram.
 
-    Zinger pixels are identified as unusually negative values. A pixel is
-    classified as a zinger if:
-
-        value < -zinger_pixel_ratio * typical_sino_value
+    A pixel is a zinger if ``value < -zinger_pixel_ratio * RMS(sino over its support)``; the threshold
+    is estimated from a small view subsample, so the sinogram background offset must be removed first
+    (see :func:`correct_background_offset`).  Zingers and non-finite pixels are replaced by the mean of
+    their finite 3x3 in-view neighbors in ``num_passes`` fill passes.  Runs per view-batch, so device
+    memory stays bounded and multiple devices can be used.
 
     Args:
-        sino (numpy.ndarray): A 3D sinogram of shape (num_views, num_det_rows, num_det_channels).
-        zinger_pixel_ratio (float, optional): Ratio used for zinger pixels detection. Defaults to 0.1.
-        max_views_to_use (int, optional): Cap on the number of views sampled for the typical-value
-            (threshold) estimate. Defaults to 20.
-
-    Returns:
-        ndarray:
-            Array of zinger pixel indices with shape (num_zinger_pixels, 3). Format in (view_idx, row_idx, channel_idx).
-    """
-    # Estimate the threshold from a view subsample (statistical; done inside _zinger_threshold), then
-    # DETECT across ALL views (a zinger can occur in any view).
-    zinger_threshold = _zinger_threshold(sino, zinger_pixel_ratio, max_views_to_use)
-    zinger_pixel_array = np.argwhere(np.asarray(sino) < zinger_threshold).astype(int)
-
-    return zinger_pixel_array.reshape((-1, 3))
-
-
-def interpolate_zinger_pixels(sino, zinger_pixel_ratio=0.1, num_passes=3, batch_size=90, devices=None,
-                              max_views_to_use=20):
-    """
-    Detect and interpolate zinger sinogram entries (anomalously negative values) with the MEAN of their
-    finite 3x3 in-view neighbors.
-
-    A pixel is a zinger if ``value < -zinger_pixel_ratio * RMS(sino over support)`` (the threshold is
-    estimated once from a cheap view subsample).  Detection + fill run **per view-batch through the
-    shared pipeline driver** -- memory-bounded and optionally multi-device -- reusing the same
-    :func:`_zinger_fill` / :func:`_fill_nan_pixels` machinery as :func:`interpolate_defective_pixels`
-    (dense ``reduce_window`` passes; no ``argwhere``, no data-dependent loop).  This is a thin wrapper:
-    the same zinger correction is also available folded into :func:`scan_to_sino` via its
-    ``zinger_pixel_ratio`` argument (one pass, no extra host round-trip).
-
-    Args:
-        sino (numpy or jax array): A 3D sinogram of shape (num_views, num_det_rows, num_det_channels).
+        sino (numpy or jax array): Background-corrected 3D sinogram of shape
+            (num_views, num_det_rows, num_det_channels).
         zinger_pixel_ratio (float, optional): Ratio used for zinger detection. Defaults to 0.1.
-        num_passes (int, optional): Dense fill passes = max fillable zinger-cluster radius. Defaults to 3.
+        num_passes (int, optional): Fill passes = max correctable zinger-cluster radius. Defaults to 3.
         batch_size (int, optional): Views per on-device batch. Defaults to 90.
         devices (sequence or None, optional): Devices to spread the views over; None = single device.
         max_views_to_use (int, optional): Views sampled for the threshold estimate. Defaults to 20.
 
     Returns:
-        numpy.ndarray: Corrected 3D sinogram; any pixel still NaN after ``num_passes`` is set to 0 (with
-        a warning).
+        numpy.ndarray: Sinogram with zinger pixels corrected; any pixel still NaN after ``num_passes``
+        is set to 0 (with a warning).
     """
     zinger_threshold = _zinger_threshold(sino, zinger_pixel_ratio, max_views_to_use)
     kernel = jax.jit(lambda b: _zinger_fill(b, zinger_threshold, num_passes))
     return pipeline.map_view_batches(sino, kernel, batch_size, devices=devices)
 
 
-def save_preprocessing(file_path, sinogram, cone_beam_params, optional_params, weights=None):
+def save_cone_preprocessing(file_path, sinogram, cone_beam_params, optional_params, weights=None):
     """Save a preprocessed sinogram and its geometry parameters for a two-stage (preprocess -> recon)
     workflow.
 
     This lets preprocessing run once and write its result to disk, so reconstruction can be launched as
     a separate process -- useful for debugging (inspect/reuse the preprocessed sinogram) and so the
-    memory-tight recon starts with a clean GPU allocator.  Reload with :func:`load_preprocessing` and
-    rebuild the model with ``ConeBeamModel(**cone_beam_params)`` + ``set_params(**optional_params)``.
+    memory-tight recon starts with a clean GPU allocator.  Reload with :func:`load_cone_preprocessing` and
+    rebuild the model with ``mbirjax.build_model(cone_beam_params, optional_params)``.
 
     Only the GEOMETRY/preprocessing parameters are saved (the two dicts above); regularization
     parameters (sharpness, sigma_x, snr_db, ...) are deliberately NOT saved -- they are a recon-time
@@ -1458,8 +1506,8 @@ def save_preprocessing(file_path, sinogram, cone_beam_params, optional_params, w
         file_path (str): Output HDF5 path (parent directories are created).
         sinogram (ndarray or jax.Array): The preprocessed sinogram (gathered to the host and cast to
             float32 before writing).
-        cone_beam_params (dict): Parameters for the model constructor (as returned by, e.g.,
-            ``mbirjax.preprocess.nsi.compute_sino_and_params``).
+        cone_beam_params (dict): Parameters for the model constructor (e.g. the ``required_params``
+            from ``TomographyModel.get_all_params``).
         optional_params (dict): Parameters applied via ``set_params`` after construction.
         weights (ndarray or jax.Array, optional): Custom reconstruction weights to save alongside the
             sinogram.  Defaults to None -- omit them when the recon will regenerate standard weights with
@@ -1492,18 +1540,20 @@ def save_preprocessing(file_path, sinogram, cone_beam_params, optional_params, w
         f.attrs['format'] = 'mbirjax_preprocessing_v1'
 
 
-def load_preprocessing(file_path):
-    """Load a sinogram and geometry parameters saved by :func:`save_preprocessing`.
+def load_cone_preprocessing(file_path):
+    """Load a sinogram and geometry parameters saved by :func:`save_cone_preprocessing`.
 
     Args:
-        file_path (str): Path to the HDF5 file written by :func:`save_preprocessing`.
+        file_path (str): Path to the HDF5 file written by :func:`save_cone_preprocessing`.
 
     Returns:
         tuple: ``(sinogram, cone_beam_params, optional_params, weights)`` -- a host NumPy sinogram, the
-        two parameter dicts (ready for ``ConeBeamModel(**cone_beam_params)`` +
-        ``set_params(**optional_params)`` + ``auto_set_recon_geometry()``), and ``weights`` (a host
-        NumPy array if custom weights were saved, else ``None`` -- in which case the recon should
-        regenerate them with ``gen_weights``).
+        two parameter dicts (ready for ``mbirjax.build_model(cone_beam_params, optional_params)`` when the
+        save was made from :meth:`~mbirjax.TomographyModel.get_all_params` dicts, which record the
+        ``geometry_type`` entry ``build_model`` needs; for saves made without it, construct
+        ``ConeBeamModel(**cone_beam_params)`` directly), and
+        ``weights`` (a host NumPy array if custom weights were
+        saved, else ``None`` -- in which case the recon should regenerate them with ``gen_weights``).
     """
     import json
     params = {'cone_beam_params': {}, 'optional_params': {}}

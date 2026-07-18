@@ -3,7 +3,6 @@
 import os
 import sys, os
 import numpy as np
-import jax.numpy as jnp
 import pprint
 import mbirjax as mj
 import mbirjax.preprocess as mjp
@@ -43,22 +42,12 @@ def main():
     # Output path
     output_path = './output/'  # path to store output recon images
 
-    # Load the sinogram and metadata
-    print("\n********** Load sinogram and metadata from the data **************")
-    sinogram, geometry_params, optional_params, zeiss_metadata = mjp.zeiss.compute_sino_and_params(dataset_path, downsample_factor=(downsample_factor, downsample_factor),
-                                                                                                 subsample_view_factor=subsample_view_factor)
-
-    # Construct tomography model
-    print("\n********** Construct tomography model **************")
-    if zeiss_metadata['scanner_type'] == 'ultra':
-        ct_model = mj.ParallelBeamModel(**geometry_params)
-        ct_model.set_params(**optional_params)
-    else:
-        ct_model = mj.ConeBeamModel(**geometry_params)
-        ct_model.set_params(**optional_params)
-
-    # Rerun auto-parameter functions because we changed the assumed detector pitch
-    ct_model.auto_set_recon_geometry() # Reset default recon shape
+    # Load the sinogram and construct the tomography model.  The model class is auto-selected from the
+    # Zeiss scanner type ('ultra' -> parallel-beam, otherwise cone-beam), and the returned model already
+    # has its parameters and reconstruction geometry set.
+    print("\n********** Load sinogram and construct tomography model **************")
+    sinogram, ct_model = mjp.zeiss.get_sino_and_model(dataset_path, downsample_factor=(downsample_factor, downsample_factor),
+                                                      subsample_view_factor=subsample_view_factor)
 
     # Sharpness and snr_db
     ct_model.set_params(sharpness=sharpness, snr_db=snr_db)

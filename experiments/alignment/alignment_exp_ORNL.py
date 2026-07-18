@@ -24,15 +24,10 @@ def main():
     # Output path
     output_path = './output/'  # path to store output recon images
 
-    # Load the sinogram and metadata
+    # Load the sinogram and build a ready-to-reconstruct cone beam model
     print("\n********** Load sinogram and metadata from the data **************")
-    sinogram, cone_beam_params, optional_params, zeiss_metadata = mjp.zeiss.compute_sino_and_params(dataset_dir,downsample_factor=(downsample_factor, downsample_factor),
-                                                                                                 subsample_view_factor=subsample_view_factor)
-
-    # Construct cone beam model
-    print("\n********** Construct cone beam model **************")
-    ct_model = mj.ConeBeamModel(**cone_beam_params)
-    ct_model.set_params(**optional_params)
+    sinogram, ct_model = mjp.zeiss.get_sino_and_model(dataset_dir, downsample_factor=(downsample_factor, downsample_factor),
+                                                      subsample_view_factor=subsample_view_factor)
 
     # Sharpness and weights
     ct_model.set_params(sharpness=sharpness, snr_db=snr_db)

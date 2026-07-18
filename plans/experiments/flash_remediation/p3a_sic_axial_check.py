@@ -82,7 +82,7 @@ def _setup(tag, variant):
     """Build the model for one variant + the shared recon inputs (mirrors recon_and_save)."""
     import mbirjax as mj
     import mbirjax.preprocess as mjp
-    sino, geometry_params, optional_params, _ = mjp.load_preprocessing(
+    sino, geometry_params, optional_params, _ = mjp.load_cone_preprocessing(
         os.path.join(CACHE_DIR, f'{tag}.h5'))
     with open(os.path.join(CACHE_DIR, f'{tag}.json')) as f:
         sidecar = json.load(f)

@@ -71,7 +71,7 @@ def prepare():
         SCAN_PATH, downsample_factor=DOWNSAMPLE, subsample_view_factor=VIEW_SUBSAMPLE)
     model_class = 'ParallelBeamModel' if metadata['scanner_type'] == 'ultra' else 'ConeBeamModel'
     os.makedirs(OUT_DIR, exist_ok=True)
-    mjp.save_preprocessing(CACHE_H5, sino, geometry_params, optional_params)
+    mjp.save_cone_preprocessing(CACHE_H5, sino, geometry_params, optional_params)
     sidecar = {'model_class': model_class, 'auto_set_recon_geometry': True,
                'recon_settings': dict(RECON_SETTINGS),
                'provenance': {'source': SCAN_PATH, 'downsample_factor': list(DOWNSAMPLE),
@@ -109,7 +109,7 @@ def worker():
 
     import mbirjax as mj
     import mbirjax.preprocess as mjp
-    sino, geometry_params, optional_params, _ = mjp.load_preprocessing(CACHE_H5)
+    sino, geometry_params, optional_params, _ = mjp.load_cone_preprocessing(CACHE_H5)
     with open(CACHE_JSON) as f:
         sidecar = json.load(f)
     model = getattr(mj, sidecar['model_class'])(**geometry_params)

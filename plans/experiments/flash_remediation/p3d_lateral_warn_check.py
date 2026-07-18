@@ -50,7 +50,7 @@ def _lib_provenance():
 
 
 def check_dataset(tag, base_path):
-    sino, geometry_params, optional_params, _ = mjp.load_preprocessing(base_path + '.h5')
+    sino, geometry_params, optional_params, _ = mjp.load_cone_preprocessing(base_path + '.h5')
     with open(base_path + '.json') as f:
         sidecar = json.load(f)
     model = getattr(mj, sidecar['model_class'])(**geometry_params)

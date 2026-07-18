@@ -39,6 +39,13 @@ current state; these carry the why and the numbers.
   program (ACTIVE as of 2026-07): sinogram weight edge tapering vs recon-support padding
   (`scale_recon_shape`); synthetic characterization in
   `experiments/flash_remediation/`.
+- `preprocessing/` — the scanner-reader API refactor (readers return a ready model via
+  `get_sino_and_model` / `build_model`; landed on `prerelease` 2026-07, PR #219):
+  `preprocessing_pipeline_refactor_plan.md` is its plan and as-built design record;
+  `mbirjax_applications_migration_plan.md` is the companion migration of the
+  `mbirjax_applications` repo to the new API.  Same FILENAME, different document:
+  `sharding/preprocessing_pipeline_refactor_plan.md` is the earlier (2026-06) fused /
+  view-sharded pipeline plan from the sharding program.
 
 ## Findings from experiments
 

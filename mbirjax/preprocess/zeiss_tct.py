@@ -7,58 +7,81 @@ import warnings
 import mbirjax as mj
 import mbirjax.preprocess as mjp
 import pprint
-import logging
 import olefile
-import struct
-from pathlib import Path
 from scipy.ndimage import binary_erosion
+from . import _xradia_ole
+from ._xradia_ole import (_check_read, _get_ole_data_type, _log_imported_data, _read_ole_struct,
+                          _read_ole_value, _read_ole_arr, _read_ole_image, _read_ole_str,
+                          get_index_in_list)
 pp = pprint.PrettyPrinter(indent=4)
-logger = logging.getLogger(__name__)
 
 
-def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit='mm', verbose=1):
+def get_sino_and_model(dataset_dir, *, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0,
+                       alu_unit='mm', verbose=1):
     """
-    Load Zeiss sinogram data and prepare arrays ana parameters for TranslationModel reconstruction.
+    Load a Zeiss translation-CT (TCT) dataset, compute its sinogram, and return a ready-to-reconstruct
+    model together with a data-specific weight mask.
 
-    This function computes the sinogram and geometry parameters from a Zeiss scan directory. It performs the following:
+    One-call replacement for the ``compute_sino_and_params -> TranslationModel(...) -> set_params ->
+    auto_set_recon_geometry`` sequence: it constructs the TranslationModel, applies the detector
+    parameters, and computes the reconstruction geometry, so the returned model can never be left with a
+    stale (default-pitch) reconstruction grid.
 
-    1. Load object, blank, and dark scans, and geometry parameters from the dataset.
-    2. Computes the sinogram from the scan images.
-    3. Applies background offset correction.
+    Unlike the other scanner readers, this one returns ``weights``: a data-specific mask (from
+    :func:`compute_weight`) that zeros the dark detector-boundary regions of the TCT detector.  Pass it
+    to ``model.recon(sino, weights=weights)``.
 
     Args:
-        dataset_dir (str): Path to the Zeiss scan directory. Expected structure.
-            - "obj_scan" (a subfolder containing the object scan)
-            - "blank_scan" (a subfolder containing the blank scan)
-            - "dark_scan" (a subfolder containing the dark scan)
-        crop_pixels_sides (int, optional): Pixels to crop from each side of the sinogram. Defaults to None.
-        crop_pixels_top (int, optional): Pixels to crop from top of the sinogram. Defaults to None.
-        crop_pixels_bottom (int, optional): Pixels to crop from bottom of the sinogram. Defaults to None.
-        alu_unit (str, optional): The physical unit used to define 1 ALU (Arbitrary Length Unit). Defaults to 'mm'.
-            Supported units input: 'um', 'mm', 'cm', 'm'.
+        dataset_dir (str): Path to the Zeiss TCT scan directory (``obj_scan`` / ``blank_scan`` /
+            ``dark_scan`` subfolders).
+        crop_pixels_sides (int, optional): Pixels to crop from each lateral side of the detector. Defaults to 0.
+        crop_pixels_top (int, optional): Pixels to crop from the top of the detector. Defaults to 0.
+        crop_pixels_bottom (int, optional): Pixels to crop from the bottom of the detector. Defaults to 0.
+        alu_unit (str, optional): Physical unit for 1 ALU (``'um'``, ``'mm'``, ``'cm'``, ``'m'``). Defaults to ``'mm'``.
         verbose (int, optional): Verbosity level. Defaults to 1.
 
     Returns:
-        tuple: (sino, translation_params, optional_params, weights)
-            - ``sino`` (jax.numpy.ndarray): Sinogram of shape (num_views, num_det_rows, num_channels)
-            - ``translation_params`` (dict): Parameters for initializing TranslationModel.
-            - ``optional_params`` (dict): Parameters to be passed via ``set_params``.
-            -  ``weights`` (numpy.ndarray): A 3D array of weights with the same shape as the sinogram.
+        tuple: ``(sino, model, weights)`` where
+
+            - ``sino`` (jax array): the computed sinogram, shape (num_views, num_det_rows, num_channels).
+            - ``model`` (TranslationModel): a model with its reconstruction geometry already set.
+            - ``weights`` (numpy.ndarray): a 3D weight mask (same shape as ``sino``) that excludes the
+              dark detector boundary.
 
     Example:
         .. code-block:: python
 
-            # Get data and reconstruction parameters
-            sino, translation_params, optional_params, weights = mbirjax.preprocess.zeiss_tct.compute_sino_and_params(dataset_dir)
+            sino, model, weights = mbirjax.preprocess.zeiss_tct.get_sino_and_model(dataset_dir)
+            recon, recon_dict = model.recon(sino, weights=weights)
+    """
+    sino, required_params, optional_params, weights = _compute_sino_and_params(
+        dataset_dir, crop_pixels_sides=crop_pixels_sides, crop_pixels_top=crop_pixels_top,
+        crop_pixels_bottom=crop_pixels_bottom, alu_unit=alu_unit, verbose=verbose)
+    sino, model = mjp.finalize_model(sino, required_params, optional_params)
+    return sino, model, weights
 
-            # Create the model and set parameters
-            tct_model = mbirjax.TranslationModel(**translation_params)
-            tct_model.set_params(**optional_params)
-            tct_model.auto_set_recon_geometry()
-            tct_model.set_params(sharpness=sharpness, verbose=1)
 
-            # Run reconstruction
-            recon, recon_dict = tct_model.recon(sino)
+def _compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0, crop_pixels_bottom=0, alu_unit='mm', verbose=1):
+    """
+    Load Zeiss TCT scans and compute the sinogram, build_model-ready parameters, and a weight mask.
+
+    Private helper for :func:`get_sino_and_model`.  Loads object/blank/dark scans and geometry, computes
+    the sinogram (transmission + background-offset correction), and builds a dark-boundary weight mask.
+
+    Args:
+        dataset_dir (str): Path to the Zeiss TCT scan directory (``obj_scan`` / ``blank_scan`` /
+            ``dark_scan`` subfolders).
+        crop_pixels_sides (int, optional): Pixels to crop from each side of the detector. Defaults to 0.
+        crop_pixels_top (int, optional): Pixels to crop from the top of the detector. Defaults to 0.
+        crop_pixels_bottom (int, optional): Pixels to crop from the bottom of the detector. Defaults to 0.
+        alu_unit (str, optional): The physical unit used to define 1 ALU. Defaults to ``'mm'``.
+        verbose (int, optional): Verbosity level. Defaults to 1.
+
+    Returns:
+        tuple: ``(sino, required_params, optional_params, weights)`` where ``required_params`` holds the
+        TranslationModel constructor arguments plus a ``geometry_type`` entry so ``build_model`` can
+        resolve the class, ``optional_params`` holds the ``set_params`` arguments, and ``weights`` is the
+        dark-boundary weight mask (same shape as ``sino``).
     """
     if verbose > 0:
         print("\n\n########## Loading object, blank, dark scans, and geometry parameters from Zeiss dataset directory")
@@ -96,6 +119,8 @@ def compute_sino_and_params(dataset_dir, crop_pixels_sides=0, crop_pixels_top=0,
         print('blank_scan shape = ', blank_scan.shape)
         print('dark_scan shape = ', dark_scan.shape)
 
+    # Normalize for build_model: tag the constructor dict with the geometry class identity.
+    translation_params['geometry_type'] = str(mj.TranslationModel)
     return sino, translation_params, optional_params, weights
 
 
@@ -298,21 +323,18 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, crop_pixels_sides=0, crop_pixe
     object_z_positions, object_z_position_unit = itemgetter('object_z_positions', 'object_z_position_unit')(zeiss_params)
     det_row_offset, det_channel_offset = itemgetter('det_row_offset', 'det_channel_offset')(zeiss_params)
 
-    # Create unit conversion table for all units used in the xrm files
-    unit_conversion = {'um': 1.0, 'mm': 1000.0, 'cm': 1e4, 'm': 1e6}
-
     # Define 1 ALU as 1 unit of alu_unit
     alu_value = 1
 
     # Convert physical units to ALU
-    source_iso_dist *= unit_conversion[source_iso_dist_unit] / unit_conversion[alu_unit]
-    iso_det_dist *= unit_conversion[iso_det_dist_unit] / unit_conversion[alu_unit]
-    delta_det_channel *= unit_conversion[delta_det_channel_unit] / unit_conversion[alu_unit]
-    delta_det_row *= unit_conversion[delta_det_row_unit] / unit_conversion[alu_unit]
-    iso_pixel_pitch *= unit_conversion[iso_pixel_pitch_unit] / unit_conversion[alu_unit]
-    object_x_positions *= unit_conversion[object_x_position_unit] / unit_conversion[alu_unit]
-    object_y_positions *= unit_conversion[object_y_position_unit] / unit_conversion[alu_unit]
-    object_z_positions *= unit_conversion[object_z_position_unit] / unit_conversion[alu_unit]
+    source_iso_dist = mjp.to_alu(source_iso_dist, source_iso_dist_unit, alu_unit)
+    iso_det_dist = mjp.to_alu(iso_det_dist, iso_det_dist_unit, alu_unit)
+    delta_det_channel = mjp.to_alu(delta_det_channel, delta_det_channel_unit, alu_unit)
+    delta_det_row = mjp.to_alu(delta_det_row, delta_det_row_unit, alu_unit)
+    iso_pixel_pitch = mjp.to_alu(iso_pixel_pitch, iso_pixel_pitch_unit, alu_unit)
+    object_x_positions = mjp.to_alu(object_x_positions, object_x_position_unit, alu_unit)
+    object_y_positions = mjp.to_alu(object_y_positions, object_y_position_unit, alu_unit)
+    object_z_positions = mjp.to_alu(object_z_positions, object_z_position_unit, alu_unit)
 
     # Compute default value of source to detector distance
     source_detector_dist = source_iso_dist + iso_det_dist
@@ -334,16 +356,21 @@ def convert_zeiss_to_mbirjax_params(zeiss_params, crop_pixels_sides=0, crop_pixe
     delta_det_channel = magnification * iso_pixel_pitch
     delta_det_row = magnification * iso_pixel_pitch
 
-    # Adjust detector size params w.r.t. cropping arguments
-    num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
-    num_det_channels = num_det_channels - 2 * crop_pixels_sides
-
-    # Convert offset parameters to ALU: This assumes that the det_channel_offset and det_row_offset have units of pixels.
+    # Convert offset parameters to ALU (using the raw pitch) BEFORE cropping, so the configuration crop
+    # can be routed through the shared detector-plane primitive.  Assumes det_channel_offset /
+    # det_row_offset have units of pixels.
     det_channel_offset *= delta_det_channel
     det_row_offset *= delta_det_row
 
-    # Calculate recon_shape, delta_voxel, and voxel_row_aspect parameters
+    # Apply the configuration crop through the shared primitive: it reduces the shape and, for an
+    # asymmetric top/bottom crop, shifts det_row_offset (symmetric crops are a no-op).  Translation CT
+    # has no downsampling, so the raw pitch is the final pitch.
     num_views = len(translation_vectors)
+    num_det_rows, num_det_channels, det_row_offset, det_channel_offset = mjp.apply_config_crop(
+        num_det_rows, num_det_channels, det_row_offset, det_channel_offset, delta_det_row, delta_det_channel,
+        crop_pixels_top=crop_pixels_top, crop_pixels_bottom=crop_pixels_bottom, crop_pixels_sides=crop_pixels_sides)
+
+    # Calculate recon_shape, delta_voxel, and voxel_row_aspect parameters from the cropped sinogram.
     sinogram_shape = (num_views, num_det_rows, num_det_channels)
     recon_shape, delta_voxel, voxel_row_aspect = mj.utilities.calc_tct_recon_params(source_detector_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors)
 
@@ -397,143 +424,25 @@ def _parse_filenames_from_dataset_dir(dataset_dir):
     return obj_scan_dir, blank_scan_dir, dark_scan_dir
 
 
-def _check_read(fname):
+def read_xrm(fname, normalize_to_float32=False):
     """
-    Validate the file path and ensure it has a recognized extension.
+    Read a single Xradia ``.xrm`` radiograph and its metadata (zeiss_tct reader).
 
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        fname (str) : Path to the file to be read. Must be a string and have one of the recognized file extensions:
-        ['.edf', '.tiff', '.tif', '.h5', '.hdf', '.npy', '.nc', '.xrm', '.txrm', '.txm', '.xmt', '.nxs'].
-
-
-    Returns:
-        str: Absolute path to the file.
+    Thin wrapper over :func:`mbirjax.preprocess._xradia_ole.read_xrm` that binds this module's
+    :func:`read_metadata`.  Defaults to ``normalize_to_float32=False`` (translation CT reads raw here and
+    normalizes once at the stack level in :func:`read_xrm_dir`).  See the shared function for details.
     """
-    known_extensions = {
-        '.edf', '.tiff', '.tif', '.h5', '.hdf', '.npy', '.nc',
-        '.xrm', '.txrm', '.txm', '.xmt', '.nxs'
-    }
-
-    if not isinstance(fname, str):
-        logger.error('File name must be a string')
-    else:
-        _, ext = os.path.splitext(fname)
-        ext = ext.lower()
-        if ext not in known_extensions:
-            logger.error('Unknown file extension')
-
-    return os.path.abspath(fname)
-
-
-def read_xrm(fname):
-    """
-    Read data from xrm file.
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        fname (str): String defining the path of file or file name.
-
-    Returns:
-        np.ndarray: Output 2D image with shape (num_det_rows, num_det_channels).
-        dict: Output metadata.
-    """
-    fname = _check_read(fname)
-    try:
-        ole = olefile.OleFileIO(fname)
-    except IOError:
-        print('No such file or directory: %s', fname)
-        return False
-
-    # Read metadata from xrm file
-    metadata = read_metadata(ole)
-
-    # Read scan data from xrm file
-    stream = ole.openstream("ImageData1/Image1")
-    data = stream.read()
-
-    # Get the data type of scan data
-    data_type = _get_ole_data_type(metadata)
-    data_type = data_type.newbyteorder('<')
-
-    # Reshape the scan data into 2D array
-    arr = np.reshape(
-        np.frombuffer(data, data_type),
-        (
-            metadata["num_det_rows"],
-            metadata["num_det_channels"]
-        )
-    )
-
-    _log_imported_data(fname, arr)
-
-    # Normalize the scan data
-    # arr = mjp.utilities._normalize_to_float32(arr)
-
-    ole.close()
-    return arr, metadata
+    return _xradia_ole.read_xrm(fname, read_metadata, normalize_to_float32=normalize_to_float32)
 
 
 def read_xrm_dir(dir_path):
     """
-    Read all .xrm files in a directory (filesystem order), stack into (num_views, num_det_rows, num_det_cols),
-    and concatenate selected metadata.
+    Read all ``.xrm`` files in a directory and stack them (zeiss_tct reader).
 
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        dir_path (str) : Path to the directory to be read.
-
-    Returns:
-        np.ndarray: Output 3D image with shape (num_views, num_det_rows, num_det_channels).
-        dict: Output metadata
+    Thin wrapper over :func:`mbirjax.preprocess._xradia_ole.read_xrm_dir` that binds this module's
+    :func:`read_metadata`.  See that function for argument and return details.
     """
-    dir_path = Path(dir_path)
-    files = [p for p in dir_path.iterdir() if p.is_file()]
-
-    # Load the scan data and metadata from first file
-    proj0, md0 = read_xrm(str(files[0]))
-    num_views = len(files)
-    num_det_rows, num_det_channels = proj0.shape
-    arr = np.empty((num_views, num_det_rows, num_det_channels), dtype=proj0.dtype)
-    arr[0] = proj0
-
-    # Load the x, y, z object positions of the first file
-    x0 = md0['x_positions'][0]
-    y0 = md0['y_positions'][0]
-    z0 = md0['z_positions'][0]
-
-    metadata = dict(md0)
-    metadata['num_views'] = num_views
-    metadata['x_positions'] = [x0]
-    metadata['y_positions'] = [y0]
-    metadata['z_positions'] = [z0]
-    # Per-view alignment shifts: accumulated like the positions (metadata starts as a copy of
-    # the FIRST file's dict, whose shift entries cover only that file).
-    metadata['x_shifts'] = [md0['x_shifts'][0]]
-    metadata['y_shifts'] = [md0['y_shifts'][0]]
-
-    # Load the remaining files and stack them together
-    for i, p in enumerate(files[1:], start=1):
-        proj, md = read_xrm(str(p))
-        arr[i] = proj
-        metadata['x_positions'].append(md['x_positions'][0])
-        metadata['y_positions'].append(md['y_positions'][0])
-        metadata['z_positions'].append(md['z_positions'][0])
-        metadata['x_shifts'].append(md['x_shifts'][0])
-        metadata['y_shifts'].append(md['y_shifts'][0])
-
-    _log_imported_data(str(dir_path), arr)
-
-    # Normalize the scan data
-    arr = mjp.utilities._normalize_to_float32(arr)
-
-    return arr, metadata
+    return _xradia_ole.read_xrm_dir(dir_path, read_metadata)
 
 
 def read_txrm(file_name):
@@ -634,171 +543,6 @@ def read_metadata(ole):
     }
 
     return metadata
-
-
-def _log_imported_data(fname, arr):
-    """
-    Log information about imported data.
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        fname (str) : Path of the file from which data was imported.
-        arr (np.ndarray) : Array containing the image data.
-    """
-    logger.debug('Data shape & type: %s %s', arr.shape, arr.dtype)
-    logger.info('Data successfully imported: %s', fname)
-
-
-def get_index_in_list(input_list, target):
-    """
-    Find the index of target in the given list.
-    Return -1 if not present.
-    """
-    if target in input_list:
-        idx = input_list.index(target)
-    else:
-        idx = -1  # or None
-
-    return idx
-
-
-def _get_ole_data_type(metadata, datatype=None):
-    """
-    Determine the Numpy data type for image data stored in a Zeiss OLE (.xrm, .txrm, .txm) file.
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        metadata (dict) : Dictionary containing metadata extracted from the OLE file.
-                          Must include the key "data_type" which is an integer code indicating the pixel data format.
-        datatype (int, optional): Integer code for the data type. If None, the function uses `metadata["data_type"]`.
-
-    Returns:
-        np.dtype: The data type of the image data.
-    """
-    # 10 float; 5 uint16 (unsigned 16-bit (2-byte) integers)
-    if datatype is None:
-        datatype = metadata["data_type"]
-    if datatype == 10:
-        return np.dtype(np.float32)
-    elif datatype == 5:
-        return np.dtype(np.uint16)
-    else:
-        raise Exception("Unsupport XRM datatype: %s" % str(datatype))
-
-
-def _read_ole_struct(ole, label, struct_fmt):
-    """
-    Reads the struct associated with label in an ole file
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        ole (OleFileIO) : An ole file to read from.
-        label (str) : Label associated with the OLE file.
-        struct_fmt (str) : Format of the OLE file.
-
-    Returns:
-        tuple or None: A tuple of unpacked values from the binary stream if the label exists.
-    """
-    value = None
-    if ole.exists(label):
-        stream = ole.openstream(label)
-        data = stream.read()
-        value = struct.unpack(struct_fmt, data)
-    return value
-
-
-def _read_ole_value(ole, label, struct_fmt):
-    """
-    Reads the value associated with label in an ole file
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        ole (OleFileIO) : An ole file to read from.
-        label (str) : Label associated with the OLE file.
-        struct_fmt (str) : Format of the OLE file.
-
-    Returns:
-        int or float : The unpacked scalar value from the binary stream if the label exists,
-    """
-    value = _read_ole_struct(ole, label, struct_fmt)
-    if value is not None:
-        value = value[0]
-    return value
-
-
-def _read_ole_arr(ole, label, struct_fmt):
-    """
-    Reads the numpy array associated with label in an ole file
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        ole (OleFileIO) : An ole file to read from.
-        label (str) : Label associated with the OLE file.
-        struct_fmt (str) : Format of the OLE file.
-
-    Returns:
-        np.ndarray: The unpacked numpy array from the binary stream if the label exists.
-    """
-    arr = _read_ole_struct(ole, label, struct_fmt)
-    if arr is not None:
-        arr = np.array(arr)
-    return arr
-
-
-def _read_ole_image(ole, label, metadata, datatype=None):
-    """
-    Reads the image data associated with label in an ole file
-
-    Notes:
-        Portions of this code are adapted from the DXchange library: https://github.com/data-exchange/dxchange
-
-    Args:
-        ole (OleFileIO) : An ole file to read from.
-        label (str) : Label associated with the OLE file.
-        metadata (dict) : Dictionary containing metadata extracted from the OLE file.
-        datatype: Data type of the image data. Defaults to None.
-
-    Returns:
-        np.ndarray: Output 2D image with shape (num_det_rows, num_det_channels).
-    """
-    stream = ole.openstream(label)
-    data = stream.read()
-    data_type = _get_ole_data_type(metadata, datatype)
-    data_type = data_type.newbyteorder('<')
-    image = np.reshape(
-        np.frombuffer(data, data_type),
-        (metadata["num_det_rows"], metadata["num_det_channels"], )
-    )
-    return image
-
-
-def _read_ole_str(ole, label):
-    """
-    Reads the string associated with label in an ole file
-
-    Args:
-        ole (OleFileIO) : An ole file to read from.
-        label (str) : Label associated with the OLE file.
-
-    Returns:
-        list: A list contain all the strings from the binary stream if the label exists
-    """
-    str = None
-    if ole.exists(label):
-        stream = ole.openstream(label)
-        data = stream.read()
-        str = [name.decode('utf-8') for name in data.split(b'\x00') if name]
-    return str
 
 
 ######## END subroutines for parsing Zeiss object scan, blank scan, and dark scan

@@ -96,7 +96,7 @@ def _build(kind):
     import mbirjax as mj
     import mbirjax.preprocess as mjp
     if kind == 'bga':
-        sino, geometry_params, optional_params, _ = mjp.load_preprocessing(BGA_CACHE + '.h5')
+        sino, geometry_params, optional_params, _ = mjp.load_cone_preprocessing(BGA_CACHE + '.h5')
         with open(BGA_CACHE + '.json') as f:
             sidecar = json.load(f)
         model = getattr(mj, sidecar['model_class'])(**geometry_params)
