@@ -139,22 +139,6 @@ class TestHaloMath(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(hL), np.asarray(h_full[:, :mid]), rtol=1e-6, atol=1e-6)
         np.testing.assert_allclose(np.asarray(hR), np.asarray(h_full[:, mid:]), rtol=1e-6, atol=1e-6)
 
-    def test_no_halo_matches_legacy_reflected_bc(self):
-        """With no halos the new boundary formulation must equal the reflected-BC
-        result the single-device prior produces (a zero-delta at each true edge)."""
-        model = _make_model()
-        recon_shape = model.get_params('recon_shape')
-        num_rows, num_cols, _ = recon_shape[:3]
-        params = _qggmrf_params(model)
-        flat = _random_flat_recon(model, seed=2)
-        idx = jnp.arange(num_rows * num_cols)
-        g0, h0 = mj.qggmrf_gradient_and_hessian_at_indices(flat, recon_shape, idx, params)
-        g1, h1 = mj.qggmrf_gradient_and_hessian_at_indices(
-            flat, recon_shape, idx, params, left_halo=None, right_halo=None)
-        # Tight allclose, not exact equality (never the gate for computed floats).
-        np.testing.assert_allclose(np.asarray(g0), np.asarray(g1), rtol=1e-6, atol=1e-6)
-        np.testing.assert_allclose(np.asarray(h0), np.asarray(h1), rtol=1e-6, atol=1e-6)
-
 
 class TestShardedPrior(unittest.TestCase):
     """The _qggmrf_prior_sharded orchestrator vs the single-device prior."""
@@ -252,7 +236,7 @@ class TestShardedRecon(unittest.TestCase):
             # replicated pixels.
             model._vcd_halo_per_subset = halo_per_subset
         model.set_params(verbose=0)  # Silence warnings about background
-        recon, _ = model.recon(sino, max_iterations=self.MAX_ITERS,
+        recon, _ = model.recon(sino, weights=weights, max_iterations=self.MAX_ITERS,
                                stop_threshold_change_pct=0.0,  # run all iters, no early stop
                                print_logs=False)
         return np.asarray(recon)

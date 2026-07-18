@@ -43,6 +43,21 @@ class TestSumFunctionInBatches(unittest.TestCase):
             truth = 2.5 * np.sum(np.asarray(x) * np.asarray(w), axis=0)
             np.testing.assert_allclose(out, truth, rtol=1e-5, err_msg=f'n={n}, batch={b}')
 
+    def test_multiple_and_different_sized_outputs(self):
+        # A tuple-returning function (a summed output + a fixed-size-per-batch output): the helper must
+        # sum each output across batches independently.  Ported from the old test_utilities duplicate.
+        fixed = 5
+
+        def different_outputs(j, k, factor):
+            return jnp.sum(j + factor * k), np.ones(fixed)
+
+        data = np.arange(8)
+        for batch_size in (4, 3):
+            out = sum_function_in_batches(different_outputs, (data, data), batch_size, extra_args=(3,))
+            num_batches = int(np.ceil(data.shape[0] / batch_size))
+            np.testing.assert_allclose(out[0], np.sum(4 * data))              # (factor+1)*data summed
+            np.testing.assert_allclose(out[1], np.ones(fixed) * num_batches)
+
 
 class TestConcatenateFunctionInBatches(unittest.TestCase):
 
@@ -53,6 +68,21 @@ class TestConcatenateFunctionInBatches(unittest.TestCase):
             out = concatenate_function_in_batches(lambda x: 3.0 * x, data, b)
             np.testing.assert_allclose(out, 3.0 * np.asarray(data),
                                        rtol=1e-6, err_msg=f'n={n}, batch={b}')
+
+    def test_multiple_and_different_sized_outputs(self):
+        # A tuple-returning function (a concatenated output + a fixed-size-per-batch output): the helper
+        # must concatenate each output across batches independently.  Ported from test_utilities.
+        fixed = 5
+
+        def different_outputs(j, k):
+            return j + 2 * k, np.ones(fixed)
+
+        data = np.arange(8)
+        for batch_size in (4, 3):
+            out = concatenate_function_in_batches(different_outputs, (data, data), batch_size)
+            num_batches = int(np.ceil(data.shape[0] / batch_size))
+            np.testing.assert_allclose(out[0], 3 * data)                     # j + 2k = data + 2*data
+            np.testing.assert_allclose(out[1], np.ones(fixed * num_batches))
 
 
 if __name__ == '__main__':

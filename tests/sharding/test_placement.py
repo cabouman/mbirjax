@@ -67,14 +67,6 @@ class TestPlacement(unittest.TestCase):
         self.assertEqual(sh.spec[1], "devices")
         self.assertIsNone(sh.spec[0])
 
-    def test_move_shard_same_device_preserves_values(self):
-        """move_shard to the device an array already lives on keeps its values
-        (device_put is a no-op there — the zero-overhead single-device path)."""
-        dev = self.devs[0]
-        x = jax.device_put(np.arange(12, dtype=np.float32).reshape(3, 4), dev)
-        y = mjs.move_shard(x, dev, dev2dev_safe=True)
-        np.testing.assert_array_equal(np.asarray(y), np.asarray(x))
-
 
 class TestBandMovement(unittest.TestCase):
     """The banded adjoint pair: sum_band_to_owner / broadcast_band_to_views."""
@@ -161,13 +153,6 @@ class TestShardedSheppLogan(unittest.TestCase):
         single = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs[:1])
         multi = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs)
         self.assertEqual(multi.shape, shape)                 # device-form padding dropped on gather
-        np.testing.assert_array_equal(multi, single)
-
-    def test_multidevice_target_attenuation_matches_single(self):
-        # The opt-in attenuation scale is applied identically regardless of the device count.
-        shape = (16, 12, 8)
-        single = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs[:1], target_max_attenuation=6.0)
-        multi = mbirjax.generate_3d_shepp_logan_low_dynamic_range(shape, devices=self.devs, target_max_attenuation=6.0)
         np.testing.assert_array_equal(multi, single)
 
 

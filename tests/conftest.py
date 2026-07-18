@@ -149,3 +149,18 @@ def preferred_devices(n: int):
     if len(cpus) >= n:
         return cpus[:n]
     return None
+
+
+import numpy as np
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _seed_global_numpy_rng():
+    """Seed numpy's GLOBAL RNG before every test as a determinism safety net.
+
+    Tests should still seed their own local generator (``np.random.default_rng(seed)``) or set an
+    explicit seed; this only guarantees that any stray global ``np.random.<fn>`` use is reproducible
+    regardless.  A test's own explicit seed (in setUp or the test body) runs after this and overrides it.
+    """
+    np.random.seed(1234)

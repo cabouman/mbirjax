@@ -95,9 +95,10 @@ class TestProjectors(unittest.TestCase):
     def set_translation_vectors(self, geometry_type):
         if geometry_type in ('translation', 'anisotropic_translation'):
             self.translation_vectors = np.zeros((self.num_views, 3))
-            self.translation_vectors[:, 0] = np.random.uniform(-10, 10, self.num_views)
+            rng = np.random.default_rng(0)  # fixed seed for reproducible translation vectors
+            self.translation_vectors[:, 0] = rng.uniform(-10, 10, self.num_views)
             self.translation_vectors[:, 1] = 0.0
-            self.translation_vectors[:, 2] = np.random.uniform(-10, 10, self.num_views)
+            self.translation_vectors[:, 2] = rng.uniform(-10, 10, self.num_views)
             self.translation_vectors = jnp.array(self.translation_vectors)
         else:
             self.translation_vectors = None
@@ -159,9 +160,8 @@ class TestProjectors(unittest.TestCase):
         self.set_translation_vectors(geometry_type)
         ct_model = self.get_model(geometry_type)
 
-        # Initialize a random key
-        seed_value = np.random.randint(1000000)
-        key = jax.random.PRNGKey(seed_value)
+        # Fixed seed keeps this random check reproducible (the property holds for any input).
+        key = jax.random.PRNGKey(0)
 
         # Generate phantom
         recon_shape = ct_model.get_params('recon_shape')
@@ -297,9 +297,8 @@ class TestProjectors(unittest.TestCase):
         # ## Test the hessian against a finite difference approximation ## #
         hessian = ct_model.compute_hessian_diagonal()
 
-        # Initialize a random key
-        seed_value = np.random.randint(1000000)
-        key = jax.random.PRNGKey(seed_value)
+        # Fixed seed keeps this random check reproducible (the property holds for any input).
+        key = jax.random.PRNGKey(0)
 
         recon_shape = ct_model.get_params('recon_shape')
         num_recon_rows, num_recon_cols, num_recon_slices = recon_shape[:3]

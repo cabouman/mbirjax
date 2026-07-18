@@ -21,6 +21,7 @@ class TestQGGMRF(unittest.TestCase):
         pass
 
     def test_alpha_derivative(self):
+        np.random.seed(0)  # deterministic qggmrf params / recon / perturbation (was unseeded)
         # Make some random qggmrf parameters
         p = np.random.rand(1)[0] + 1
         q = p - 0.9 * np.random.rand(1)[0]
