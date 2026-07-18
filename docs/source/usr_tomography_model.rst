@@ -37,6 +37,8 @@ Parameter Handling
 
 .. automethod:: mbirjax.ParameterHandler.print_params
 
+.. automethod:: mbirjax.TomographyModel.get_all_params
+
 .. automethod:: mbirjax.TomographyModel.get_recon_dict
 
 

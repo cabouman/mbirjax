@@ -13,7 +13,7 @@ from mbirjax import TomographyModel, tomography_utils, ParameterHandler
 from mbirjax.projectors import (horizontal_fan_project, horizontal_fan_back,
                                 vertical_fan_band_gather, SORTED_CHANNEL_REDUCE_MIN_COLS)
 
-ConeBeamParamNames = mj.ParamNames | Literal['view_params_array', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
+ConeBeamParamNames = mj.ParamNames | Literal['view_params_array', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset', 'axial_pad_fraction']
 
 # Default slice-band size for the cone back projector's rolled vertical-fan loop.  The
 # back projector computes the horizontal fan once per view, then walks the recon slice
@@ -64,6 +64,14 @@ class ConeBeamModel(TomographyModel):
         **recon_slice_offset** (float, default=0) -
         This parameter controls the vertical offset of the reconstruction in ALU. If recon_slice_offset is positive, the region below iso is reconstructed.
 
+        **axial_pad_fraction** (float or (top_fraction, bottom_fraction) tuple, default=1.0) -
+        Scales the per-end axial extension that ``auto_set_recon_geometry`` adds to reach the
+        cone-beam visibility bound: 1 extends to the full bound, 0 disables the extension
+        (pre-extension recon shapes), and intermediate values trade end-flash protection
+        against slice memory (the full extension grows the slice count by roughly R/SID).
+        A tuple sets the top (+z) and bottom (-z) ends separately, for when one end is known
+        not to need padding.  The counts actually added are printed at verbose >= 1.
+
     See Also
     --------
     TomographyModel : The base class from which this class inherits.
@@ -93,7 +101,8 @@ class ConeBeamModel(TomographyModel):
         super().__init__(sinogram_shape, view_params_array=view_params_array,
                          source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
                          view_params_name=view_params_name, view_params_component_names=view_params_component_names,
-                         recon_slice_offset=0.0, use_curved_detector=use_curved_detector)
+                         recon_slice_offset=0.0, axial_pad_fraction=1.0,
+                         use_curved_detector=use_curved_detector)
 
     @overload
     def get_params(self, parameter_names: Union[ConeBeamParamNames, list[ConeBeamParamNames]]) -> Any: ...
@@ -239,7 +248,9 @@ class ConeBeamModel(TomographyModel):
         cone-beam visibility bound (the deepest z any measured ray reaches while crossing the
         reconstruction support), so material a ray passes through near the slab ends is
         representable rather than flashing into the end slices -- see the per-end extension
-        comment below and plans/flash_remediation/phase_2d_remedies.html.
+        comment below and plans/flash_remediation/phase_2d_remedies.html.  The extension is
+        scaled per end by the ``axial_pad_fraction`` parameter (float or (top, bottom) tuple;
+        0 disables it), the memory knob for wide-cone recons where the full bound does not fit.
         """
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
 
@@ -302,8 +313,27 @@ class ConeBeamModel(TomographyModel):
             z_per_v_far_side += support_radius / float(source_detector_dist)
         excess_top = max(0.0, v_top * z_per_v_far_side - float(H_iso) / 2)    # attaches at z_max
         excess_bot = max(0.0, -v_bot * z_per_v_far_side - float(H_iso) / 2)   # attaches at z_min
-        num_slices_top = int(np.ceil(excess_top / delta_voxel_slice))
-        num_slices_bot = int(np.ceil(excess_bot / delta_voxel_slice))
+        # axial_pad_fraction scales each end's extension (the memory knob): 1 = the full
+        # visibility bound, 0 = none (pre-extension shapes), a (top, bottom) pair sets the
+        # ends separately.  Partial padding re-admits end flash progressively from the
+        # trimmed end inward; what it buys back is the extension's ~R/SID fractional slice
+        # growth, which is what breaks memory-limited wide-cone recons.
+        axial_pad_fraction = self.get_params('axial_pad_fraction')
+        if isinstance(axial_pad_fraction, (tuple, list)):
+            if len(axial_pad_fraction) != 2:
+                raise ValueError('axial_pad_fraction must be a float or a (top_fraction, '
+                                 'bottom_fraction) pair; got {!r}.'.format(axial_pad_fraction))
+            pad_frac_top, pad_frac_bot = (float(f) for f in axial_pad_fraction)
+        else:
+            pad_frac_top = pad_frac_bot = float(axial_pad_fraction)
+        if pad_frac_top < 0 or pad_frac_bot < 0:
+            raise ValueError('axial_pad_fraction must be >= 0; got {!r}.'.format(axial_pad_fraction))
+        num_slices_top = int(np.ceil(pad_frac_top * excess_top / delta_voxel_slice))
+        num_slices_bot = int(np.ceil(pad_frac_bot * excess_bot / delta_voxel_slice))
+        if not no_warning and self.get_params('verbose') >= 1:
+            print('Axial visibility extension: +{}/+{} slices (top/bottom, axial_pad_fraction={}; '
+                  'reduce it if slice memory is tight).'.format(num_slices_top, num_slices_bot,
+                                                                axial_pad_fraction))
         num_recon_slices += num_slices_top + num_slices_bot
         # Recenter so the added slices land at the ends that need them
         recon_slice_offset += 0.5 * (num_slices_top - num_slices_bot) * float(delta_voxel_slice)

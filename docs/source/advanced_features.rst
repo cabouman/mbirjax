@@ -32,6 +32,29 @@ Below are tips on important and useful features:
 
   **Important Note:** If you change parameters such as ``delta_det_channel``, then you should run ``model.auto_set_recon_geometry()`` to update the corresponding reconstruction parameters such as voxel pitch.
 
+- **Reconstruct Objects Larger than the Field of View:**
+
+  When part of the object projects outside the detector at some views (field-of-view truncation),
+  the unexplained measurements fold into the edges of the reconstruction as a bright boundary ring
+  or end-slice "flash", along with an interior bias and slowed convergence.  MBIRJAX handles the
+  two directions differently:
+
+  - *Axial (slices, cone beam):* handled automatically -- the automatic reconstruction shape
+    extends each end of the slice axis to the cone-beam visibility bound.  On memory-limited
+    reconstructions with a wide cone angle, this extension can be scaled back or disabled with the
+    cone-specific ``axial_pad_fraction`` parameter (a float or a ``(top_fraction, bottom_fraction)``
+    pair; default 1.0 = the full bound, 0 disables).  The number of slices added per end is printed
+    at ``verbose >= 1``.
+  - *Lateral (rows and columns):* cannot be sized automatically, because the needed padding depends
+    on how far the object actually extends -- which the truncated data does not determine.  MBIRJAX
+    detects this case and warns during reconstruction.  The remedy is
+    ``model.scale_recon_shape(s, s)`` with ``s >= object_diameter / FoV_diameter``, rounded UP:
+    under-padding is far worse than over-padding.  With severe truncation, a uniform intensity
+    offset can remain that no padding removes.
+  - For tall volumes that do not fit in memory even after tuning the padding, see
+    :meth:`~mbirjax.ConeBeamModel.split_sino_recon`, which reconstructs the volume in two
+    overlapping halves.
+
 - **Set Sinogram Weights:**
 
   As you become more experienced, you may want to set the sinogram weights to improve image quality.

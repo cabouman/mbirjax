@@ -221,7 +221,7 @@ class TomographyModel(ParameterHandler):
 
         This is the single source of truth for reading a model's parameters back out.  The three
         dicts partition the parameters so a caller can reconstruct or serialize the model and choose
-        which parts to apply (see :func:`mbirjax.build_model`):
+        which parts to apply (see :func:`~mbirjax.utilities.build_model`):
 
         * **required_params** -- the arguments the model constructor takes (from its ``__init__``
           signature), with the view-dependent arguments reconstructed from storage (e.g. ``angles``
@@ -3959,6 +3959,12 @@ class TomographyModel(ParameterHandler):
 
         This can be used before starting a reconstruction to improve results when part of the object
         projects outside the detector. The method updates the internal `recon_shape` parameter.
+
+        For lateral field-of-view truncation (flagged by the "Lateral FoV truncation detected"
+        warning), use ``scale_recon_shape(s, s)`` with ``s >= object_diameter / FoV_diameter`` and
+        round UP: under-padding costs far more image quality than over-padding costs in memory.
+        The cone-beam AXIAL direction normally needs no scaling -- ``auto_set_recon_geometry``
+        already extends the slice axis to the visibility bound (tunable via ``axial_pad_fraction``).
 
         Args:
             row_scale (float): Scale factor for the number of rows in the reconstruction.

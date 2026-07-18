@@ -26,6 +26,7 @@ General Purpose
 .. autofunction:: mbirjax.utilities.stitch_arrays
 .. autofunction:: mbirjax.utilities.get_ct_model
 .. autofunction:: mbirjax.utilities.copy_ct_model
+.. autofunction:: mbirjax.utilities.build_model
 
 
 Weight Generation

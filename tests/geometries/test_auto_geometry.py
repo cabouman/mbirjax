@@ -54,7 +54,9 @@ class TestConeAxialExtension(unittest.TestCase):
                                  source_detector_dist=sdd, source_iso_dist=sdd / 2.0,
                                  helical_z_shifts=helical)
         if set_params:
-            model.set_params(**set_params)
+            # verbose=0 keeps the extension printout (verbose >= 1) out of the test output;
+            # the printout itself is pinned by test_pad_fraction_printout.
+            model.set_params(verbose=0, **set_params)
             model.auto_set_recon_geometry()
         return model
 
@@ -129,6 +131,77 @@ class TestConeAxialExtension(unittest.TestCase):
         # = 0.2208 -> still 1 slice per end.
         model = self._model(voxel_row_aspect=1.9)
         self._check(model, 7 + 2, 0.0)
+
+    def test_pad_fraction_zero_restores_pre_extension_geometry(self):
+        # axial_pad_fraction = 0 is the escape hatch to the pre-extension geometry: base
+        # 7 slices, and the offset is EXACTLY the helix center (0 for circular) even with
+        # an offset detector, since with no added slices the recentering is a no-op.
+        self._check(self._model(axial_pad_fraction=0.0), 7, 0.0)
+        model = self._model(axial_pad_fraction=0.0, det_row_offset=-1.0)
+        self._check(model, 7, 0.0)
+        self.assertEqual(float(model.get_params('recon_slice_offset')), 0.0)   # exact, not almost
+
+    def test_pad_fraction_scales_and_is_monotone(self):
+        # The fraction scales each end's excess BEFORE the ceil: at 0.5 the scaled excess
+        # 0.109 still ceils to one slice (ceil stickiness near zero), at 3.0 it reaches
+        # ceil(0.65625/0.5) = 2 per end.  1.0 reproduces the default model exactly.
+        for fraction, expected in [(0.5, 9), (1.0, 9), (3.0, 11)]:
+            self._check(self._model(axial_pad_fraction=fraction), expected, 0.0)
+        default = self._model()
+        explicit = self._model(axial_pad_fraction=1.0)
+        self.assertEqual(tuple(explicit.get_params('recon_shape')),
+                         tuple(default.get_params('recon_shape')))
+
+    def test_pad_fraction_tuple_sets_ends_independently(self):
+        # A (top, bottom) pair acts per end: keeping only one end of the symmetric
+        # 1-slice-per-end case gives 8 slices, recentered a half-slice (+/- 0.25 ALU)
+        # toward the padded end.  A list works the same (JSON round-trips tuples to lists).
+        self._check(self._model(axial_pad_fraction=(1.0, 0.0)), 8, +0.25)
+        self._check(self._model(axial_pad_fraction=(0.0, 1.0)), 8, -0.25)
+        self._check(self._model(axial_pad_fraction=[1.0, 0.0]), 8, +0.25)
+        # Per-end counts compose additively: (1,0) and (0,1) together account for exactly
+        # the full extension over the fraction-0 base.
+        n = lambda apf: int(self._model(axial_pad_fraction=apf).get_params('recon_shape')[2])
+        self.assertEqual(n((1.0, 0.0)) + n((0.0, 1.0)), n(1.0) + n(0.0))
+
+    def test_pad_fraction_zero_helical(self):
+        # fraction 0 on the helical case: just the base ceil((3.5 + 2)/0.5) = 11 slices,
+        # centered on the (symmetric) travel.
+        model = self._model(axial_pad_fraction=0.0,
+                            helical_z_shifts=np.linspace(-1.0, 1.0, self.V))
+        self._check(model, 11, 0.0)
+
+    def test_pad_fraction_roundtrip_build_model(self):
+        # The knob rides get_all_params -> build_model: it lands in optional_params, is
+        # applied BEFORE the auto pass, and the rebuilt model reproduces the reduced
+        # shape, the offset, and the knob itself.
+        model = self._model(axial_pad_fraction=(1.0, 0.0))
+        required, optional, regularization = model.get_all_params()
+        self.assertEqual(tuple(optional['axial_pad_fraction']), (1.0, 0.0))
+        rebuilt = mj.build_model(required, optional, regularization)
+        self._check(rebuilt, 8, +0.25)
+        self.assertEqual(tuple(rebuilt.get_params('axial_pad_fraction')), (1.0, 0.0))
+
+    def test_pad_fraction_validation(self):
+        # Negative fractions and wrong-length tuples fail loudly at the auto pass.
+        for bad in (-0.1, (1.0, -0.1), (1.0, 1.0, 1.0)):
+            with self.assertRaises(ValueError):
+                self._model(axial_pad_fraction=bad)
+
+    def test_pad_fraction_printout(self):
+        # The discoverability line prints at verbose >= 1 on an EXPLICIT auto pass (naming
+        # the per-end counts and the knob) but not at construction, whose internal auto
+        # call runs with default detector values and is silenced via no_warning.
+        import io, contextlib
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            model = self._model()                      # construction only: silent
+        self.assertNotIn('Axial visibility extension', buffer.getvalue())
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            model.auto_set_recon_geometry()            # explicit call at verbose 1: prints
+        self.assertIn('Axial visibility extension: +1/+1 slices', buffer.getvalue())
+        self.assertIn('axial_pad_fraction=1.0', buffer.getvalue())
 
     def test_helical_fdk_and_recon_finite_with_extension(self):
         # The extension slices at the travel ends sit outside the helical FDK z-weight's

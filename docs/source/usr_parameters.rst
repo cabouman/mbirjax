@@ -98,8 +98,17 @@ recon_shape
 """""""""""
 :Type: tuple (num_rows, num_cols, num_slices)
 
-Array size of reconstruction. This is set automatically and is available from ``get_params('recon_shape')``.
-It is recommended to use :meth:`~mbirjax.TomographyModel.scale_recon_shape` to increase this by a factor of 10–15% when the object extends beyond the field of view.
+Array size of reconstruction. This is set automatically (by ``auto_set_recon_geometry``) and is available from ``get_params('recon_shape')``.
+
+For cone beam, the automatic shape already extends each end of the slice axis to the cone-beam
+visibility bound, so *axial* field-of-view truncation is handled with no user action (the
+extension can be scaled per end or disabled with the cone-specific ``axial_pad_fraction``
+parameter -- see :ref:`ConeBeamModelDocs`).  If the object extends beyond the field of view
+*laterally*, MBIRJAX warns during reconstruction; the remedy is
+:meth:`~mbirjax.TomographyModel.scale_recon_shape` with ``scale_recon_shape(s, s)`` where
+``s >= object_diameter / FoV_diameter``, rounded UP -- under-padding costs far more image
+quality than over-padding.  (With severe truncation a uniform intensity offset can remain that
+no padding removes.)
 
 .. _param-delta_det_channel:
 
