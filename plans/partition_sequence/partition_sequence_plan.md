@@ -156,6 +156,18 @@ costs one more subset-updater compile.
   clearly better than the current default.  An adaptive coarse start (start granularity from voxel
   count) remains an option if size-adaptivity is wanted later.
 
+> **ADDENDUM (2026-07-18) — the flat-tail options above were REFUTED before shipping; decision
+> record.**  The slice-parity study's broader evidence (`plans/slice_parity/slice_parity_plan.md`,
+> Summary finding 3: three real datasets × two sharpness settings against 150-iteration
+> references) found **flat-fine sequences without a coarse start unsafe as defaults** at
+> interactive iteration budgets: `[7]` (flat 128) is mildly worse on Lilly and CATASTROPHIC on
+> z62 — essentially still at the FDK start after 15 iterations at high sharpness.  Large
+> low-frequency initial error cannot be corrected by fine scattered subsets; the coarse start is
+> load-bearing on data whose initial error is low-frequency-dominated, even though this study's
+> cells showed it "buys ~nothing."  The shipped default is the monotone ramp **`[2, 4, 6, 7]`**
+> (commit `42c0e23`): coarse start kept, granularity-1 memory spike dropped.  Do not revisit a
+> flat-fine default without re-running the z62 high-sharpness cell.
+
 **`max_iterations`: raise from 15 into roughly the 25–50 range** (exact value TBD by the team);
 `stop_threshold_change_pct` unchanged at 0.2.  The real issue is the 15-cap STRANGLING the
 threshold: 0.2% binds at iter ~44–49 on hard objects, so the cap stops them first, far short

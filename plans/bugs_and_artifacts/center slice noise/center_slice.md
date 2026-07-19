@@ -33,6 +33,16 @@ of $D^{-1} A^T A$. The demo also displays
 2. A plot of the L2 norm of each update step as a function of slice
 3. A plot of $\cos(\theta)$, where $\theta$ is the angle between 2 consecutive update steps. The default settings show negatively correlated updates that grow in magnitude over the range of iterations shown. 
 
+### Note — skipping the coarse subsets is NOT a viable fix
+
+Since the bad center-slice step is injected by the coarse-subset iterations, dropping them
+(e.g. `partition_sequence=[7]`, flat 128) looks tempting.  It is ruled out as a default:
+flat-fine sequences without a coarse start are mildly worse on Lilly and catastrophic on z62
+(essentially still at the FDK start after 15 iterations at high sharpness) — large
+low-frequency initial error cannot be corrected by fine scattered subsets.  See
+`plans/slice_parity/slice_parity_plan.md`, Summary finding 3, and the 2026-07-18 addendum in
+`plans/partition_sequence/partition_sequence_plan.md`.
+
 ### Possible solutions
 
 #### 1. Add additional preconditioning based on the top eigenmode
