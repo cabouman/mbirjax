@@ -280,8 +280,12 @@ class QGGMRFDenoiser(TomographyModel):
         alpha_values = [float(val) for val in recon_params[2]]
 
         prior_loss = None
+        # delta_norm_per_slice is None like prior_loss: the denoiser's own subset loop does not
+        # compute the per-slice update-norm diagnostic (see update_recon_with_slice_sumsq).
+        delta_norm_per_slice = None
         recon_param_values = [int(num_iters), granularity, partition_sequence, fm_rmse, prior_loss,
-                              regularization_params, stop_threshold_change_pct, alpha_values]
+                              regularization_params, stop_threshold_change_pct, alpha_values,
+                              delta_norm_per_slice]
         recon_params = mj.ReconParams(*tuple(recon_param_values))._asdict()
 
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())

@@ -90,7 +90,8 @@ if jax.config.jax_compilation_cache_dir is None:
 os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.94')
 
 recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
-                     'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
+                     'regularization_params', 'stop_threshold_change_pct', 'alpha_values',
+                     'delta_norm_per_slice']
 ReconParams = namedtuple('ReconParams', recon_param_names)
 
 TomographyParamNames = mj.ParamNames | Literal['view_params_name']
@@ -3113,9 +3114,13 @@ class TomographyModel(ParameterHandler):
                 prior_loss = [0]
             stop_threshold_change_pct = [100 * float(val) for val in loss_vectors[2]]
             alpha_values = [float(val) for val in loss_vectors[3]]
+            # Per-iteration, per-slice L2 norm of the update (list of lists so the recon dict
+            # stays plainly serializable).
+            delta_norm_per_slice = [[float(v) for v in row] for row in loss_vectors[4]]
             num_iterations = len(fm_rmse)
             recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
-                                  regularization_params, stop_threshold_change_pct, alpha_values]
+                                  regularization_params, stop_threshold_change_pct, alpha_values,
+                                  delta_norm_per_slice]
             recon_params = ReconParams(*tuple(recon_param_values))._asdict()
 
         except MemoryError as e:
@@ -3183,7 +3188,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             (recon, recon_stats): tuple of 3D reconstruction and a tuple containing arrays of per-iteration stats.
             With return_checkpoint=True: (recon, recon_stats, checkpoint).
-            recon_stats = (fm_rmse, pm_loss, nmae_update, alpha_values), where fm is forward model, pm is prior model,
+            recon_stats = (fm_rmse, pm_loss, nmae_update, alpha_values, delta_norm_per_slice), where fm is forward model, pm is prior model,
             and nmae_update is ||recon(i+1) - recon(i)||_1 / ||recon(i+1)||_1.
 
         Note:
@@ -3400,16 +3405,21 @@ class TomographyModel(ParameterHandler):
         pm_loss = np.zeros(max_iters)
         nmae_update = np.zeros(max_iters)
         alpha_values = np.zeros(max_iters)
+        # Per-slice L2 norm of each iteration's update (the per-slice convergence diagnostic;
+        # see update_recon_with_slice_sumsq).  Columns = REAL slices: the device form may carry
+        # identically-zero padded slices, cropped at the read below.
+        delta_norm_per_slice = np.zeros((max_iters, recon_shape[2]))
         num_iters = 0
         for i in range(max_iters):
             # Get the current partition (set of subsets) and shuffle the subsets
             partition = partitions[partition_sequence[i]]
 
             # Do an iteration
-            flat_recon, error_sinogram, ell1_for_partition, alpha = self.vcd_partition_iterator(vcd_subset_updater,
-                                                                                                 flat_recon,
-                                                                                                 error_sinogram,
-                                                                                                 partition)
+            (flat_recon, error_sinogram, ell1_for_partition, alpha,
+             delta_sumsq_partition) = self.vcd_partition_iterator(vcd_subset_updater,
+                                                                  flat_recon,
+                                                                  error_sinogram,
+                                                                  partition)
 
             # Compute the stats and display as desired -- one fused pass over the error sinogram
             # (see _vcd_iteration_stats).  real_sino_size == error_sinogram.size except under view
@@ -3420,6 +3430,8 @@ class TomographyModel(ParameterHandler):
             fm_rmse[i] = fm_loss_i
             nmae_update[i] = ell1_for_partition / recon_l1
             alpha_values[i] = alpha
+            # Tiny (num_slices,) device->host read, piggybacking on the per-iteration stats sync.
+            delta_norm_per_slice[i] = np.sqrt(np.asarray(delta_sumsq_partition)[:recon_shape[2]])
 
             if verbose >= 1:
                 iter_output = '\nAfter iteration {} of a max of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, max_iters + first_iteration,
@@ -3460,7 +3472,7 @@ class TomographyModel(ParameterHandler):
         # padded slice axis -- the caller's exit handling gathers + crops to the real shape).
         recon_3d = flat_recon.reshape(tuple(recon_shape[:2]) + (flat_recon.shape[-1],))
         losses = (fm_rmse[0:num_iters], pm_loss[0:num_iters], nmae_update[0:num_iters],
-                  alpha_values[0:num_iters])
+                  alpha_values[0:num_iters], delta_norm_per_slice[0:num_iters])
         if return_checkpoint:
             # Zero-copy resume state: references to the loop's own device-form arrays.  Feed
             # these back as init_error_sinogram / fm_hessian (with init_recon = the returned
@@ -3484,16 +3496,20 @@ class TomographyModel(ParameterHandler):
             partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
 
         Returns:
-            (flat_recon, error_sinogram, ell1_for_partition, alpha): The first two have the same shape as above, but
-            are updated to reduce overall loss function.
+            (flat_recon, error_sinogram, ell1_for_partition, alpha, delta_sumsq_partition): The first two have
+            the same shape as above, but are updated to reduce overall loss function.
             The ell1_for_partition includes the changes from all subsets of this partition.
             alpha is the relative step size in the gradient descent step, averaged over the subsets
             in the partition.
+            delta_sumsq_partition is the per-slice sum of squared update values accumulated over the
+            partition's subsets (device array, slice-sharded) -- since the subsets tile the in-mask
+            pixels, this is the squared per-slice L2 norm of the iteration's total update.
         """
 
         # Loop over the subsets of the partition, using random subset_indices to order them.
         ell1_for_partition = 0
         alpha_sum = 0
+        delta_sumsq_partition = 0
         subset_indices = np.random.permutation(partition.shape[0])
 
         times = np.zeros(13)
@@ -3511,12 +3527,16 @@ class TomographyModel(ParameterHandler):
         staged_halos = self._stage_halos(flat_recon) if stage_per_pass else None
         for index in subset_indices:
             subset = partition[index]
-            flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset = vcd_subset_updater(
+            flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, delta_sumsq_subset = vcd_subset_updater(
                 flat_recon, error_sinogram, subset, staged_halos)
             ell1_for_partition += ell1_for_subset
             alpha_sum += alpha_for_subset
+            # Shard-local accumulate (slice-sharded (num_slices,) vectors); stays on device
+            # until the per-iteration stats read in vcd_recon.
+            delta_sumsq_partition = delta_sumsq_partition + delta_sumsq_subset
 
-        return flat_recon, error_sinogram, ell1_for_partition, alpha_sum / partition.shape[0]
+        return (flat_recon, error_sinogram, ell1_for_partition, alpha_sum / partition.shape[0],
+                delta_sumsq_partition)
 
     def create_vcd_subset_updater(self, fm_hessian, weights, prox_input=None):
         """
@@ -3683,7 +3703,8 @@ class TomographyModel(ParameterHandler):
             # slice-sharded to match flat_recon, so update_recon stays a local scatter.
             delta_recon_at_indices = alpha * delta_recon_at_indices
 
-            flat_recon = update_recon(flat_recon, recon_indices, delta_recon_at_indices)
+            flat_recon, delta_sumsq_subset = update_recon_with_slice_sumsq(
+                flat_recon, recon_indices, delta_recon_at_indices)
 
             # Update sinogram and loss: error_sinogram <- error_sinogram - alpha * delta_sinogram,
             # IN PLACE via a buffer-DONATING fused multiply-add (alpha replicated onto the sino mesh
@@ -3714,7 +3735,7 @@ class TomographyModel(ParameterHandler):
                 jax.block_until_ready((flat_recon, error_sinogram))
                 weighted_error_sinogram.delete()
 
-            return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset
+            return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, delta_sumsq_subset
 
         return vcd_subset_updater
 
@@ -3891,9 +3912,11 @@ class TomographyModel(ParameterHandler):
             fm_rmse = [float(val) for val in loss_vectors[0]]
             stop_threshold_change_pct = [100 * float(val) for val in loss_vectors[2]]
             alpha_values = [float(val) for val in loss_vectors[3]]
+            delta_norm_per_slice = [[float(v) for v in row] for row in loss_vectors[4]]
             num_iterations = len(fm_rmse)
             recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
-                                  regularization_params, stop_threshold_change_pct, alpha_values]
+                                  regularization_params, stop_threshold_change_pct, alpha_values,
+                                  delta_norm_per_slice]
             recon_params = ReconParams(*tuple(recon_param_values))._asdict()
             self.set_params(no_warning=True, sigma_prox=self_sigma_prox)
 
@@ -3996,6 +4019,20 @@ from functools import partial
 def update_recon(cur_flat_recon, cur_indices, cur_delta):
     cur_flat_recon = cur_flat_recon.at[cur_indices].add(cur_delta)
     return cur_flat_recon
+
+
+@partial(jax.jit, donate_argnames='cur_flat_recon')
+def update_recon_with_slice_sumsq(cur_flat_recon, cur_indices, cur_delta):
+    # update_recon plus this subset's per-slice sum of squared update values.  Because the
+    # subsets of a partition tile the (in-mask) pixels, accumulating these across one
+    # partition pass gives the per-slice L2 norm of the whole iteration's update -- the
+    # per-slice convergence diagnostic reported as delta_norm_per_slice in the recon dict.
+    # Fused into this jit so XLA folds the reduction into the scatter's read of cur_delta
+    # (no extra eager op or memory pass in the per-subset hot path); the pixel axis is the
+    # unsharded axis of the slice-sharded recon, so the reduction is shard-local.
+    # (A separate function so the denoiser's plain update_recon call sites are untouched.)
+    cur_flat_recon = cur_flat_recon.at[cur_indices].add(cur_delta)
+    return cur_flat_recon, jnp.sum(cur_delta * cur_delta, axis=0)
 
 
 @partial(jax.jit, donate_argnames='error_sinogram')
