@@ -86,8 +86,9 @@ class TestHSNT(unittest.TestCase):
         X = self.clean.reshape(-1, self.wavelengths)
         est = hsnt._estimate_subspace_dimension(X, safety_factor=self.safety_factor, verbose=0)
         self.assertIsInstance(est, int)
-        self.assertGreaterEqual(est, 1)
-        self.assertLessEqual(est, self.wavelengths)  # can't exceed wavelengths
+        # The clean data is EXACTLY rank subspace_dim (num_materials * safety_factor), so the estimator
+        # must recover that dimension -- not merely land somewhere in [1, wavelengths].
+        self.assertEqual(est, self.subspace_dim)
 
     def test_hdf5_export_import_round_trip(self):
         """Test create_hsnt_metadata, export_hsnt_data_hdf5 and import_hsnt_data_hdf5 round-trip."""

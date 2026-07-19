@@ -207,18 +207,42 @@ def test_policy_off_on_cpu():
 
 
 def test_weights_match_kernel_formula():
-    """The weight builder must reproduce horizontal_fan_back's effective weights: back
-    projecting a one-hot sinogram through the XLA path equals the weight column."""
+    """The weight builder must reproduce horizontal_fan_back's effective weights: gather-accumulating a
+    sinogram with these weights at the per-view rounded channel centers must equal the XLA back projection
+    (restricted to the same owned views).  Verifies the actual weight VALUES against an independent XLA
+    oracle -- not merely shape and non-negativity."""
     model = _make_model()
     pf = model.projector_functions
     pp = pf.projector_params
     recon_shape = model.get_params('recon_shape')
-    idx = mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)[:50]
-    w = _pallas_kernels._jit_compute_back_weights(
-        pf.view_params_array, jnp.asarray(idx), model.compute_hfan_data, pp,
-        coeff_power=1, owned_view_indices=jnp.arange(3))
-    assert w.shape == (3, 2 * pp.geometry_params.psf_radius + 1, 50)
-    assert bool(jnp.all(w >= 0)) and bool(jnp.any(w > 0))
+    idx = jnp.asarray(mbirjax.gen_full_indices(recon_shape, use_ror_mask=True)[:50])
+    psf_radius = pp.geometry_params.psf_radius
+    num_channels = pp.sinogram_shape[2]
+    owned = np.arange(3)
+    w = np.asarray(_pallas_kernels._jit_compute_back_weights(
+        pf.view_params_array, idx, model.compute_hfan_data, pp,
+        coeff_power=1, owned_view_indices=jnp.asarray(owned)))            # (3, 2*psf_radius+1, 50)
+    assert w.shape == (3, 2 * psf_radius + 1, 50)
+    assert (w >= 0).all() and (w > 0).any()
+
+    # Independent XLA oracle: back-project a sinogram nonzero only in the 3 owned views, then reconstruct
+    # the SAME result from the weights + per-view rounded centers.  Equality (to float noise) is the
+    # "weights == horizontal_fan_back's effective weights" contract, via back-projection linearity.
+    rng = np.random.default_rng(7)
+    num_views, num_rows = pp.sinogram_shape[0], pp.sinogram_shape[1]
+    sino = np.zeros((num_views, num_rows, num_channels), np.float32)
+    sino[owned] = rng.standard_normal((len(owned), num_rows, num_channels), dtype=np.float32)
+    model.tiles = model.tiles._replace(back_pallas=False)                 # force the XLA reference path
+    ref = np.asarray(model.sparse_back_project(jnp.asarray(sino), idx, coeff_power=1))   # (50, num_slices)
+
+    recon_w = np.zeros_like(ref)
+    for vi, v in enumerate(owned):
+        n_p, _, _ = model.compute_hfan_data(idx, pf.view_params_array[v], pp)
+        centers = np.round(np.asarray(n_p)).astype(int)                  # (50,)
+        for t in range(2 * psf_radius + 1):
+            cc = np.clip(centers + (t - psf_radius), 0, num_channels - 1)  # (50,)
+            recon_w += w[vi, t][:, None] * sino[v][:, cc].T             # channel weight applied per slice
+    np.testing.assert_allclose(recon_w, ref, rtol=1e-4, atol=1e-5)
 
 
 # ── Increment 2: the forward subset path ──────────────────────────────────────

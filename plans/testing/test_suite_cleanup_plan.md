@@ -24,7 +24,30 @@ DONE + verified (nothing committed by me; staged in the working tree for Greg):
 - tests/sharding/test_cone_sharded.py, test_multiaxis_sharded.py, test_translation_sharded.py
 - (optional) tests/sharding/test_scaffolding.py wholesale, if folding preferred_devices into conftest.
 Final gate: full suite run with the 6 originals --ignore'd (post-deletion state) -- validates the merged
-files replace them. Not yet done: Tier 2 (global->local RNG in 13 files), P3-P6 consolidations.
+files replace them. GREG COMMITTED + PUSHED all of the above, including the 6 file deletions.
+
+### ROUND 2 (Greg-approved after a cost-benefit review): the 2 coverage FIXES + P4 -- DONE
+- **Strengthen test_pallas_kernels::test_weights_match_kernel_formula**: was shape+non-negativity only
+  (didn't test the one-hot claim in its docstring). Now verifies the actual weight VALUES against an
+  INDEPENDENT XLA oracle -- back-projects a sinogram nonzero only in the 3 owned views and reconstructs
+  the identical result from the weights + per-view rounded centers (probe-confirmed exact to ~5e-7).
+- **Strengthen test_hsnt::test_estimate_subspace_dimension_sanity**: was loose bounds ([1, wavelengths]).
+  The clean data is EXACTLY rank subspace_dim, so now asserts `est == self.subspace_dim` (estimator
+  recovers the exact rank -- verified).
+- **P4**: extracted the HDF5 save/load round-trip out of test_vcd.py::verify_vcd (which re-ran it
+  identically for all 7 geometries) into one dedicated `test_save_load_recon_hdf5_roundtrip` (small
+  parallel recon, 2 iters). All 3 pass; full suite re-run.
+
+### LOW PRIORITY (deferred -- weak cost-benefit; do opportunistically, not as a dedicated pass)
+- **P3** (collapse the sharding output-form matrices + lift setUp/_divisible to conftest + merge n=2 into
+  the sweeps): MEDIUM benefit / MED-HIGH cost -- biggest remaining line reduction but delicate sharding
+  refactor. Do only if the duplication actively bothers.
+- **P5 / P6** (parametrize pallas adjoint/chunking + preprocessing crop/wrapper tests): LOW benefit
+  (maintainability only, no coverage/wall-time change) / LOW cost -- fold in whenever next editing those
+  files.
+- **RNG Tier 2** (13 files global->local default_rng): LOWEST ratio -- the conftest autouse fixture already
+  removed the order-dependence risk, and the migration flips the RNG algorithm (MT19937->PCG64), risking
+  spurious re-tuning of value-based tests. SKIP unless a specific need arises.
 
 
 
