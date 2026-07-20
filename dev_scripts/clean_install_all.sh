@@ -56,10 +56,10 @@ elif [[ "$HOSTNAME" == *"$GAUTSCHI"* ]]; then
   echo "Installing on Gautschi"
   module load modtree/gpu
   module load conda
-  module load cuda/12.9.0
+  module load cuda
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
-  pip install -e "..[cuda12]"
+  pip install -e "..[cuda13]"
 # Negishi (cpu)
 elif [[ "$HOSTNAME" == *"$NEGISHI"* ]]; then
   echo "Installing on Negishi"
