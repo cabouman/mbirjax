@@ -114,7 +114,7 @@ _reconstruction_defaults_dict = {
     'snr_db': Param(30.0, False),
     'sharpness': Param(1.0, False),
     'granularity': Param([1, 2, 4, 8, 16, 32, 64, 128, 256], False),
-    'partition_sequence': Param([0, 2, 4, 6, 7], False),
+    'partition_sequence': Param([2, 4, 6, 7], False),
     'verbose': Param(1, False),
     'use_gpu': Param('automatic', True),  # DEPRECATED: use configure_devices ('cpu' forces CPU-only).
                                           # Kept (with set_params forwarding) for one deprecation
