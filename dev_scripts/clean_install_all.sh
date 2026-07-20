@@ -50,7 +50,7 @@ if [[ "$HOSTNAME" == *"$GILBRETH"* ]]; then
   module load cuda
   yes | conda create -n $NAME python="$PYTHON_VERSION"
   conda activate $NAME
-  pip install -e "..[cuda12]"
+  pip install -e "..[cuda13]"
 # Gautschi (gpu)
 elif [[ "$HOSTNAME" == *"$GAUTSCHI"* ]]; then
   echo "Installing on Gautschi"
