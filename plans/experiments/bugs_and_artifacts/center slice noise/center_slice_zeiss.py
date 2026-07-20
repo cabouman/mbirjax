@@ -62,7 +62,7 @@ def main():
             weights = weights[:, ::-1, :]
             sinogram = sinogram[:, ::-1, :]
     else:
-        crop_size = 400
+        crop_size = 0
         sinogram, ct_model = mjp.zeiss.get_sino_and_model(dataset_path, downsample_factor=(downsample_factor, downsample_factor),
                                                           subsample_view_factor=subsample_view_factor, crop_pixels_bottom=crop_size, crop_pixels_top=crop_size)
         # Recover the raw parameter dicts (required, optional) for the pickle.dump below
