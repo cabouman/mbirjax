@@ -101,7 +101,7 @@ BACK_VIEW_CHUNK_CAP = 128
 FWD_SEGMENT_CAP = 64
 FWD_NUM_WARPS = 1
 # Device kinds where the kernels have been measured (substring match on device_kind).
-_ARCH_ALLOWLIST = ('H100', 'A100')
+_ARCH_ALLOWLIST = ('H100', 'H200', 'A100')
 
 
 def next_pow2(n):
