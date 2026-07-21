@@ -3542,42 +3542,33 @@ class TomographyModel(ParameterHandler):
                               prior_hess, pixel_indices):
         """Return the update direction for one subset of pixels.
 
-        The per-subset preconditioning seam: the base implementation is the
-        diagonally-preconditioned descent direction
-        -(forward_grad + prior_grad) / (forward_hess + prior_hess); geometry
-        models may override it to apply other preconditioning.  Contract for
-        overrides:
+        The base implementation is the preconditioned gradient:
+            update_direction = -(forward_grad + prior_grad) / (forward_hess + prior_hess)
+        Geometry subclasses may override this to apply a different preconditioner.
 
-        - Preserve the cost's minimizers: apply only positive(-definite)
-          rescalings of the diagonal direction (per-slice, per-voxel, or
-          low-rank), so the change shapes the iteration path, never the
-          converged solution.
-        - forward_grad and forward_hess are dead after this call (the base
-          implementation donates forward_grad into the result); prior_grad and
-          prior_hess are read again by the caller's line search and must NOT
-          be donated.
-        - Keep device math in module-level jitted helpers with fixed
-          signatures: branch eagerly on host state to SELECT a helper, never
-          inside one; pass run-varying arrays as helper arguments -- a value
-          closed over by a jitted helper is baked in at trace time and goes
-          SILENTLY STALE if later rebound (no retrace, no warning); and add no
-          per-subset host synchronization.
+        Rules for overrides:
+
+        - Preserve the cost's minimizers: the result must have the form
+              -(forward_grad + prior_grad) / (positive quantity).
+        - forward_grad and forward_hess may be consumed here (the base implementation
+          donates forward_grad); prior_grad and prior_hess are used again by the
+          caller's line search and must not be donated.
+        - Do device math in module-level jitted helpers with fixed signatures: branch
+          on host state only to choose a helper, and pass run-varying arrays as
+          arguments (a value closed over by a jitted helper is baked in at trace time
+          and silently goes stale if rebound).  Add no per-subset host synchronization.
 
         Args:
             forward_grad: data-term gradient, shape (num_subset_pixels, num_slices_device).
             prior_grad: prior gradient, same shape.
             forward_hess: data-term Hessian diagonal, same shape.
             prior_hess: prior curvature, same shape (a scalar on the proximal-map path).
-            pixel_indices: flat in-plane indices of this subset, shape
-                (num_subset_pixels,), replicated on the recon mesh -- unused by
-                the base implementation; spatially-aware overrides may gather
-                slice-sharded recon-domain arrays with it (valid precisely
-                because it is the replicated copy; see the caller's
-                recon_indices comment).
+            pixel_indices: flat in-plane indices of this subset, shape (num_subset_pixels,),
+                replicated on the recon mesh.  Unused by the base implementation;
+                spatially-aware overrides may use it to gather slice-sharded arrays.
 
         Returns:
-            The update direction, same shape as forward_grad (the caller's line
-            search scales it into the committed update).
+            The update direction, same shape as forward_grad.
         """
         return _diagonal_update_direction(forward_grad, prior_grad,
                                           forward_hess, prior_hess)
