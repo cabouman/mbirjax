@@ -39,12 +39,11 @@ Below are tips on important and useful features:
   or end-slice "flash", along with an interior bias and slowed convergence.  MBIRJAX handles the
   two directions differently:
 
-  - *Axial (slices, cone beam):* handled automatically -- the automatic reconstruction shape
-    extends each end of the slice axis to the cone-beam visibility bound.  On memory-limited
-    reconstructions with a wide cone angle, this extension can be scaled back or disabled with the
-    cone-specific ``axial_pad_fraction`` parameter (a float or a ``(top_fraction, bottom_fraction)``
-    pair; default 1.0 = the full bound, 0 disables).  The number of slices added per end is printed
-    at ``verbose >= 1``.
+  - *Axial (slices, cone beam):* the automatic reconstruction shape covers the detector height
+    at iso.  It can be padded with the cone-specific ``axial_pad_fraction`` parameter (a float
+    or a ``(top, bottom)`` pair; default 0 = no padding, 1 pads each end to the deepest z
+    reached by any measured ray).  The number of slices added per end is printed at
+    ``verbose >= 1``.
   - *Lateral (rows and columns):* cannot be sized automatically, because the needed padding depends
     on how far the object actually extends -- which the truncated data does not determine.  MBIRJAX
     detects this case and warns during reconstruction.  The remedy is

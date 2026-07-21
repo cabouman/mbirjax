@@ -85,8 +85,8 @@ def get_support_radius(recon_shape, delta_voxel_row, delta_voxel_col, use_ror_ma
     the larger physical grid width.  With the mask disabled (``False``) corner pixels are
     updated too, so the radius is the grid half-diagonal (up to sqrt(2) larger).  A custom mask
     also uses the conservative half-diagonal rather than measuring the mask: callers use this
-    radius in geometric visibility bounds (how far from the axis a ray can pass and still cross
-    updatable voxels), where overestimating only pads slightly while underestimating
+    radius to bound how far from the axis a ray can pass and still cross updatable voxels,
+    where overestimating only pads slightly while underestimating
     reintroduces truncation artifacts.
 
     Args:

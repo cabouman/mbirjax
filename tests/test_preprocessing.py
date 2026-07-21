@@ -75,8 +75,8 @@ class TestNSIPreprocessing(unittest.TestCase):
 
         # The phantom is only a source of realistic sinogram values for the preprocessing
         # roundtrip, so build it on the central-ray base slab and embed it (zero-filled) in
-        # the auto recon shape: auto_set_recon_geometry extends the slab with
-        # visibility-extension end slices, and letting the phantom stretch into that
+        # the auto recon shape: auto_set_recon_geometry pads the slab with
+        # end slices, and letting the phantom stretch into that
         # half-sampled wedge would move the sinogram's gradients relative to the fixed
         # defective-pixel seeds, silently changing what the tolerances measure.  Embedding
         # keeps the ground-truth sinogram identical to its pre-extension calibration.
@@ -399,7 +399,7 @@ class TestDetectorCrop(unittest.TestCase):
         # recon_slice_offset (proven with a sentinel), matching a reference model run through the
         # same auto pass.  (The cone auto geometry follows the detector: the asymmetric crop shifts
         # det_row_offset, so the derived offset moves off iso rather than staying 0 -- the exact
-        # value comes from the per-end visibility extension, so compare to the reference model
+        # value comes from the per-end axial padding, so compare to the reference model
         # instead of pinning a constant.)
         angles = np.linspace(0, np.pi, 12, endpoint=False)
         model = mj.ConeBeamModel((12, 80, 100), angles, source_detector_dist=200, source_iso_dist=100)

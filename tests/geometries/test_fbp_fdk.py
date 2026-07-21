@@ -119,8 +119,8 @@ class TestFBPReconstruction(unittest.TestCase):
     def central_slab_slice_range(ct_model):
         """[start, stop) of the central-ray-covered base slab within the auto recon shape.
 
-        Cone-beam auto shapes extend past the central-ray slab to the visibility bound
-        (auto_set_recon_geometry's per-end extension), and the extension slices see only
+        Cone-beam auto shapes pad past the central-ray slab
+        (auto_set_recon_geometry's per-end padding), and the padding slices see only
         grazing edge rays -- the half-sampled cone wedge, where FDK accuracy is limited by
         the sampling rather than the code, so no fixed tolerance there is meaningful.  This
         gate therefore embeds the phantom in the base slab and evaluates the metrics there,

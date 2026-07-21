@@ -103,9 +103,9 @@ devices were used.  If you have no GPU, all processing is done on the CPU.  See 
 
 If your reconstruction is still too large, then for a parallel beam system you can select a subset of rows of your
 sinogram, reconstruct them separately, and then concatenate them at the end.  If you have a cone beam system, you can
-reconstruct a subset of the central slices or use :meth:`~mbirjax.ConeBeamModel.split_sino_recon`.  For cone beam you
-can also reduce the automatic axial padding with the ``axial_pad_fraction`` parameter (see :ref:`ConeBeamModelDocs`)
-if the visibility extension is what pushes you over the memory limit.  In either case, you can do
+reconstruct a subset of the central slices or use :meth:`~mbirjax.ConeBeamModel.split_sino_recon`.  For cone beam, if you have
+enabled axial padding with the ``axial_pad_fraction`` parameter (see :ref:`ConeBeamModelDocs`),
+reducing it lowers the slice count.  In either case, you can do
 a center cropped reconstruction as in Demo 3: Cropped Center, although as seen in that demo, this can introduce an
 intensity shift and other artifacts.
 
@@ -172,9 +172,8 @@ rounded UP.  The penalty is asymmetric -- under-padding costs orders of magnitud
 over-padding costs in memory -- so round up generously.  With severe truncation, a uniform intensity offset
 can remain that no amount of padding removes.
 
-The *axial* (slice) direction needs no such action for cone beam: the automatic reconstruction geometry
-already extends the slice axis to the cone-beam visibility bound (tunable with the ``axial_pad_fraction``
-parameter -- see :ref:`ConeBeamModelDocs`).
+For the *axial* (slice) direction in cone beam, the slice axis can be padded with the
+``axial_pad_fraction`` parameter (see :ref:`ConeBeamModelDocs`).
 
 
 Q: How can I shift region-of-reconstruction up or down for a conebeam reconstruction?

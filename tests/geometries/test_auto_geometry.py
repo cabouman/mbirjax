@@ -53,11 +53,12 @@ class TestConeAxialExtension(unittest.TestCase):
         model = mj.ConeBeamModel((self.V, num_det_rows, self.C), angles,
                                  source_detector_dist=sdd, source_iso_dist=sdd / 2.0,
                                  helical_z_shifts=helical)
-        if set_params:
-            # verbose=0 keeps the extension printout (verbose >= 1) out of the test output;
-            # the printout itself is pinned by test_pad_fraction_printout.
-            model.set_params(verbose=0, **set_params)
-            model.auto_set_recon_geometry()
+        # The padding tests need axial_pad_fraction=1.0 (the package default is 0).
+        set_params.setdefault('axial_pad_fraction', 1.0)
+        # verbose=0 keeps the padding printout (verbose >= 1) out of the test output;
+        # the printout itself is pinned by test_pad_fraction_printout.
+        model.set_params(verbose=0, **set_params)
+        model.auto_set_recon_geometry()
         return model
 
     def _check(self, model, expected_slices, expected_offset):
@@ -132,10 +133,15 @@ class TestConeAxialExtension(unittest.TestCase):
         model = self._model(voxel_row_aspect=1.9)
         self._check(model, 7 + 2, 0.0)
 
-    def test_pad_fraction_zero_restores_pre_extension_geometry(self):
-        # axial_pad_fraction = 0 is the escape hatch to the pre-extension geometry: base
-        # 7 slices, and the offset is EXACTLY the helix center (0 for circular) even with
-        # an offset detector, since with no added slices the recentering is a no-op.
+    def test_default_is_unpadded(self):
+        # The default (axial_pad_fraction = 0) adds no padding: base 7 slices, and the
+        # offset is EXACTLY the helix center (0 for circular) even with an offset
+        # detector, since with no added slices the recentering is a no-op.
+        angles = jnp.linspace(0, jnp.pi, self.V, endpoint=False)
+        bare = mj.ConeBeamModel((self.V, self.N, self.C), angles,
+                                source_detector_dist=4.0 * self.C, source_iso_dist=2.0 * self.C)
+        self.assertEqual(float(bare.get_params('axial_pad_fraction')), 0.0)
+        self._check(bare, 7, 0.0)
         self._check(self._model(axial_pad_fraction=0.0), 7, 0.0)
         model = self._model(axial_pad_fraction=0.0, det_row_offset=-1.0)
         self._check(model, 7, 0.0)
@@ -144,21 +150,19 @@ class TestConeAxialExtension(unittest.TestCase):
     def test_pad_fraction_scales_and_is_monotone(self):
         # The fraction scales each end's excess BEFORE the ceil: at 0.5 the scaled excess
         # 0.109 still ceils to one slice (ceil stickiness near zero), at 3.0 it reaches
-        # ceil(0.65625/0.5) = 2 per end.  1.0 reproduces the default model exactly.
+        # ceil(0.65625/0.5) = 2 per end.
         for fraction, expected in [(0.5, 9), (1.0, 9), (3.0, 11)]:
             self._check(self._model(axial_pad_fraction=fraction), expected, 0.0)
-        default = self._model()
-        explicit = self._model(axial_pad_fraction=1.0)
-        self.assertEqual(tuple(explicit.get_params('recon_shape')),
-                         tuple(default.get_params('recon_shape')))
 
     def test_pad_fraction_tuple_sets_ends_independently(self):
         # A (top, bottom) pair acts per end: keeping only one end of the symmetric
         # 1-slice-per-end case gives 8 slices, recentered a half-slice (+/- 0.25 ALU)
-        # toward the padded end.  A list works the same (JSON round-trips tuples to lists).
-        self._check(self._model(axial_pad_fraction=(1.0, 0.0)), 8, +0.25)
-        self._check(self._model(axial_pad_fraction=(0.0, 1.0)), 8, -0.25)
-        self._check(self._model(axial_pad_fraction=[1.0, 0.0]), 8, +0.25)
+        # toward the padded end.  Top = low slice indexes (z points down), so top-only
+        # padding moves the offset NEGATIVE.  A list works the same (JSON round-trips
+        # tuples to lists).
+        self._check(self._model(axial_pad_fraction=(1.0, 0.0)), 8, -0.25)
+        self._check(self._model(axial_pad_fraction=(0.0, 1.0)), 8, +0.25)
+        self._check(self._model(axial_pad_fraction=[1.0, 0.0]), 8, -0.25)
         # Per-end counts compose additively: (1,0) and (0,1) together account for exactly
         # the full extension over the fraction-0 base.
         n = lambda apf: int(self._model(axial_pad_fraction=apf).get_params('recon_shape')[2])
@@ -179,7 +183,7 @@ class TestConeAxialExtension(unittest.TestCase):
         required, optional, regularization = model.get_all_params()
         self.assertEqual(tuple(optional['axial_pad_fraction']), (1.0, 0.0))
         rebuilt = mj.build_model(required, optional, regularization)
-        self._check(rebuilt, 8, +0.25)
+        self._check(rebuilt, 8, -0.25)
         self.assertEqual(tuple(rebuilt.get_params('axial_pad_fraction')), (1.0, 0.0))
 
     def test_pad_fraction_validation(self):
@@ -189,24 +193,23 @@ class TestConeAxialExtension(unittest.TestCase):
                 self._model(axial_pad_fraction=bad)
 
     def test_pad_fraction_printout(self):
-        # The discoverability line prints at verbose >= 1 on an EXPLICIT auto pass (naming
-        # the per-end counts and the knob) but not at construction, whose internal auto
-        # call runs with default detector values and is silenced via no_warning.
+        # The padding line prints at verbose >= 1 on an explicit auto pass, not at verbose 0.
         import io, contextlib
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
-            model = self._model()                      # construction only: silent
-        self.assertNotIn('Axial visibility extension', buffer.getvalue())
+            model = self._model(axial_pad_fraction=1.0)    # helper runs at verbose 0: silent
+        self.assertNotIn('Axial padding', buffer.getvalue())
+        model.set_params(verbose=1)
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
-            model.auto_set_recon_geometry()            # explicit call at verbose 1: prints
-        self.assertIn('Axial visibility extension: +1/+1 slices', buffer.getvalue())
+            model.auto_set_recon_geometry()                # explicit call at verbose 1: prints
+        self.assertIn('Axial padding: +1/+1 slices', buffer.getvalue())
         self.assertIn('axial_pad_fraction=1.0', buffer.getvalue())
 
     def test_helical_fdk_and_recon_finite_with_extension(self):
-        # The extension slices at the travel ends sit outside the helical FDK z-weight's
-        # central-ray visibility window (coverage 0 -- only diverging edge rays graze them).
-        # Regression: when the extension first landed, that produced num_views/0 = inf in
+        # The padding slices at the travel ends have zero central-ray coverage in the helical
+        # FDK z-weight (only diverging edge rays graze them).
+        # Regression: when the padding first landed, that produced num_views/0 = inf in
         # helical_fdk_z_weight and NaN-poisoned the FDK initializer and every recon built on
         # it; the weight must zero the uncovered slices instead.
         model = self._model(helical_z_shifts=np.linspace(-1.0, 1.0, self.V))
@@ -222,7 +225,7 @@ class TestConeAxialExtension(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(np.asarray(recon))))
 
     def test_beyond_bound_projects_to_exactly_zero(self):
-        # The visibility-bound identity: voxels beyond the bound intersect no measured rays,
+        # Voxels beyond the illuminated extent intersect no measured rays,
         # so their forward projection is EXACTLY zero -- a constructed-zero invariant (no
         # contribution is ever generated), for which exact equality is the correct gate.
         # Enlarge the slice axis past the auto shape and fill only the added end slices.

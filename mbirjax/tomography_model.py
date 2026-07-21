@@ -4036,7 +4036,7 @@ class TomographyModel(ParameterHandler):
         warning), use ``scale_recon_shape(s, s)`` with ``s >= object_diameter / FoV_diameter`` and
         round UP: under-padding costs far more image quality than over-padding costs in memory.
         The cone-beam AXIAL direction normally needs no scaling -- ``auto_set_recon_geometry``
-        already extends the slice axis to the visibility bound (tunable via ``axial_pad_fraction``).
+        already pads the slice axis (tunable via ``axial_pad_fraction``).
 
         Args:
             row_scale (float): Scale factor for the number of rows in the reconstruction.

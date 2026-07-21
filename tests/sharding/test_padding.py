@@ -585,10 +585,10 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
     VARIANTS = (False, True)   # circular, helical
     PADS_ROWS = False
     NUM_VIEWS = 8
-    # Isotropic cone: 5 detector rows -> 5 base slices + 1 visibility-extension slice per end
-    # = 7 recon slices (prime: pads at every count > 1); the helical variant lands on 11
-    # (also prime).  Guarded by test_prime_slice_count.
-    NUM_DET_ROWS = 5
+    # Isotropic cone at magnification 2: base slices = detector rows, so 7 rows -> 7 slices
+    # (prime: pads at every count > 1); the helical z-range adds 4 -> 11 (also prime).
+    # Guarded by test_prime_slice_count.
+    NUM_DET_ROWS = 7
 
     def _make_model(self, helical=False, curved=False):
         angles = jnp.linspace(0, jnp.pi, self.NUM_VIEWS, endpoint=False)
@@ -636,7 +636,7 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
             self.skipTest("no usable device count > 1")
 
     def test_fully_padded_trailing_shard(self):
-        """A tiny 5-slice cone (3 detector rows + one visibility-extension slice per end) on
+        """A tiny 5-slice cone (5 detector rows) on
         4 devices makes the LAST shard entirely padding (shards of 2: 2+2+1+0, n_valid == 0):
         exercises the _mask_padded_slices / _mask_padded_views n_valid<=0 branch and a gather
         that concatenates a fully-zero shard -- which auto-config normally avoids (it skips a
@@ -649,7 +649,7 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
         sdd = 4.0 * self.NUM_CHANNELS
 
         def tiny():
-            m = mbirjax.ConeBeamModel((self.NUM_VIEWS, 3, self.NUM_CHANNELS), angles,
+            m = mbirjax.ConeBeamModel((self.NUM_VIEWS, 5, self.NUM_CHANNELS), angles,
                                       source_detector_dist=sdd, source_iso_dist=sdd / 2.0)
             m.configure_devices(1)
             return m
