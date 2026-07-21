@@ -23,7 +23,7 @@ import sys
 import time
 
 PARITY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          '..', 'slice_parity')
+                          '../..', 'slice_parity')
 REFS_DIR = '/depot/bouman/data/mbirjax_metrics/slice_parity/refs'
 OUT_DIR = '/scratch/gautschi/buzzard/w2_inc5_convergence'
 SHARPNESS = 2.0
