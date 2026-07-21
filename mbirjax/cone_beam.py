@@ -1328,10 +1328,8 @@ class ConeBeamModel(TomographyModel):
             ...                          source_detector_dist=1000.0,
             ...                          source_iso_dist=500.0)
             >>> recon, recon_info = model.split_sino_recon(sino, half_overlap=4)
-            >>> # 64 detector-height slices + 2 automatic axial padding slices
-            >>> # at each end (see auto_set_recon_geometry):
             >>> recon.shape  # Quilted reconstruction volume
-            (64, 64, 68)
+            (64, 64, 64)
         """
         # -------- Basic validation --------
         if half_overlap < 2:
