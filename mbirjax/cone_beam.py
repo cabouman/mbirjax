@@ -64,7 +64,7 @@ class ConeBeamModel(TomographyModel):
         **recon_slice_offset** (float, default=0) -
         This parameter controls the vertical offset of the reconstruction in ALU. If recon_slice_offset is positive, the region below iso is reconstructed.
 
-        **axial_pad_fraction** (float or (top, bottom) tuple, default=0) -
+        **axial_pad_fraction** (float or (top, bottom) tuple, default=1) -
         Scales the axial padding added by ``auto_set_recon_geometry``; 0 = none, 1 = full.
         Top is the low slice and detector row indexes; bottom is the high indexes
         (z points down).
@@ -98,7 +98,7 @@ class ConeBeamModel(TomographyModel):
         super().__init__(sinogram_shape, view_params_array=view_params_array,
                          source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
                          view_params_name=view_params_name, view_params_component_names=view_params_component_names,
-                         recon_slice_offset=0.0, axial_pad_fraction=0.0,
+                         recon_slice_offset=0.0, axial_pad_fraction=1.0,
                          use_curved_detector=use_curved_detector)
 
     @overload
@@ -1328,8 +1328,10 @@ class ConeBeamModel(TomographyModel):
             ...                          source_detector_dist=1000.0,
             ...                          source_iso_dist=500.0)
             >>> recon, recon_info = model.split_sino_recon(sino, half_overlap=4)
+            >>> # 64 detector-height slices + 2 padding slices at each end
+            >>> # (see auto_set_recon_geometry):
             >>> recon.shape  # Quilted reconstruction volume
-            (64, 64, 64)
+            (64, 64, 68)
         """
         # -------- Basic validation --------
         if half_overlap < 2:

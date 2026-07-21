@@ -53,7 +53,7 @@ class TestConeAxialExtension(unittest.TestCase):
         model = mj.ConeBeamModel((self.V, num_det_rows, self.C), angles,
                                  source_detector_dist=sdd, source_iso_dist=sdd / 2.0,
                                  helical_z_shifts=helical)
-        # The padding tests need axial_pad_fraction=1.0 (the package default is 0).
+        # Pin the fraction so these tests are independent of the package default.
         set_params.setdefault('axial_pad_fraction', 1.0)
         # verbose=0 keeps the padding printout (verbose >= 1) out of the test output;
         # the printout itself is pinned by test_pad_fraction_printout.
@@ -133,15 +133,18 @@ class TestConeAxialExtension(unittest.TestCase):
         model = self._model(voxel_row_aspect=1.9)
         self._check(model, 7 + 2, 0.0)
 
-    def test_default_is_unpadded(self):
-        # The default (axial_pad_fraction = 0) adds no padding: base 7 slices, and the
-        # offset is EXACTLY the helix center (0 for circular) even with an offset
-        # detector, since with no added slices the recentering is a no-op.
+    def test_default_is_fully_padded(self):
+        # The default (axial_pad_fraction = 1) pads fully: base 7 slices + 1 per end.
         angles = jnp.linspace(0, jnp.pi, self.V, endpoint=False)
         bare = mj.ConeBeamModel((self.V, self.N, self.C), angles,
                                 source_detector_dist=4.0 * self.C, source_iso_dist=2.0 * self.C)
-        self.assertEqual(float(bare.get_params('axial_pad_fraction')), 0.0)
-        self._check(bare, 7, 0.0)
+        self.assertEqual(float(bare.get_params('axial_pad_fraction')), 1.0)
+        self._check(bare, 9, 0.0)
+
+    def test_pad_fraction_zero_is_unpadded(self):
+        # fraction 0 adds no padding: base 7 slices, and the offset is EXACTLY the helix
+        # center (0 for circular) even with an offset detector, since with no added
+        # slices the recentering is a no-op.
         self._check(self._model(axial_pad_fraction=0.0), 7, 0.0)
         model = self._model(axial_pad_fraction=0.0, det_row_offset=-1.0)
         self._check(model, 7, 0.0)

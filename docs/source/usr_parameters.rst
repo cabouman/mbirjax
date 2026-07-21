@@ -100,9 +100,10 @@ recon_shape
 
 Array size of reconstruction. This is set automatically (by ``auto_set_recon_geometry``) and is available from ``get_params('recon_shape')``.
 
-For cone beam, the slice axis can be padded per end with the cone-specific
-``axial_pad_fraction`` parameter (default 0 = no padding -- see
-:ref:`ConeBeamModelDocs`).  If the object extends beyond the field of view
+For cone beam, the automatic shape pads each end of the slice axis to the deepest z reached
+by any measured ray, so *axial* field-of-view truncation is handled with no user action
+(scale back or disable the padding per end with the cone-specific ``axial_pad_fraction``
+parameter -- see :ref:`ConeBeamModelDocs`).  If the object extends beyond the field of view
 *laterally*, MBIRJAX warns during reconstruction; the remedy is
 :meth:`~mbirjax.TomographyModel.scale_recon_shape` with ``scale_recon_shape(s, s)`` where
 ``s >= object_diameter / FoV_diameter``, rounded UP -- under-padding costs far more image

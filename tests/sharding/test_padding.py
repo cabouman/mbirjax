@@ -585,9 +585,9 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
     VARIANTS = (False, True)   # circular, helical
     PADS_ROWS = False
     NUM_VIEWS = 8
-    # Isotropic cone at magnification 2: base slices = detector rows, so 7 rows -> 7 slices
-    # (prime: pads at every count > 1); the helical z-range adds 4 -> 11 (also prime).
-    # Guarded by test_prime_slice_count.
+    # Isotropic cone at magnification 2 with axial_pad_fraction pinned to 0: base slices =
+    # detector rows, so 7 rows -> 7 slices (prime: pads at every count > 1); the helical
+    # z-range adds 4 -> 11 (also prime).  Guarded by test_prime_slice_count.
     NUM_DET_ROWS = 7
 
     def _make_model(self, helical=False, curved=False):
@@ -599,6 +599,10 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
             kwargs['helical_z_shifts'] = np.linspace(-1.0, 1.0, self.NUM_VIEWS)
         model = mbirjax.ConeBeamModel(
             (self.NUM_VIEWS, self.NUM_DET_ROWS, self.NUM_CHANNELS), angles, **kwargs)
+        # Pin the axial padding off so the tuned slice counts are independent of the
+        # package default.
+        model.set_params(verbose=0, axial_pad_fraction=0.0)
+        model.auto_set_recon_geometry()
         model.configure_devices(1)   # deterministic single-device reference; sharded tests override
         return model
 
@@ -651,6 +655,9 @@ class TestPaddedSlicesCone(_PaddedReconMixin, unittest.TestCase):
         def tiny():
             m = mbirjax.ConeBeamModel((self.NUM_VIEWS, 5, self.NUM_CHANNELS), angles,
                                       source_detector_dist=sdd, source_iso_dist=sdd / 2.0)
+            # Pin the axial padding off so the 5-slice count is independent of the default.
+            m.set_params(verbose=0, axial_pad_fraction=0.0)
+            m.auto_set_recon_geometry()
             m.configure_devices(1)
             return m
 
