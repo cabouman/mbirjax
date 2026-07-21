@@ -29,7 +29,7 @@ TEST_CASES = {
     # ORNL HFN scan, pymbir hdf5 file (same data as hfn_scan.tgz used in mbirjax_applications/vcls).
     'hfn': dict(
         type='pymbir',
-        path='/depot/bouman/data/ORNL/pymbir/hfn_scan',  # path must be the hdf5 file itself
+        path='/depot/bouman/data/ORNL/pymbir/hfn_scan/TCR_Single_Channeled_SRC_M_2019-03-18_13-08-09.hdf5',
         bh_correction=True,
     ),
 

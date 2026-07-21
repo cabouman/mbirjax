@@ -17,8 +17,8 @@ import os
 import sys
 import time
 import numpy as np
+import mbirjax as mj  # mbirjax must be imported before jax (sets XLA env vars)
 import jax.numpy as jnp
-import mbirjax as mj
 import mbirjax.preprocess as mjp
 
 from test_cases import TEST_CASES, DEFAULTS
