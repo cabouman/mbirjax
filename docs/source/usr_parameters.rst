@@ -53,10 +53,10 @@ positivity_flag
 
 This parameter determines if positivity is enforced in MBIR reconstruction.
 
-.. _param-max_overrelaxation:
+.. _param-max_alpha:
 
-max_overrelaxation
-""""""""""""""""""
+max_alpha
+"""""""""
 :Type: float (Defaults to 1.5)
 
 This parameter limits the step size of VCD updates.

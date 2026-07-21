@@ -15,7 +15,7 @@ from mbirjax._utils import Param
 import mbirjax as mj
 
 # NOTE:  additions/deletions here should also be made to _utils.py
-ParamNames=Literal['geometry_type','file_format','sinogram_shape','delta_det_channel','delta_det_row','det_row_offset','det_channel_offset','sigma_y','alu_unit','alu_value','recon_shape','delta_voxel','voxel_row_aspect','voxel_slice_aspect','sigma_x','sigma_prox','p','q','T','qggmrf_nbr_wts','auto_regularize_flag','positivity_flag','snr_db','sharpness','granularity','partition_sequence','verbose','use_gpu','max_overrelaxation','use_ror_mask',]
+ParamNames=Literal['geometry_type','file_format','sinogram_shape','delta_det_channel','delta_det_row','det_row_offset','det_channel_offset','sigma_y','alu_unit','alu_value','recon_shape','delta_voxel','voxel_row_aspect','voxel_slice_aspect','sigma_x','sigma_prox','p','q','T','qggmrf_nbr_wts','auto_regularize_flag','positivity_flag','snr_db','sharpness','granularity','partition_sequence','verbose','use_gpu','max_alpha','use_ror_mask',]
 
 # GeometryParams namedtuple classes are created at most ONCE per distinct field-name tuple and
 # cached here, rather than rebuilt on every get_geometry_parameters() call.  jax registers

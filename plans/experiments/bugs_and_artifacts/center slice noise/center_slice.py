@@ -48,7 +48,7 @@ if __name__ == "__main__":
         np.save(filename, converged_result)
         exit(0)
 
-    # ct_model.set_params(partition_sequence=[1,], max_overrelaxation=1)
+    # ct_model.set_params(partition_sequence=[1,], max_alpha=1)
 
     recons = [np.zeros_like(phantom)]
     init_recon = None

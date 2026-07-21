@@ -3602,7 +3602,7 @@ class TomographyModel(ParameterHandler):
         qggmrf_params = tuple((b, sigma_x, p, q, T))
         sigma_prox = self.get_params('sigma_prox')
         recon_shape = self.get_params('recon_shape')
-        max_alpha = self.get_params('max_overrelaxation')
+        max_alpha = self.get_params('max_alpha')
         sparse_back_project = self.sparse_back_project
         sparse_forward_project = self.sparse_forward_project
         try:

@@ -126,7 +126,7 @@ _reconstruction_defaults_dict = {
     'use_gpu': Param('automatic', True),  # DEPRECATED: use configure_devices ('cpu' forces CPU-only).
                                           # Kept (with set_params forwarding) for one deprecation
                                           # cycle so existing scripts and saved params still work.
-    'max_overrelaxation': Param(1.5, False),  # This is used in vcd_subset_updater() to limit the maximum step size
+    'max_alpha': Param(1.5, False),       # Used in vcd_subset_updater() to limit the maximum step size
     'use_ror_mask': Param(True, False),
 }
 

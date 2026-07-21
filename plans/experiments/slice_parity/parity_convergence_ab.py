@@ -83,7 +83,7 @@ class ParityMixin:
         b = mj.get_b_from_nbr_wts(qggmrf_nbr_wts)
         qggmrf_params = tuple((b, sigma_x, p, q, T))
         recon_shape = self.get_params('recon_shape')
-        max_alpha = self.get_params('max_overrelaxation')
+        max_alpha = self.get_params('max_alpha')
         sparse_back_project = self.sparse_back_project
         sparse_forward_project = self.sparse_forward_project
         try:
