@@ -3538,6 +3538,50 @@ class TomographyModel(ParameterHandler):
         return (flat_recon, error_sinogram, ell1_for_partition, alpha_sum / partition.shape[0],
                 delta_sumsq_partition)
 
+    def _get_update_direction(self, forward_grad, prior_grad, forward_hess,
+                              prior_hess, pixel_indices):
+        """Return the update direction for one subset of pixels.
+
+        The per-subset preconditioning seam: the base implementation is the
+        diagonally-preconditioned descent direction
+        -(forward_grad + prior_grad) / (forward_hess + prior_hess); geometry
+        models may override it to apply other preconditioning.  Contract for
+        overrides:
+
+        - Preserve the cost's minimizers: apply only positive(-definite)
+          rescalings of the diagonal direction (per-slice, per-voxel, or
+          low-rank), so the change shapes the iteration path, never the
+          converged solution.
+        - forward_grad and forward_hess are dead after this call (the base
+          implementation donates forward_grad into the result); prior_grad and
+          prior_hess are read again by the caller's line search and must NOT
+          be donated.
+        - Keep device math in module-level jitted helpers with fixed
+          signatures: branch eagerly on host state to SELECT a helper, never
+          inside one; pass run-varying arrays as helper arguments -- a value
+          closed over by a jitted helper is baked in at trace time and goes
+          SILENTLY STALE if later rebound (no retrace, no warning); and add no
+          per-subset host synchronization.
+
+        Args:
+            forward_grad: data-term gradient, shape (num_subset_pixels, num_slices_device).
+            prior_grad: prior gradient, same shape.
+            forward_hess: data-term Hessian diagonal, same shape.
+            prior_hess: prior curvature, same shape (a scalar on the proximal-map path).
+            pixel_indices: flat in-plane indices of this subset, shape
+                (num_subset_pixels,), replicated on the recon mesh -- unused by
+                the base implementation; spatially-aware overrides may gather
+                slice-sharded recon-domain arrays with it (valid precisely
+                because it is the replicated copy; see the caller's
+                recon_indices comment).
+
+        Returns:
+            The update direction, same shape as forward_grad (the caller's line
+            search scales it into the committed update).
+        """
+        return _diagonal_update_direction(forward_grad, prior_grad,
+                                          forward_hess, prior_hess)
+
     def create_vcd_subset_updater(self, fm_hessian, weights, prox_input=None):
         """
         Create a jit-compiled function to update a subset of pixels in the recon and error sinogram.
@@ -3640,8 +3684,11 @@ class TomographyModel(ParameterHandler):
             # Get the forward hessian for this subset
             forward_hess = fm_constant * fm_hessian[recon_indices]
 
-            # Compute update vector update direction in recon domain
-            delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
+            # Compute the update direction in the recon domain -- the per-subset
+            # preconditioning seam (base: the fused diagonally-preconditioned
+            # direction; geometry models may override _get_update_direction).
+            delta_recon_at_indices = self._get_update_direction(
+                forward_grad, prior_grad, forward_hess, prior_hess, recon_indices)
 
             # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
             prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
@@ -3652,12 +3699,14 @@ class TomographyModel(ParameterHandler):
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
 
             # Free the (now-dead) gradient/Hessian buffers BEFORE the memory-heavy forward projection.
-            # forward_grad/forward_hess were last read by delta_recon_at_indices; prior_grad/prior_hess by
+            # forward_grad/forward_hess were last read by _get_update_direction (which donates
+            # forward_grad -- its buffer lives on inside delta_recon_at_indices); prior_grad/prior_hess by
             # prior_linear/prior_quadratic_approx just above.  In eager mode a queued op pins its inputs, so
             # blocking on those two scalars (which transitively force delta_recon_at_indices, hence the
-            # forward_* reads) guarantees all four are consumed; the del then releases them -- ~4 subset-
-            # sized arrays (~11.6 GB at the coarse 1024^3 subset) -- so sparse_forward_project's ~5x-volume
-            # transient has room.  Compute-free on a compute-bound GPU: the host was running ahead anyway
+            # forward_* reads) guarantees all four are consumed; the del then releases the ~3 subset-sized
+            # buffers still held (~8.7 GB at the coarse 1024^3 subset; forward_grad's buffer was donated
+            # into delta_recon_at_indices, so its name holds nothing by now) -- so sparse_forward_project's
+            # ~5x-volume transient has room.  Compute-free on a compute-bound GPU: the host was running ahead anyway
             # and the projection depends on delta_recon_at_indices regardless.  (A no-op if ever jitted.)
             jax.block_until_ready((prior_linear, prior_quadratic_approx))
             del forward_grad, prior_grad, forward_hess, prior_hess
@@ -4019,6 +4068,18 @@ from functools import partial
 def update_recon(cur_flat_recon, cur_indices, cur_delta):
     cur_flat_recon = cur_flat_recon.at[cur_indices].add(cur_delta)
     return cur_flat_recon
+
+
+@partial(jax.jit, donate_argnames='forward_grad')
+def _diagonal_update_direction(forward_grad, prior_grad, forward_hess, prior_hess):
+    # The diagonally-preconditioned descent direction -- the base implementation of
+    # TomographyModel._get_update_direction -- fused into one kernel: written eagerly
+    # this expression would dispatch four ops per subset and materialize the two
+    # subset-sized sum intermediates at the coarse-subset memory high-water mark.
+    # Donating forward_grad lets the output reuse its buffer (it is dead at the call
+    # site).  forward_hess is dead there too but is left undonated: with a single
+    # output only one donation can be honored, and an unusable donation warns.
+    return -((forward_grad + prior_grad) / (forward_hess + prior_hess))
 
 
 @partial(jax.jit, donate_argnames='cur_flat_recon')
