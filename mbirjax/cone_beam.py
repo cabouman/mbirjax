@@ -33,6 +33,22 @@ CONE_SLICE_BAND_SIZE = 128
 # old default, so the forward output is unchanged.
 CONE_FORWARD_DET_ROW_BATCH = 128
 
+# (a, b, p, c) for the slice damping s_k = (c t^p + a b^p)/(t^p + b^p),
+# t_k = L |z_k| / (R dz) -- the "C4" preconditioner (dj-space-domain doc).
+# Not a public parameter; for sweeps set ct_model._dc_damping = (a,b,p,c) or None.
+_DC_DAMPING_DEFAULT = (0.7, 4.0, 1.0, 0.9)
+
+
+@partial(jax.jit, donate_argnames='forward_grad')
+def _dc_damped_update_direction(forward_grad, prior_grad, forward_hess, prior_hess, s_row):
+    # d = -(g - (1 - s_k) gbar_k) / H with gbar_k the H^-1-weighted slice mean of g
+    # over the subset's pixels (axis 0 = unsharded axis, so the reduction is
+    # shard-local).  s == 1 reduces to the base -(g / H); MAP fixed point unchanged.
+    g = forward_grad + prior_grad
+    h_inv = 1.0 / (forward_hess + prior_hess)
+    gbar = jnp.sum(h_inv * g, axis=0) / jnp.sum(h_inv, axis=0)
+    return -(g - ((1.0 - s_row) * gbar)[None, :]) * h_inv
+
 
 class ConeBeamModel(TomographyModel):
     """
@@ -74,10 +90,14 @@ class ConeBeamModel(TomographyModel):
     TomographyModel : The base class from which this class inherits.
     """
 
+    # (a, b, p, c) slice damping; None disables.  See _DC_DAMPING_DEFAULT.
+    _dc_damping = _DC_DAMPING_DEFAULT
+
     def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist, helical_z_shifts=None,
                  use_curved_detector=False):
 
         self.bp_psf_radius = 1
+        self._dc_damping_cache = None
 
         if helical_z_shifts is None:
             # If helical_z_shifts is not provided or None,
@@ -120,6 +140,60 @@ class ConeBeamModel(TomographyModel):
         else:
             magnification = source_detector_dist / source_iso_dist
         return magnification
+
+    def _dc_damping_slice_profile(self):
+        """Placed per-slice damping vector (device-form length), or None if disabled.
+
+        Circular: s_k from t_k = L |z_k| / (R dz).  Helical: view-averaged,
+        s_k = mean_i s(L |z_k - z_i| / (R dz)); reduces to circular when all z_i
+        are equal (untested on real helical data as of 2026-07-23).
+        Host-computed, padded with 1.0, sharded on the recon mesh slice axis, and
+        cached with a host-only key (no per-subset device sync).
+        """
+        cfg = self._dc_damping
+        if cfg is None:
+            return None
+        recon_shape = self.get_params('recon_shape')
+        dv, slice_aspect, oz, R = self.get_params(
+            ['delta_voxel', 'voxel_slice_aspect', 'recon_slice_offset', 'source_iso_dist'])
+        vpa = self.get_params('view_params_array')
+        padded = self.recon_placement.padded_size
+        key = (tuple(cfg), tuple(recon_shape), dv, slice_aspect, oz, R, padded,
+               id(vpa), tuple(str(d) for d in self.recon_placement.devices))
+        if self._dc_damping_cache is not None and self._dc_damping_cache[0] == key:
+            return self._dc_damping_cache[1]
+
+        # Sign matches the projectors' recon_slice_offset - helical_z_shift.
+        z_shifts = np.asarray(vpa[:, 1]) if vpa.shape[0] else np.zeros(1)
+
+        a, b, p, c = cfg
+        nz = recon_shape[2]
+        L = recon_shape[0] * dv
+        dz = slice_aspect * dv
+        z = (np.arange(nz) - (nz - 1) / 2.0) * dz + oz
+
+        def profile(t):
+            return (c * t ** p + a * b ** p) / (t ** p + b ** p)
+
+        if z_shifts.max() - z_shifts.min() == 0:
+            s = profile(L * np.abs(z - z_shifts[0]) / (R * dz))
+        else:
+            t = L * np.abs(z[:, None] - z_shifts[None, :]) / (R * dz)
+            s = profile(t).mean(axis=1)
+        s = np.concatenate([s, np.ones(padded - nz)]).astype(np.float32)
+        s_placed = self._shard_on_axis(jnp.asarray(s), axis=0, what='DC damping profile')
+        self._dc_damping_cache = (key, s_placed)
+        return s_placed
+
+    def _get_update_direction(self, forward_grad, prior_grad, forward_hess,
+                              prior_hess, pixel_indices):
+        # DC damping of each slice's update (qGGMRF and prox paths).
+        s_row = self._dc_damping_slice_profile()
+        if s_row is None:
+            return super()._get_update_direction(forward_grad, prior_grad,
+                                                 forward_hess, prior_hess, pixel_indices)
+        return _dc_damped_update_direction(forward_grad, prior_grad,
+                                           forward_hess, prior_hess, s_row)
 
     def verify_valid_params(self):
         """

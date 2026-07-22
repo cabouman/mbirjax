@@ -120,8 +120,10 @@ _reconstruction_defaults_dict = {
     'positivity_flag': Param(False, False),
     'snr_db': Param(30.0, False),
     'sharpness': Param(1.0, False),
-    'granularity': Param([1, 2, 4, 8, 16, 32, 64, 128, 256], False),
-    'partition_sequence': Param([2, 4, 6, 7], False),
+    # 4 independent 128-subset partitions, cycled after warmup (covers 103
+    # iterations; last entry repeats after that).
+    'granularity': Param([1, 2, 4, 8, 16, 32, 64, 128, 128, 128, 128], False),
+    'partition_sequence': Param([2, 4, 6] + [7, 8, 9, 10] * 25, False),
     'verbose': Param(1, False),
     'use_gpu': Param('automatic', True),  # DEPRECATED: use configure_devices ('cpu' forces CPU-only).
                                           # Kept (with set_params forwarding) for one deprecation
