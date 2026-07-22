@@ -3548,8 +3548,11 @@ class TomographyModel(ParameterHandler):
 
         Rules for overrides:
 
-        - Preserve the cost's minimizers: the result must have the form
-              -(forward_grad + prior_grad) / (positive quantity).
+        - Preserve the cost's minimizers: in order to preserve the cost's minimizers,
+          this function must return a linear positive definite transformation of the total
+          gradient. That is:
+              update_direction = - M (forward_grad + prior_grad)
+          where M is a linear positive definite operator.
         - forward_grad and forward_hess may be consumed here (the base implementation
           donates forward_grad); prior_grad and prior_hess are used again by the
           caller's line search and must not be donated.
