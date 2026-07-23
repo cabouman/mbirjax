@@ -2578,20 +2578,6 @@ class TomographyModel(ParameterHandler):
         """Warn if the sinogram support reaches the detector's edge channels (lateral FoV
         truncation).
 
-        Called from :meth:`auto_set_regularization_params` on the support indicator it already
-        computes, so the check is free and inherits the indicator's calibrated object-vs-air
-        split -- no new threshold (the indicator's safety margin means very faint edge
-        attenuation can go undetected, which is the benign direction).  Support touching the
-        edge channels means material extends past the field of view laterally: every channel
-        is then contaminated (a point at radius r crosses all channels |c| <= r at some view),
-        producing a bright ring at the reconstruction boundary, a whole-interior bias, and
-        slowed convergence (see plans/flash_remediation/).  There is deliberately NO automatic
-        padding for this case: the required padding ("cover the object") is not derivable from
-        geometry or from the truncated data, and under-padding costs orders of magnitude while
-        over-padding costs percent -- so the warning names the manual remedy and its one
-        crucial usage rule instead.  Geometries where edge-touching support is the norm rather
-        than a defect (translation tomography, the image denoiser) override this with a no-op.
-
         Args:
             sino_indicator (ndarray): binary support indicator from :meth:`_get_sino_indicator`,
                 shaped (views, rows, channels) -- typically view-subsampled.
@@ -2603,18 +2589,12 @@ class TomographyModel(ParameterHandler):
             return
         edge_frac = float(np.mean(np.logical_or(sino_indicator[:, :, 0],
                                                 sino_indicator[:, :, -1])))
-        # The 0.02 floor is a robustness guard against stray indicator pixels, not a
-        # calibrated knob: genuine truncation puts support on an edge channel over a
-        # substantial fraction of views.
+        # Detect lateral FoV truncation
         if edge_frac > 0.02 and self.get_params('verbose') > 0:
             warnings.warn(
                 f"Lateral FoV truncation detected: the object support reaches the detector's "
-                f"edge channels in {edge_frac:.0%} of the sampled view-rows.  Expect a bright "
-                f"ring at the reconstruction boundary, an interior bias, and slowed "
-                f"convergence.  To fix, enlarge the reconstruction with "
-                f"scale_recon_shape(s, s) where s >= object_diameter / FoV_diameter, and round "
-                f"s UP -- under-padding is far worse than over-padding.  (With severe "
-                f"truncation a uniform offset remains that no padding can remove.)")
+                f"edge channels in {edge_frac:.0%} of the sampled view-rows.  Consider using "
+                f"scale_recon_shape(s, s) where s >= 1.1 to improve image quality.")
 
     def auto_set_sigma_y(self, sinogram, sino_indicator, weights=1):
         """
@@ -4027,10 +4007,9 @@ class TomographyModel(ParameterHandler):
         projects outside the detector. The method updates the internal `recon_shape` parameter.
 
         For lateral field-of-view truncation (flagged by the "Lateral FoV truncation detected"
-        warning), use ``scale_recon_shape(s, s)`` with ``s >= object_diameter / FoV_diameter`` and
-        round UP: under-padding costs far more image quality than over-padding costs in memory.
-        The cone-beam AXIAL direction normally needs no scaling -- ``auto_set_recon_geometry``
-        already pads the slice axis (tunable via ``axial_pad_fraction``).
+        warning), use ``scale_recon_shape(s, s)`` with ``s`` typically chosen as ``s >= 1.1``.
+        For the cone-beam AXIAL direction, prefer ``axial_pad_fraction`` (default 0 = no
+        padding), which pads the slice axis in ``auto_set_recon_geometry``.
 
         Args:
             row_scale (float): Scale factor for the number of rows in the reconstruction.

@@ -44,9 +44,8 @@ class TestLateralTruncationWarning(unittest.TestCase):
         model = self._cone()
         caught = _caught_truncation(model, _sino((self.V, self.N, self.C), edge_to_edge=True))
         self.assertEqual(len(caught), 1)
-        # The message carries the remedy and its usage rule.
+        # The message names the remedy.
         self.assertIn('scale_recon_shape', str(caught[0].message))
-        self.assertIn('round', str(caught[0].message).lower())
 
     def test_cone_silent_when_contained(self):
         model = self._cone()

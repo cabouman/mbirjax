@@ -66,6 +66,9 @@ def _make_cone_model(num_views=8, num_rows=10, num_channels=16, helical_z_shifts
                           source_detector_dist=4 * num_channels,
                           source_iso_dist=2 * num_channels,
                           helical_z_shifts=helical_z_shifts)
+    # Pin the padding so these tests are independent of the package default.
+    model.set_params(axial_pad_fraction=1.0)
+    model.auto_set_recon_geometry(no_warning=True)
     model.configure_devices(1)
     return model
 

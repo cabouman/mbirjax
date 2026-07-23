@@ -39,17 +39,13 @@ Below are tips on important and useful features:
   or end-slice "flash", along with an interior bias and slowed convergence.  MBIRJAX handles the
   two directions differently:
 
-  - *Axial (slices, cone beam):* handled automatically -- the reconstruction shape pads each
-    end of the slice axis to the deepest z reached by any measured ray.  The padding can be
-    scaled back or disabled with the cone-specific ``axial_pad_fraction`` parameter (a float
-    or a ``(top, bottom)`` pair; default 1 = full padding, 0 disables).  The number of slices
-    added per end is printed at ``verbose >= 1``.
-  - *Lateral (rows and columns):* cannot be sized automatically, because the needed padding depends
-    on how far the object actually extends -- which the truncated data does not determine.  MBIRJAX
-    detects this case and warns during reconstruction.  The remedy is
-    ``model.scale_recon_shape(s, s)`` with ``s >= object_diameter / FoV_diameter``, rounded UP:
-    under-padding is far worse than over-padding.  With severe truncation, a uniform intensity
-    offset can remain that no padding removes.
+  - *Axial (slices, cone beam):* controlled by the cone-specific ``axial_pad_fraction``
+    parameter (a float or a ``(top, bottom)`` pair; default 0 = no padding, 1 pads each
+    end of the slice axis to the deepest z reached by any measured ray).  The number of
+    slices added per end is printed at ``verbose >= 1``.
+  - *Lateral (rows and columns):* MBIRJAX detects the case when the object appears to go
+    outside the detector field of view and generates a warning.
+    In this case, consider using ``model.scale_recon_shape(s, s)`` with ``s >= 1.1`` to improve image quality.
   - For tall volumes that do not fit in memory even after tuning the padding, see
     :meth:`~mbirjax.ConeBeamModel.split_sino_recon`, which reconstructs the volume in two
     overlapping halves.

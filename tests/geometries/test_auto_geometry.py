@@ -133,14 +133,6 @@ class TestConeAxialExtension(unittest.TestCase):
         model = self._model(voxel_row_aspect=1.9)
         self._check(model, 7 + 2, 0.0)
 
-    def test_default_is_fully_padded(self):
-        # The default (axial_pad_fraction = 1) pads fully: base 7 slices + 1 per end.
-        angles = jnp.linspace(0, jnp.pi, self.V, endpoint=False)
-        bare = mj.ConeBeamModel((self.V, self.N, self.C), angles,
-                                source_detector_dist=4.0 * self.C, source_iso_dist=2.0 * self.C)
-        self.assertEqual(float(bare.get_params('axial_pad_fraction')), 1.0)
-        self._check(bare, 9, 0.0)
-
     def test_pad_fraction_zero_is_unpadded(self):
         # fraction 0 adds no padding: base 7 slices, and the offset is EXACTLY the helix
         # center (0 for circular) even with an offset detector, since with no added
