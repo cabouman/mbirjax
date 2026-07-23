@@ -36,6 +36,16 @@ TEST_CASES = {
         sharpness=1.0,
     ),
 
+    # AFRL Nano CT Sample C, Zeiss scan. Settings from mbirjax_applications demo_zeiss.py.
+    'nano_ct_c': dict(
+        type='zeiss',
+        path='/depot/bouman/data/AFRL/lipp/Black_Sheep_tomo-C_CS0.txrm',
+        downsample_factor=1,
+        subsample_view_factor=1,
+        snr_db=35.0,
+        sharpness=2.0,
+    ),
+
     # Lilly autoinjector, NSI scan.
     'lilly_autoinjector': dict(
         type='nsi',
