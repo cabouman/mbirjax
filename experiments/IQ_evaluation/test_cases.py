@@ -40,8 +40,8 @@ TEST_CASES = {
     'nano_ct_c': dict(
         type='zeiss',
         path='/depot/bouman/data/AFRL/lipp/Black_Sheep_tomo-C_CS0.txrm',
-        downsample_factor=1,
-        subsample_view_factor=1,
+        downsample_factor=2,
+        subsample_view_factor=2,
         snr_db=35.0,
         sharpness=2.0,
     ),
@@ -50,8 +50,8 @@ TEST_CASES = {
     'lilly_autoinjector': dict(
         type='nsi',
         path='/depot/bouman/data/Lilly/Autoinjector_HighRes_Horizontal',
-        downsample_factor=4,
-        subsample_view_factor=4,
+        downsample_factor=2,
+        subsample_view_factor=2,
         snr_db=35.0,
         sharpness=1.0,
     ),
