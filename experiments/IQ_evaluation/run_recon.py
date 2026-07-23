@@ -38,8 +38,9 @@ LOADER_KEYS = {
     'pymbir': ('bh_correction', 'auto_crop'),
 }
 RECON_KEYS = ('sharpness', 'snr_db', 'weight_type', 'max_iterations')
-# Model params applied via set_params after loading, e.g. --set recon_slice_offset=0.007
-MODEL_KEYS = ('recon_slice_offset',)
+# Model params applied via set_params after loading, e.g. --set recon_slice_offset=0.007.
+# dc_damping sets the private cone-beam attribute, e.g. --set "dc_damping=(0.7,100,1,0.9)".
+MODEL_KEYS = ('recon_slice_offset', 'dc_damping')
 
 
 def load_sino_and_model(case_type, path, loader_kwargs):
@@ -117,6 +118,9 @@ def run_case(name, tag, overrides, full_res=False, view=False, overwrite=False):
 
     sinogram, ct_model = load_sino_and_model(case_type, path, loader_kwargs)
     ct_model.set_params(sharpness=recon_kwargs['sharpness'], snr_db=recon_kwargs['snr_db'])
+    if 'dc_damping' in model_kwargs:
+        val = model_kwargs.pop('dc_damping')
+        ct_model._dc_damping = tuple(val) if val is not None else None
     if model_kwargs:
         ct_model.set_params(**model_kwargs)
     weights = mj.gen_weights(sinogram, weight_type=recon_kwargs['weight_type'])
