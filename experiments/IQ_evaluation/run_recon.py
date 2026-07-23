@@ -38,6 +38,8 @@ LOADER_KEYS = {
     'pymbir': ('bh_correction', 'auto_crop'),
 }
 RECON_KEYS = ('sharpness', 'snr_db', 'weight_type', 'max_iterations')
+# Model params applied via set_params after loading, e.g. --set recon_slice_offset=0.007
+MODEL_KEYS = ('recon_slice_offset',)
 
 
 def load_sino_and_model(case_type, path, loader_kwargs):
@@ -98,7 +100,8 @@ def run_case(name, tag, overrides, full_res=False, view=False, overwrite=False):
 
     loader_kwargs = {k: settings[k] for k in LOADER_KEYS[case_type] if k in settings}
     recon_kwargs = {k: settings[k] for k in RECON_KEYS if k in settings}
-    unknown = set(settings) - set(LOADER_KEYS[case_type]) - set(RECON_KEYS)
+    model_kwargs = {k: settings[k] for k in MODEL_KEYS if k in settings}
+    unknown = set(settings) - set(LOADER_KEYS[case_type]) - set(RECON_KEYS) - set(MODEL_KEYS)
     if unknown:
         sys.exit(f"Unknown settings for case '{name}' (type {case_type}): {sorted(unknown)}")
 
@@ -110,9 +113,12 @@ def run_case(name, tag, overrides, full_res=False, view=False, overwrite=False):
     print(f'Dataset: {path}')
     print(f'Loader settings: {loader_kwargs}')
     print(f'Recon settings:  {recon_kwargs}')
+    print(f'Model settings:  {model_kwargs}')
 
     sinogram, ct_model = load_sino_and_model(case_type, path, loader_kwargs)
     ct_model.set_params(sharpness=recon_kwargs['sharpness'], snr_db=recon_kwargs['snr_db'])
+    if model_kwargs:
+        ct_model.set_params(**model_kwargs)
     weights = mj.gen_weights(sinogram, weight_type=recon_kwargs['weight_type'])
 
     print('\n********** FDK reconstruction **********')
