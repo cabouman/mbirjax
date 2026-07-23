@@ -1,12 +1,15 @@
 ### Run baseline or variation reconstructions for the IQ evaluation test cases.
 #
-# Baselines are defined in test_cases.py. Each run writes FDK + MBIR recons and a
-# params.json snapshot to output/<case>/<tag>/. The 'baseline' tag is the stable
-# reference; use --tag/--set for comparison runs so baselines are never disturbed.
+# Cases are defined in test_cases.py; per-case downsampling there is the low-res
+# setting, and --full-res overrides downsampling and view subsampling to 1. Each
+# run writes FDK + MBIR recons and a params.json snapshot to output/<case>/<tag>/.
+# run_low_res.sh and run_full_res.sh run all cases under the 'low_res' and
+# 'full_res' tags; use --tag/--set for other comparison runs.
 #
 # Examples:
 #   python run_recon.py --list
 #   python run_recon.py --case bga_no_hart
+#   python run_recon.py --case bga_no_hart --full-res
 #   python run_recon.py --case bga_no_hart --tag sharp2.0 --set sharpness=2.0
 #   python run_recon.py --all
 
@@ -81,12 +84,17 @@ def parse_overrides(pairs):
     return overrides
 
 
-def run_case(name, tag, overrides, view=False, overwrite=False):
+def run_case(name, tag, overrides, full_res=False, view=False, overwrite=False):
     settings = dict(DEFAULTS)
     settings.update(TEST_CASES[name])
-    settings.update(overrides)
     case_type = settings.pop('type')
     path = settings.pop('path')
+    if full_res:
+        # Native resolution; cases whose loader has no downsampling options are unchanged.
+        for key in ('downsample_factor', 'subsample_view_factor'):
+            if key in LOADER_KEYS[case_type]:
+                settings[key] = 1
+    settings.update(overrides)
 
     loader_kwargs = {k: settings[k] for k in LOADER_KEYS[case_type] if k in settings}
     recon_kwargs = {k: settings[k] for k in RECON_KEYS if k in settings}
@@ -154,6 +162,8 @@ def main():
     parser.add_argument('--tag', default='baseline', help='Output subdirectory name (default: baseline)')
     parser.add_argument('--set', dest='overrides', action='append', metavar='KEY=VALUE',
                         help='Override a setting, e.g. --set sharpness=2.0 (repeatable)')
+    parser.add_argument('--full-res', action='store_true',
+                        help='Set downsample_factor and subsample_view_factor to 1')
     parser.add_argument('--view', action='store_true', help='Open slice viewer when done')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite an existing output tag')
     args = parser.parse_args()
@@ -172,7 +182,7 @@ def main():
     names = sorted(TEST_CASES) if args.all else [args.case]
     for name in names:
         run_case(name, args.tag, parse_overrides(args.overrides),
-                 view=args.view, overwrite=args.overwrite)
+                 full_res=args.full_res, view=args.view, overwrite=args.overwrite)
 
 
 if __name__ == '__main__':

@@ -17,7 +17,7 @@ DEFAULTS = dict(
 )
 
 TEST_CASES = {
-    # Purdue BGA (solder drops), equiangle scan. Settings carried over from center_slice_zeiss.py.
+    # Purdue BGA (solder drops), Zeiss equiangle scan.
     'bga_no_hart': dict(
         type='zeiss',
         path='/depot/bouman/data/Zeiss/purdue_BGA/17U1-250TC-Normal_Tomo_No_HART.txrm',
@@ -36,7 +36,7 @@ TEST_CASES = {
         sharpness=1.0,
     ),
 
-    # Lilly autoinjector, NSI scan. PROVISIONAL baseline - adjust downsampling after first run.
+    # Lilly autoinjector, NSI scan.
     'lilly_autoinjector': dict(
         type='nsi',
         path='/depot/bouman/data/Lilly/Autoinjector_HighRes_Horizontal',
@@ -45,7 +45,4 @@ TEST_CASES = {
         snr_db=35.0,
         sharpness=1.0,
     ),
-
-    # Candidates to add later (see center_slice_zeiss.py for the full Zeiss list):
-    # 'bga_hart': /depot/bouman/data/Zeiss/purdue_BGA/17U1-250TC-Normal_Tomo_HART_360_HART.txrm
 }
