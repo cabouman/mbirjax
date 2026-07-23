@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import h5py
 
 
-def get_sino_and_model(filename, *, bh_correction=True, auto_crop=False):
+def get_sino_and_model(filename, *, bh_correction=True, auto_crop=False, subsample_view_factor=1):
     """
     Load an ORNL HDF5 scan, compute its sinogram, and return a ready-to-reconstruct model.
 
@@ -19,6 +19,7 @@ def get_sino_and_model(filename, *, bh_correction=True, auto_crop=False):
             parameters. Defaults to True.
         auto_crop (bool, optional): If True, detect and remove blank sinogram margins after the sinogram
             is computed, shrinking the reconstruction. Defaults to False.
+        subsample_view_factor (int, optional): Keep every Nth view (and its angle). Defaults to 1.
 
     Returns:
         tuple: ``(sino, model)`` where
@@ -38,6 +39,10 @@ def get_sino_and_model(filename, *, bh_correction=True, auto_crop=False):
     """
     import mbirjax.preprocess as mjp
     sino, required_params, optional_params = _compute_sino_and_params(filename, bh_correction=bh_correction)
+    if subsample_view_factor > 1:
+        sino = sino[::subsample_view_factor]
+        required_params['angles'] = required_params['angles'][::subsample_view_factor]
+        required_params['sinogram_shape'] = sino.shape
     return mjp.finalize_model(sino, required_params, optional_params, auto_crop=auto_crop)
 
 

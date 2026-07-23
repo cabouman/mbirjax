@@ -1,15 +1,17 @@
 ### Run baseline or variation reconstructions for the IQ evaluation test cases.
 #
 # Cases are defined in test_cases.py; per-case downsampling there is the low-res
-# setting, and --full-res overrides downsampling and view subsampling to 1. Each
-# run writes FDK + MBIR recons and a params.json snapshot to output/<case>/<tag>/.
-# run_low_res.sh and run_full_res.sh run all cases under the 'low_res' and
-# 'full_res' tags; use --tag/--set for other comparison runs.
+# setting. --full-res sets detector downsampling to 1 and uses the case's
+# full_res_subsample_view_factor for views; --full-views forces view factor 1.
+# Each run writes FDK + MBIR recons and a params.json snapshot to
+# output/<case>/<tag>/. run_low_res.sh and run_full_res.sh run all cases under
+# the 'low_res' and 'full_res' tags; use --tag/--set for other comparison runs.
 #
 # Examples:
 #   python run_recon.py --list
 #   python run_recon.py --case bga_no_hart
 #   python run_recon.py --case bga_no_hart --full-res
+#   python run_recon.py --case bga_no_hart --full-res --full-views --tag full_res_all_views
 #   python run_recon.py --case bga_no_hart --tag sharp2.0 --set sharpness=2.0
 #   python run_recon.py --all
 
@@ -35,7 +37,7 @@ LOADER_KEYS = {
               'crop_pixels_top', 'crop_pixels_bottom', 'bg_option', 'zinger_correction', 'auto_crop'),
     'nsi': ('downsample_factor', 'subsample_view_factor', 'crop_pixels_sides',
             'crop_pixels_top', 'crop_pixels_bottom', 'auto_crop', 'offset_correction'),
-    'pymbir': ('bh_correction', 'auto_crop'),
+    'pymbir': ('bh_correction', 'auto_crop', 'subsample_view_factor'),
 }
 RECON_KEYS = ('sharpness', 'snr_db', 'weight_type', 'max_iterations')
 # Model params applied via set_params after loading, e.g. --set recon_slice_offset=0.007.
@@ -87,16 +89,19 @@ def parse_overrides(pairs):
     return overrides
 
 
-def run_case(name, tag, overrides, full_res=False, view=False, overwrite=False):
+def run_case(name, tag, overrides, full_res=False, full_views=False, view=False, overwrite=False):
     settings = dict(DEFAULTS)
     settings.update(TEST_CASES[name])
     case_type = settings.pop('type')
     path = settings.pop('path')
+    # Per-case view subsampling for --full-res (default 1); --full-views forces 1.
+    full_res_view_factor = settings.pop('full_res_subsample_view_factor', 1)
     if full_res:
-        # Native resolution; cases whose loader has no downsampling options are unchanged.
         for key in ('downsample_factor', 'subsample_view_factor'):
             if key in LOADER_KEYS[case_type]:
                 settings[key] = 1
+        if not full_views and 'subsample_view_factor' in LOADER_KEYS[case_type]:
+            settings['subsample_view_factor'] = full_res_view_factor
     settings.update(overrides)
 
     loader_kwargs = {k: settings[k] for k in LOADER_KEYS[case_type] if k in settings}
@@ -173,7 +178,9 @@ def main():
     parser.add_argument('--set', dest='overrides', action='append', metavar='KEY=VALUE',
                         help='Override a setting, e.g. --set sharpness=2.0 (repeatable)')
     parser.add_argument('--full-res', action='store_true',
-                        help='Set downsample_factor and subsample_view_factor to 1')
+                        help="Full detector resolution with the case's full_res_subsample_view_factor")
+    parser.add_argument('--full-views', action='store_true',
+                        help='With --full-res: use all views (view factor 1)')
     parser.add_argument('--view', action='store_true', help='Open slice viewer when done')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite an existing output tag')
     args = parser.parse_args()
@@ -192,7 +199,8 @@ def main():
     names = sorted(TEST_CASES) if args.all else [args.case]
     for name in names:
         run_case(name, args.tag, parse_overrides(args.overrides),
-                 full_res=args.full_res, view=args.view, overwrite=args.overwrite)
+                 full_res=args.full_res, full_views=args.full_views,
+                 view=args.view, overwrite=args.overwrite)
 
 
 if __name__ == '__main__':

@@ -8,6 +8,10 @@ snr_db and sharpness are set explicitly in every case (they are deliberately NOT
 in DEFAULTS, so adding a case without them fails loudly). Settings not listed in
 a case fall back to DEFAULTS. Any loader kwarg for the case's type (see
 LOADER_KEYS in run_recon.py) may be added per case.
+
+full_res_subsample_view_factor is the view subsampling used by --full-res runs,
+chosen per case so num_views is roughly 1/4 to 1/2 of num_det_channels;
+--full-views overrides it to 1.
 """
 
 # Shared recon defaults; individual cases may override.
@@ -23,6 +27,7 @@ TEST_CASES = {
         path='/depot/bouman/data/Zeiss/purdue_BGA/17U1-250TC-Normal_Tomo_No_HART.txrm',
         downsample_factor=3,
         subsample_view_factor=5,
+        full_res_subsample_view_factor=4,   # 2401 views -> 601, 1532 channels
         snr_db=35.0,
         sharpness=1.5,
     ),
@@ -32,6 +37,7 @@ TEST_CASES = {
         type='pymbir',
         path='/depot/bouman/data/ORNL/pymbir/hfn_scan/TCR_Single_Channeled_SRC_M_2019-03-18_13-08-09.hdf5',
         bh_correction=True,
+        full_res_subsample_view_factor=2,   # 1050 views -> 525, 1024 channels
         snr_db=35.0,
         sharpness=1.0,
     ),
@@ -52,6 +58,7 @@ TEST_CASES = {
         path='/depot/bouman/data/Lilly/Autoinjector_HighRes_Horizontal',
         downsample_factor=2,
         subsample_view_factor=2,
+        full_res_subsample_view_factor=2,   # 1800 views -> 900, 1880 channels
         snr_db=35.0,
         sharpness=1.0,
     ),
