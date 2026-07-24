@@ -577,7 +577,10 @@ def _correct_plastic_sinogram(measured_sino, plastic_sino_est, metal_sino_est, t
     if view_mask is None:
         mean_plastic_coef = jnp.mean(Sp)
     else:
-        mean_plastic_coef = jnp.sum(Sp * view_mask) / num_real_pixels
+        # The element count enters the computation as a FLOAT: a Python int operand is converted
+        # to int32 by jax (x64 disabled), which overflows for sinograms above 2^31 elements
+        # (~2.1e9 -- e.g. 1600x1617x1422 = 3.7e9).  Same idiom as get_forward_model_loss.
+        mean_plastic_coef = jnp.sum(Sp * view_mask) / float(num_real_pixels)
     Sp_floor = gamma * mean_plastic_coef
 
     # A negative mean would be non-physical and may indicate instability in the algorithm

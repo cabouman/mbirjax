@@ -20,6 +20,7 @@ import jax
 from jax.errors import JaxRuntimeError
 
 from conftest import preferred_devices, assert_sharded_allclose
+from _platform import skip_unless_cpu, skip_unless_multidevice
 
 
 def _capture_jax_error_guidance(model, message):
@@ -208,19 +209,15 @@ class TestModelPlacements(unittest.TestCase):
         self.assertEqual(int(model5.get_params('recon_shape')[2]), 5)
         self.assertEqual(model5._auto_device_count(4), 3)
 
+    @skip_unless_cpu
+    @skip_unless_multidevice
     def test_auto_shards_cpu_by_default(self):
         # AUTOMATIC selection shards across CPU devices BY DEFAULT: a bare model on a
         # multi-CPU-device host auto-shards exactly like a multi-GPU box (the platform-uniform auto
         # policy -- a platform-dependent policy is how "sharded + X" gaps stayed invisible to the
         # CPU suite).  configure_devices(1) is the way to opt back out to single-device.  Note: this
-        # builds bare models directly (not _make_model, which pins a single device).
-        if preferred_devices(2) is None:
-            self.skipTest("need >= 2 devices")
-        try:
-            if len(jax.devices('gpu')) > 0:
-                self.skipTest("GPU present: auto uses GPUs; this exercises the CPU default")
-        except RuntimeError:
-            pass
+        # builds bare models directly (not _make_model, which pins a single device).  skip_unless_cpu
+        # covers the "GPU present -> auto uses GPUs" case; skip_unless_multidevice the ">= 2 devices".
         angles = np.linspace(0, np.pi, 8, endpoint=False)
         idx_shape = (8, 8, 16)   # num_views = num_slices = 8 -> gcd 8, shardable across CPU devices
 

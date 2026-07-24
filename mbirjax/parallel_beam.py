@@ -8,6 +8,8 @@ import jax.numpy as jnp
 import mbirjax as mj
 import mbirjax._sharding as mjs
 from mbirjax import TomographyModel, tomography_utils
+from mbirjax.projectors import (horizontal_fan_project, horizontal_fan_back,
+                                SORTED_CHANNEL_REDUCE_MIN_COLS)
 
 ParallelBeamParamNames = mj.ParamNames | Literal['angles']
 
@@ -69,6 +71,16 @@ class ParallelBeamModel(TomographyModel):
         magnification = 1.0
         return magnification
 
+    _PALLAS_BACK_COEFF_POWERS = (1, 2)     # exact-class weights: both powers pallas
+
+    def _pallas_back_project_single_device(self, sinogram, pixel_indices,
+                                           coeff_power=1, output_device=None):
+        """Parallel's pallas n=1 back driver: the register-tile row kernel."""
+        from mbirjax import _pallas_kernels
+        return _pallas_kernels.back_project_single_device(
+            self, sinogram, pixel_indices, coeff_power=coeff_power,
+            output_device=output_device)
+
     def _back_project_view_shard_to_band(self, view_data, pixel_indices, g0, g1,
                                          owned_view_indices, coeff_power):
         """Parallel-beam specialization of the sharded slice-band back projection (overrides the
@@ -77,22 +89,104 @@ class ParallelBeamModel(TomographyModel):
         (the kernel sizes its output slices from the input rows) -- cheaper than the base banded
         path, which would process the full detector rows.  Returns the per-view-owner partial band
         ``(num_pixels, g1 - g0)``."""
+        if getattr(self.tiles, 'back_pallas_band', False):
+            # Pallas register-tile kernel on the cropped band (value-equal to the XLA
+            # path up to summation order; gated in tests/test_pallas_kernels.py).
+            from mbirjax import _pallas_kernels
+            return _pallas_kernels.back_project_single_device(
+                self, view_data[:, g0:g1, :], pixel_indices, coeff_power=coeff_power,
+                owned_view_indices=owned_view_indices)
         return self.projector_functions.sparse_back_project(
             view_data[:, g0:g1, :], pixel_indices,
             owned_view_indices=owned_view_indices, coeff_power=coeff_power)
+
+    def _pallas_forward_project(self, voxel_values, pixel_indices,
+                                owned_view_indices=()):
+        """Parallel's pallas forward driver (all flows: n=1 whole-model and the
+        n>=2 per-owner banded calls both arrive via the wrapper's unified dispatch;
+        the increment-4 per-override dispatch was folded into it)."""
+        from mbirjax import _pallas_kernels
+        return _pallas_kernels.forward_project_subset(
+            self, voxel_values, pixel_indices, owned_view_indices=owned_view_indices)
+
+    # Measured GPU forward tiling (band x pixel-batch grid: fwd_band_pixel_sweep.py; results
+    # digest in plans/projector_kernels/fwd_back_findings.md).  Model-level forward
+    # speedups of 2-3.6x over the inherited defaults.  CPU measured the OPPOSITE direction
+    # on both knobs, so these apply to GPU layouts only; the base (CPU) policy is untouched.
+    _FWD_SLICE_BAND_GPU = 256    # the measured knee; whole-shard bands are WORSE at scale
+    _FWD_PIXEL_BATCH_GPU = 8192  # larger sorts use the GPU better + fewer scan-carry steps;
+                                 # 16384 is NOT uniformly better (non-monotonic in size)
+
+    def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
+        """Parallel-beam tiling: GPU forward gets the measured band/pixel-batch/sorted-reduce
+        combination (constants above); everything else inherits the base policy."""
+        tiles = super()._select_tile_policy(on_gpu, num_views, num_slices, n_devices)
+        if not on_gpu:
+            return tiles
+        # The sorted channel reduction (defined at projectors.channel_scatter_reduce) pays a
+        # per-call sort that amortizes over the band width;
+        # with the 256-band policy the bands are wide everywhere except tiny problems, where the
+        # BALANCED band width (bands split ±1, so ~slices_per_dev/n_bands) can drop below the
+        # measured crossover and the scatter-add stays faster.
+        slices_per_dev = -(-num_slices // max(1, n_devices))
+        band = min(self._FWD_SLICE_BAND_GPU, max(1, slices_per_dev))
+        balanced_band = slices_per_dev // max(1, -(-slices_per_dev // band))
+        # The pallas back kernel (single-device path; _pallas_kernels.py): 16-26x
+        # kernel-level / 9.07x composed over the stacked gather on H100, all
+        # granularities (its per-call setup is ~free -- the centers exist for the XLA
+        # path anyway).  is_available() gates on GPU + measured arch + a probe compile,
+        # so unsupported toolchains silently keep the XLA path.
+        from mbirjax import _pallas_kernels
+        return tiles._replace(
+            fwd_slice_band=self._FWD_SLICE_BAND_GPU,
+            fwd_pixel_batch=self._FWD_PIXEL_BATCH_GPU,
+            sort_by_channel=balanced_band >= SORTED_CHANNEL_REDUCE_MIN_COLS,
+            # fwd pallas serves ALL single-device forward calls, fine tail through
+            # full grid: the 2026-07-13 P x band sweep found no crossover anywhere
+            # (min 1.34x, full grid 3.2-3.8x; plans/projector_kernels/
+            # fwd_guard_sweep.md), so the wrapper has no pixel-count guard.
+            # Multi-device forward still goes through the banded per-owner path
+            # (wave 2).
+            fwd_pallas=_pallas_kernels.is_available() and n_devices == 1,
+            # Also n=1-gated: the back dispatch lives in the single-device driver,
+            # which multi-device recons never reach (they use the banded path), so an
+            # ungated flag would only make the pallas token/get_compute_config LIE at
+            # n>=2 -- measured: the n>=2 walls are pure XLA band path.
+            back_pallas=_pallas_kernels.is_available() and n_devices == 1,
+            # The multi-device band path's per-owner back calls (n>=2 only -- at n=1
+            # the short-circuit takes back_pallas above): the shipped register-tile
+            # kernel measured 8.9x on the per-owner band sweep (w2_band_ab.py, job
+            # 13505309; parallel rows == slices, so the n=1 kernel IS the band
+            # kernel).  Same availability gate; the flag is truthful per reachability.
+            back_pallas_band=_pallas_kernels.is_available() and n_devices > 1,
+            # The multi-device band path's per-owner FORWARD calls (n>=2 only -- at n=1
+            # the single-device forward takes fwd_pallas above): the same pallas forward
+            # kernel, measured 1.7-3.8x at exactly the banded-forward width (band 256;
+            # plans/projector_kernels/fwd_guard_sweep.md, the band-256 column).  Same
+            # availability gate; truthful per reachability (mutually exclusive with
+            # fwd_pallas by n_devices).
+            fwd_pallas_band=_pallas_kernels.is_available() and n_devices > 1,
+            # Back kernel: one stacked gather covering every psf tap.  A GPU win because the
+            # back kernel is almost entirely gather-bound and parallel beam has no vertical
+            # fan behind which the gather latency could hide; measured WORSE on CPU, which
+            # keeps the per-tap loop (see projectors.horizontal_fan_back).  Remains the
+            # fallback (and the n>1 path) when back_pallas is off.
+            back_stacked_gather=True,
+        )
 
     def _forward_project_to_view_shards(self, devices, n_dev, num_slices, num_pixels,
                                      recon_shard_info, view_ranges, local_pixels):
         """Parallel-beam specialization of the sharded forward projection (overrides the base
         gather+monolithic path): band the slice axis and broadcast each band; each view-owner
         projects detector rows [g0:g1) from the band (row r <- slice r) and concatenates its
-        row-bands -- never gathering the full cylinder.  Band sizing mirrors back projection
-        (see _slice_band_length); forward's transient is even smaller (no n_dev-way gather), so
-        reusing the back sizing is safe and conservative."""
+        row-bands -- never gathering the full cylinder.  Band sizing: the tile policy's
+        fwd_slice_band when set (GPU: 256, measured -- see _select_tile_policy), else the
+        memory-driven back formula (safe and conservative; forward's transient is even smaller,
+        no n_dev-way gather)."""
         slices_per_dev = num_slices // n_dev
         band_len = self._slice_band_length(
             slices_per_dev, n_dev, num_pixels,
-            fixed_band=getattr(self, 'forward_project_slice_band', None))
+            fixed_band=self._fixed_slice_band('fwd'))
         band_bounds = self._balanced_slice_bounds(slices_per_dev, band_len)
         return self._forward_project_all_bands(
             band_bounds, recon_shard_info, view_ranges, local_pixels, devices)
@@ -199,7 +293,8 @@ class ParallelBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, angle, n_p_centers,
+                                                projector_params):
         """
         Apply a parallel beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a parallel beam maps a cylinder slice to a detector row.
@@ -211,6 +306,9 @@ class ParallelBeamModel(TomographyModel):
             pixel_indices (jax array of int):  1D vector of shape (len(pixel_indices), ) holding the indices into
                 the flattened array of size num_rows x num_cols.
             angle (float):  Angle for this view
+            n_p_centers (jax array of int): (num_pixels,) integer channel centers for this view,
+                computed OUTSIDE this program (see compute_channel_coordinate) -- the
+                concrete-input contract; do not recompute in-kernel.
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -223,48 +321,31 @@ class ParallelBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
-        L_max = jnp.minimum(1.0, W_p_c)
+        n_p, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Size the detector-row axis from the actual input cylinder, not from
-        # projector_params.sinogram_shape, so that a caller may pass a slice-band
-        # of the cylinder (a contiguous subset of slices) and get back only the
-        # corresponding detector rows.  Slice r maps only to detector row r in
-        # parallel beam (the horizontal projection below mixes channels, never
-        # rows), so restricting the input slices restricts the output rows with no
-        # other change.  When the full cylinder is passed this equals num_det_rows,
-        # so single-device behavior is unchanged.  This is the adjoint of the
-        # row-sliced back projection kernel, and is what lets sharded forward
-        # projection stream the slice axis in bands.
-        num_input_slices = voxel_values.shape[1]
-
-        # The horizontal projection scatters each pixel's contribution into its
-        # detector channel n.  Build the view CHANNEL-MAJOR -- (channels, slices)
-        # rather than (slices, channels) -- so the scatter writes a CONTIGUOUS row
-        # (stride 1) instead of a column (stride num_det_channels).  A column stride
-        # equal to a power-of-2 num_det_channels (e.g. 256/1024/2048 detectors)
-        # aliases the CPU cache and runs several times slower at large slice counts;
-        # the contiguous row access avoids that entirely and is faster regardless of
-        # the channel count.  Transpose back to (slices, channels) on return (one
-        # cheap pass, fused by XLA) so the output layout and all callers are
-        # unchanged.
-        sinogram_view_T = jnp.zeros((num_det_channels, num_input_slices))
-
-        # Do the projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius+1):
-            n = n_p_center + n_offset
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
-
+        # The output detector-row axis is sized from the actual input cylinder
+        # (values.shape[1] inside the fan helper), NOT from projector_params: parallel beam
+        # maps slice r only to detector row r, so a caller may pass a slice-BAND of the
+        # cylinder and get back just the corresponding detector rows -- this is what lets
+        # sharded forward projection stream the slice axis in bands (adjoint of the
+        # row-sliced back kernel below).
+        #
+        # The horizontal projection is the shared trapezoid-rule fan (see
+        # horizontal_fan_project in projectors.py, which also owns the channel-major
+        # layout rationale and the sort_by_channel branch -- decided by the tile policy,
+        # trace-time since projector_params is static).  Parallel beam's weight scale is the
+        # in-plane voxel area over the footprint length, a per-view scalar.
+        weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
+        sinogram_view_T = horizontal_fan_project(n_p, n_p_centers, W_p_c, weight_scale,
+                                                 voxel_values, num_det_channels, gp.psf_radius,
+                                                 use_sorted=projector_params.sort_by_channel)
         return sinogram_view_T.T
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, angle, projector_params, coeff_power=1):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, angle, n_p_centers,
+                                             projector_params, coeff_power=1):
         """
         Apply parallel back projection to a single sinogram view and return the resulting voxel cylinders.
 
@@ -273,6 +354,8 @@ class ParallelBeamModel(TomographyModel):
                 2D jax array of shape (num_det_rows)x(num_det_channels)
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
             angle (float): The projection angle in radians for this view.
+            n_p_centers (jax array of int): (num_pixels,) integer channel centers for this view --
+                the SAME concrete centers the forward kernel uses (see compute_channel_coordinate).
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 when computing Hessian diagonal.
@@ -285,49 +368,58 @@ class ParallelBeamModel(TomographyModel):
         gp = projector_params.geometry_params
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
-        num_pixels = pixel_indices.shape[0]
-
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
-        L_max = jnp.minimum(1.0, W_p_c)
+        n_p, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(pixel_indices, angle, projector_params)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Size the slice axis from the actual input view, not from
-        # projector_params.sinogram_shape, so that a caller may pass a row-sliced
-        # view (a contiguous subset of detector rows) and get back only the
-        # corresponding recon slices.  Detector row r maps only to slice r in
-        # parallel beam (the horizontal projection below mixes channels, never
-        # rows), so restricting the input rows restricts the output slices with no
-        # other change.  When the full view is passed this equals num_det_rows, so
-        # single-device behavior is unchanged.  This is what lets sharded back
-        # projection stream the slice axis in bands.
-        num_input_rows = sinogram_view.shape[0]
-
-        # The horizontal projection gathers each pixel's detector channel n.  Read
-        # the view CHANNEL-MAJOR -- transpose to (channels, rows) up front so the
-        # per-pixel gather reads a CONTIGUOUS row (stride 1) instead of a column
-        # (stride num_det_channels).  A power-of-2 num_det_channels column stride
-        # aliases the CPU cache and runs several times slower at large row counts;
-        # the contiguous access avoids it (the adjoint of the forward kernel's
-        # channel-major scatter).
+        # The output slice axis is sized from the actual input view (sino_T.shape[1] inside
+        # the fan helper), NOT from projector_params: detector row r maps only to slice r,
+        # so a caller may pass a row-SLICED view and get back just the corresponding recon
+        # slices -- this is what lets sharded back projection stream the slice axis in bands
+        # (adjoint of the slice-banded forward above).
+        #
+        # The gather itself is the shared adjoint trapezoid-rule fan (see horizontal_fan_back
+        # in projectors.py, which owns the channel-major layout rationale and the
+        # back_stacked_gather branch -- ON for parallel beam on GPU, where the back kernel
+        # has no vertical fan to hide the gather behind; decided by the tile policy,
+        # trace-time since projector_params is static).
         sinogram_view_T = sinogram_view.T            # (num_det_channels, num_input_rows)
-        det_voxel_cylinder = jnp.zeros((num_pixels, num_input_rows))
-        # Do the horizontal projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-            n = n_p_center + n_offset
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1.0) / 2.0 - abs_delta_p_c_n, 0.0, L_max)
-            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            A_chan_n = A_chan_n ** coeff_power
-            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view_T[n, :])
+        weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
+        return horizontal_fan_back(sinogram_view_T, n_p, n_p_centers, W_p_c, weight_scale,
+                                   gp.psf_radius, coeff_power=coeff_power,
+                                   use_stacked=projector_params.back_stacked_gather)
 
-        return det_voxel_cylinder
+    @staticmethod
+    def compute_hfan_data(pixel_indices, single_view_params, projector_params):
+        """(n_p, W_p_c, weight_scale) for one view -- the horizontal fan's float chain
+        plus the geometry weight scale, for consumers that rebuild the trapezoid weights
+        OUTSIDE the projector programs (the pallas back path; _pallas_kernels.py).
+        Reuses compute_proj_data verbatim so the weights match the in-kernel ones by
+        construction (the same consistency contract as compute_channel_coordinate)."""
+        gp = projector_params.geometry_params
+        n_p, W_p_c, footprint_xy = ParallelBeamModel.compute_proj_data(
+            pixel_indices, single_view_params, projector_params)
+        delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
+        weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
+        return n_p, W_p_c, weight_scale
+
+    @staticmethod
+    def compute_channel_coordinate(pixel_indices, single_view_params, projector_params):
+        """Continuous projected channel coordinate n_p for one view (the float chain whose
+        rounded value is the horizontal fans' integer center; see the base-class docstring
+        for the concrete-input contract).  Reuses compute_proj_data verbatim so the
+        centers are consistent with the in-kernel weights by construction."""
+        return ParallelBeamModel.compute_proj_data(pixel_indices, single_view_params,
+                                                   projector_params)[0]
 
     @staticmethod
     def compute_proj_data(pixel_indices, angle, projector_params):
         """
-        Compute the quantities n_p, n_p_center, W_p_c, cos_alpha_p_xy needed for vertical projection.
+        Compute the quantities n_p, W_p_c, footprint_xy needed for horizontal projection.
+
+        The integer center round(n_p) is deliberately NOT computed here: the projector
+        wrappers round n_p OUTSIDE the projector programs (via compute_channel_coordinate)
+        and pass the concrete centers into the kernels -- the horizontal-fan rounding-bug fix.
 
         Args:
             pixel_indices (1D jax array of int):  indices into flattened array of size num_rows x num_cols.
@@ -335,7 +427,7 @@ class ParallelBeamModel(TomographyModel):
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
-            n_p, n_p_center, W_p_c, footprint_xy
+            n_p, W_p_c, footprint_xy
         """
         # Get all the geometry parameters - we use gp since geometry parameters is a named tuple and we'll access
         # elements using, for example, gp.delta_det_channel, so a longer name would be clumsy.
@@ -353,9 +445,9 @@ class ParallelBeamModel(TomographyModel):
 
         det_center_channel = (num_det_channels - 1) / 2.0  # num_of_cols
 
-        # Calculate indices on the detector grid
+        # Calculate indices on the detector grid.  NOTE: no round here -- the integer center
+        # is computed outside the projector programs (see compute_channel_coordinate).
         n_p = (x_p + gp.det_channel_offset) / gp.delta_det_channel + det_center_channel
-        n_p_center = jnp.round(n_p).astype(int)
 
         # Compute footprint for row and columns
         footprint_xy = jnp.maximum(jnp.abs(jnp.cos(angle)) * gp.delta_voxel, jnp.abs(jnp.sin(angle)) * delta_voxel_row)
@@ -363,7 +455,7 @@ class ParallelBeamModel(TomographyModel):
         # Compute projected voxel width along columns and rows (in fraction of detector size)
         W_p_c = footprint_xy / gp.delta_det_channel
 
-        proj_data = (n_p, n_p_center, W_p_c, footprint_xy)
+        proj_data = (n_p, W_p_c, footprint_xy)
 
         return proj_data
 

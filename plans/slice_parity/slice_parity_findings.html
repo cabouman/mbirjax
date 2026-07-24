@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Slice-parity alternation: findings</title>
+<!-- Page SOURCE only: figures are not in the repo.  The complete page (with charts)
+     is published at /depot/bouman/www/mbirjax/slice_parity_findings/ and the charts
+     live in that directory's figs/. -->
+<style>
+  body{font-family:sans-serif;max-width:1200px;margin:auto;padding:0 1em;line-height:1.45}
+  img{max-width:100%}
+  h2{margin-top:2em;border-bottom:1px solid #ddd;padding-bottom:0.2em}
+  h3{margin-top:1.6em}
+  table{border-collapse:collapse;margin:0.5em 0}
+  td,th{border:1px solid #bbb;padding:3px 10px;text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  .cap{color:#555;font-size:0.9em;margin-top:0.2em}
+  .nav{font-size:0.95em;color:#333}
+  .key{background:#f4f6f8;border-left:4px solid #2563eb;padding:0.6em 1em;margin:1em 0}
+  .win{color:#166534;font-weight:bold}
+  .lose{color:#9a3412;font-weight:bold}
+</style>
+</head>
+<body>
+
+<h1>Slice-parity alternation: does splitting even/odd slices help cone-beam MBIR?</h1>
+
+<p class="nav"><b>Contents:</b>
+<a href="#overview">Overview</a> &middot;
+<a href="#idea">The idea and why it might work</a> &middot;
+<a href="#methods">Data and methods</a> &middot;
+<a href="#attribution">Attribution: the null control</a> &middot;
+<a href="#state">Parity is state-dependent</a> &middot;
+<a href="#realdata">On real data: a quality option</a> &middot;
+<a href="#cost">Quality, not speed &mdash; and kernel-gated</a> &middot;
+<a href="#recommendation">Recommendation</a> &middot;
+<a href="#provenance">Provenance</a></p>
+
+<h2 id="overview">Overview and summary</h2>
+<p>
+MBIRJAX reconstructs by updating scattered in-plane subsets of voxel cylinders (VCD).
+Its per-block surrogate handles the prior exactly but ignores one coupling: the
+<b>data term's axial (slice-to-slice) structure</b>.  In cone-beam geometry that
+coupling is what produces the "center-slice" noise near the fan plane.  <b>Slice
+parity</b> is a candidate fix: split each update into even-slice and odd-slice phases
+(red&ndash;black Gauss&ndash;Seidel in z, layered on the existing in-plane subsets), so
+a slice's nearest axial neighbors are held fixed while it updates &mdash; decoupling the
+part of the data Hessian the surrogate gets wrong.
+</p>
+<div class="key">
+<p style="margin-top:0"><b>Bottom line.</b> Parity behaves exactly as the mechanism
+predicts, and it does reduce error &mdash; but in the realistic operating range
+(sharpness &le; 2.0, about 15 iterations) the reduction is only ~4&ndash;5%, while
+parity costs about 50% more cone projector work per iteration.  Its benefit grows with
+sharpness, with iteration count, and with problem size.</p>
+<p style="margin-bottom:0"><i>Recommendation:</i> keep parity as an optional
+<b>quality knob</b> for high-sharpness, quality-critical reconstructions &mdash; but it
+is <b>not</b> a change to the default schedule, and it only becomes cost-effective if a
+slice-set-aware cone forward kernel removes the extra cost.</p>
+</div>
+
+<h2 id="idea">The idea and why it might work</h2>
+<p>
+The companion diagnosis (center-slice preconditioner notes) established that the
+A<sup>T</sup>A point-spread function is only 3&ndash;5 slices wide in z.  So within one parity
+class (say the even slices), slices <i>z</i> and <i>z</i>&plusmn;2 barely interact
+through the data term: the block's axial data Hessian becomes nearly diagonal, which is
+exactly the approximation MBIRJAX's per-voxel surrogate already makes.  Parity turns an
+approximation into a near-identity.  The other parity class enters only as a fixed
+boundary condition (classic red&ndash;black Gauss&ndash;Seidel), and the prior loses
+nothing because its z-edges simply cross to fixed voxels.
+</p>
+<p>
+Two honest caveats were flagged up front, to test rather than assume: (1) red&ndash;black
+Gauss&ndash;Seidel is a <i>smoother</i>, so it may not help the slow, low-spatial-frequency
+part of the error; and (2) the cone forward projector's cost scales with detector
+<i>rows</i>, not slices, so a stride-2 slice set still touches nearly every row &mdash;
+parity does not make the forward projection cheaper without a dedicated kernel.  Both
+caveats turned out to matter, below.
+</p>
+
+<h2 id="methods">Data and methods</h2>
+<ul>
+<li><b>Toy case.</b> The center-slice-noise cone repro (128&times;40&times;128 cube,
+sharpness 3.0, noiseless) used for mechanism probes against a deep 300-iteration
+reference.</li>
+<li><b>Real datasets.</b> Three cone scans against 150-iteration references:
+<i>lilly_ds8</i> (NSI D01788 autoinjector, recon 187&times;187&times;286),
+<i>z62</i> (ORNL Versa cylinder, 512&times;512&times;640), and <i>lilly_ds4</i>
+(the autoinjector at higher resolution, 374&times;374&times;667), each at sharpness
+1.0 and 2.5.</li>
+<li><b>Variants.</b> "default" = the standard schedule [0,2,4,6,7]; "parity-all" =
+the same schedule with every iteration split into even/odd phases.  Same seed, so the
+in-plane partitions match; parity is applied in a mask form that is bitwise-identical to
+the library solver when the mask is all-ones.</li>
+<li><b>Metric.</b> Cropped NRMSE vs the reference &mdash; relative RMS difference over
+the interior (0.85&times; radius disk, 10% of slices dropped at each axial end).  Shown
+as a percent (lower = closer to converged) or, for differences, as log10.</li>
+<li><b>Cost accounting (the honest part).</b> Because the cone forward cost scales with
+detector rows, a P=2 parity iteration is charged <b>1.5 cost units</b> vs 1.0 for an
+ordinary iteration (forward doubles, backprojection is unchanged).  So 30 parity
+iterations cost 45 units.  A slice-set-aware forward kernel would restore ~1.0; that
+kernel is the crux of whether parity is ever cost-effective.</li>
+</ul>
+
+<h2 id="attribution">Finding 1 &mdash; attribution: the null control is exactly null</h2>
+<p>
+In parallel-beam geometry the slices are already data-decoupled, so if parity works
+through the axial data coupling we hypothesized, it should do <b>nothing</b> there.  It
+does nothing: final NRMSE 0.04217 (default) vs 0.04218 (parity) &mdash; identical to
+four digits.  In the cone repro on the same phantom, parity changes the result
+substantially.  The effect flows entirely through the cone data term's axial coupling,
+as the mechanism requires.  This is the load-bearing control: it rules out the effect
+being an artifact of doing more sub-updates.
+</p>
+
+<h2 id="state">Finding 2 &mdash; parity is state-dependent (the smoother caveat, confirmed)</h2>
+<p>
+Whether parity helps depends on <i>what error is left to fix</i>, exactly as caveat (1)
+predicted:
+</p>
+<table>
+<tr><th>starting condition (toy, 20 iterations)</th><th>default NRMSE</th><th>parity-all NRMSE</th><th>verdict</th></tr>
+<tr><td>flat-fine sequence from the FDK start</td><td>0.1416</td><td>0.1543</td><td class="lose">parity loses</td></tr>
+<tr><td>standard coarse-to-fine sequence [0,2,4,6,7]</td><td>0.0311</td><td>0.0254</td><td class="win">parity wins</td></tr>
+</table>
+<p class="cap">
+NRMSE (lower is better).  The two rows use different partition sequences, so compare
+default against parity <i>within</i> each row, not across rows &mdash; the coarse-to-fine
+sequence simply converges much further on this toy than the flat one does.
+</p>
+<p>
+From a flat-fine start the dominant remaining error is low-spatial-frequency, where
+red&ndash;black Gauss&ndash;Seidel &mdash; a smoother &mdash; drags rather than helps: it
+anchors each slice to its fixed neighbors through the prior.  Once a few coarse
+iterations have cleared the low-frequency error, parity helps at every granularity.
+The real-data runs below all use the standard coarse-to-fine sequence, i.e. the regime
+where parity is favorable.
+</p>
+
+<h2 id="realdata">Finding 3 &mdash; on real data, parity is a quality option that grows along three axes</h2>
+<p>
+Applied to the standard schedule on all three datasets, parity-all consistently reaches
+a lower NRMSE than the default at the same iteration count.  How much depends
+systematically on three things: it grows with <b>sharpness</b> (a weaker prior leaves
+more of the axial-coupling error for parity to remove), with <b>iteration count</b>
+(the advantage accrues in the tail), and with <b>problem size</b>.
+</p>
+<img src="figs/parity_trend.png" alt="NRMSE of default vs parity-all across datasets and sharpness">
+<p class="cap">
+NRMSE vs the reference at 30 iterations, default vs parity-all (green = parity's error
+reduction).  Absolute NRMSE is lowest on z62 (~2%) and highest on lilly_ds4 (~9&ndash;14%);
+within each pair, parity's reduction grows from ~7&ndash;10% at sharpness 1.0 to
+24&ndash;35% at sharpness 2.5, largest on the biggest dataset.  The same ordering holds
+earlier in the run but smaller &mdash; at 15 iterations the reductions are ~4&ndash;5%
+at sharpness 1.0 and 15&ndash;19% at sharpness 2.5 &mdash; so the advantage accrues with
+iterations.
+</p>
+<p>
+The improvement is <b>distributed across the interior</b>, not a localized fix of the
+center slice: parity lowers the per-slice NRMSE at essentially every interior slice.
+</p>
+<img src="figs/parity_profile.png" alt="Per-slice interior NRMSE, default vs parity-all, lilly_ds4 sharpness 2.5">
+<p class="cap">
+Per-slice NRMSE at the strongest operating point (lilly_ds4, sharpness 2.5,
+30 iterations).  Parity is lower nearly everywhere; the interior median NRMSE is 41%
+lower (9.0% vs 15.2%).  The small bump near z&asymp;330 in the default curve is the fan
+plane (the center-slice effect) &mdash; parity reduces it but does not remove it,
+consistent with the distributed-improvement picture rather than a single-slice cure.
+</p>
+
+<h2 id="cost">Finding 4 &mdash; a quality gain, not a speed gain, and it is kernel-gated</h2>
+<p>
+Every number above compares parity and default at the <i>same iteration count</i>.  But
+a parity iteration costs 1.5&times; as much today (Methods), so "wins at 30 iterations"
+means "wins after 45 cost units vs 30."  Judged per unit of work, parity does not beat
+the default: to reach the default's 30-iteration quality it needs about 26&ndash;27 parity
+iterations at sharpness 1.0 and 16&ndash;21 at sharpness 2.5 &mdash; and at the
+1.5&times; charge those cost <i>more</i> than the default's 30 units, not less.
+</p>
+<p>
+Even if a slice-set-aware cone forward kernel removed the extra cost (charge &rarr;
+1.0&times;), those same crossings translate to about 0.9&times; the default's cost at
+sharpness 1.0 and 0.5&ndash;0.7&times; at sharpness 2.5 &mdash; a real saving at high
+sharpness, but at sharpness 1.0 it still misses the 0.8&times; bar we set for replacing
+the default schedule.
+So the kernel's payoff would be "parity becomes a free quality upgrade at a fixed
+iteration budget," not "parity makes reconstruction faster."
+</p>
+
+<h2 id="recommendation">Recommendation</h2>
+<div class="key">
+<ol>
+<li><b>Do not add parity to the default schedule.</b> In the realistic envelope its
+benefit is small and it costs 50% more per iteration.</li>
+<li><b>Keep it as an optional quality knob</b> for high-sharpness, quality-critical
+reconstructions with a generous iteration budget, where it removes 20&ndash;35% of the
+remaining error &mdash; and note the benefit was still growing with problem size at the
+largest case tested, so the payoff at full production resolution is an open, promising
+question.</li>
+<li><b>Its cost-effectiveness is gated on the cone forward kernel.</b> Parity is the
+concrete motivation for making the Pallas cone forward kernel accept an arbitrary
+slice-index set as a first-class argument; without it, parity always pays the row-bound
+forward penalty.</li>
+</ol>
+</div>
+
+<h2 id="provenance">Provenance</h2>
+<p class="cap">
+Real-data runs: gautschi jobs 13472514/13473504 (lilly_ds8) and 13474445 (z62,
+lilly_ds4), branch <code>greg/gpu_headroom</code>; toy rounds P1/F/FX documented in the
+plan.  Metrics and per-slice arrays in <code>results/{r1,r1_z62,r1_lilly_ds4}/</code>;
+charts by <code>plans/experiments/slice_parity/parity_findings_figs.py</code>.  Full
+design, mechanism analysis, and the complete round-by-round record:
+<code>plans/slice_parity/slice_parity_plan.md</code>.  Volumes for slice_viewer are in
+depot at <code>/depot/bouman/data/mbirjax_metrics/slice_parity/</code>.
+</p>
+
+</body>
+</html>

@@ -230,16 +230,24 @@ class TestVCD(unittest.TestCase):
                             nrmse < tolerances['nrmse'] and
                             pct_95 < tolerances['pct_95'])
 
-        print('  Testing hdf5 save and load')
-        notes = "Testing save/load"
+    def test_save_load_recon_hdf5_roundtrip(self):
+        """One recon's HDF5 save/load round-trip preserves the recon array and the recon_dict notes.
+        (Extracted from verify_vcd, which used to re-run this identically for all 7 geometries.)"""
+        geometry_type = 'parallel'
+        self.set_view_params(geometry_type)
+        ct_model = self.get_model(geometry_type)
+        ct_model.set_params(verbose=0)
+        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(ct_model.get_params('recon_shape'))
+        sinogram = ct_model.forward_project(phantom)
+        recon, recon_dict = ct_model.recon(sinogram, max_iterations=2, stop_threshold_change_pct=0.0)
+        recon = np.asarray(recon)
+        recon_dict['notes'] = 'hdf5 roundtrip test'
         with tempfile.NamedTemporaryFile('w') as file:
             filepath = file.name
             ct_model.save_recon_hdf5(filepath, recon, recon_dict)
             loaded_recon, loaded_recon_dict = mj.TomographyModel.load_recon_hdf5(str(filepath))
-            loaded_notes = loaded_recon_dict['notes']
-
-            assert np.allclose(recon, loaded_recon)
-            assert recon_dict['notes'] == loaded_notes
+            self.assertTrue(np.allclose(recon, loaded_recon))
+            self.assertEqual(loaded_recon_dict['notes'], 'hdf5 roundtrip test')
 
 
     # Iteration count for the split-vs-unsplit comparison, and the gate on their
@@ -317,6 +325,75 @@ def _add_per_geometry_vcd_tests():
 
 
 _add_per_geometry_vcd_tests()
+
+
+class TestDeltaNormPerSlice(unittest.TestCase):
+    """delta_norm_per_slice (the per-slice convergence diagnostic in the recon dict): each row
+    must equal the per-slice L2 norm of that iteration's actual volume update.  The
+    single-subset case is exact by construction (the subsets tile the in-mask pixels); the
+    multi-subset case allows the documented duplicated-pixel tolerance (gen_pixel_partition
+    equalizes subset lengths by replicating a few pixels, whose second update adds cross terms
+    a sum of squares misses)."""
+
+    @staticmethod
+    def _make_model_and_sino():
+        num_views, num_det_rows, num_det_channels = 32, 10, 48
+        angles = jnp.linspace(0, jnp.pi, num_views, endpoint=False)
+        model = mj.ParallelBeamModel((num_views, num_det_rows, num_det_channels), angles)
+        model.set_params(verbose=0)
+        phantom = mj.generate_3d_shepp_logan_low_dynamic_range(model.get_params('recon_shape'))
+        sino = model.forward_project(phantom)
+        return model, sino
+
+    @staticmethod
+    def _per_slice_norms(vol_a, vol_b):
+        return np.linalg.norm(np.asarray(vol_a) - np.asarray(vol_b), axis=(0, 1))
+
+    def test_matches_volume_diff_single_subset(self):
+        # partition_sequence=[0] -> granularity 1 -> ONE subset: exact pixel tiling, no
+        # duplicated pixels, so each recorded row must match the volume difference to float
+        # accuracy (reduction-order noise only).  Same seed -> same trajectory, so the
+        # 2-iteration run's first row reproduces the 1-iteration run's.
+        model, sino = self._make_model_and_sino()
+        model.set_params(partition_sequence=[0])
+        recon_shape = model.get_params('recon_shape')
+        init = jnp.zeros(recon_shape)
+
+        np.random.seed(3)
+        x1, d1 = model.recon(sino, init_recon=init, max_iterations=1, stop_threshold_change_pct=0)
+        np.random.seed(3)
+        x2, d2 = model.recon(sino, init_recon=init, max_iterations=2, stop_threshold_change_pct=0)
+
+        row0 = np.array(d1['recon_params']['delta_norm_per_slice'][0])
+        self.assertEqual(row0.shape, (recon_shape[2],))
+        np.testing.assert_allclose(row0, self._per_slice_norms(x1, init), rtol=1e-4, atol=1e-6)
+
+        rows2 = np.array(d2['recon_params']['delta_norm_per_slice'])
+        self.assertEqual(rows2.shape, (2, recon_shape[2]))
+        np.testing.assert_allclose(rows2[0], row0, rtol=1e-5)
+        np.testing.assert_allclose(rows2[1], self._per_slice_norms(x2, x1), rtol=1e-4, atol=1e-6)
+
+    def test_matches_volume_diff_multi_subset(self):
+        # Granularity index 2 -> 4 subsets: exercises the accumulation across subsets; the
+        # tolerance covers the few duplicated-pixel cross terms.
+        model, sino = self._make_model_and_sino()
+        model.set_params(partition_sequence=[2])
+        recon_shape = model.get_params('recon_shape')
+        init = jnp.zeros(recon_shape)
+        np.random.seed(4)
+        x1, d1 = model.recon(sino, init_recon=init, max_iterations=1, stop_threshold_change_pct=0)
+        row0 = np.array(d1['recon_params']['delta_norm_per_slice'][0])
+        np.testing.assert_allclose(row0, self._per_slice_norms(x1, init), rtol=0.02)
+
+    def test_row_count_tracks_iterations_run(self):
+        # Early stop (a huge threshold trips after iteration 1): the recorded rows must be
+        # cropped to the iterations actually run.
+        model, sino = self._make_model_and_sino()
+        np.random.seed(5)
+        _, d = model.recon(sino, max_iterations=3, stop_threshold_change_pct=1e6)
+        rows = d['recon_params']['delta_norm_per_slice']
+        self.assertEqual(len(rows), d['recon_params']['num_iterations'])
+        self.assertEqual(d['recon_params']['num_iterations'], 1)
 
 
 if __name__ == '__main__':

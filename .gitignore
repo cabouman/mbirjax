@@ -1,3 +1,5 @@
+.claude/*.json
+experiments/.claude/*.json
 
 demo/data/*
 demo/output/*
@@ -191,3 +193,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+experiments/IQ_evaluation/output
+experiments/IQ_evaluation/output/*

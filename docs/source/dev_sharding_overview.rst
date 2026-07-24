@@ -129,6 +129,16 @@ to a band up front.  This coupling is also why the sinogram is sharded
 by view (not by detector row) uniformly across geometries.
 
 
+Projector kernels
+-----------------
+
+The kernels that run within each band or shard -- both the portable XLA kernel
+design (the tile policy, the forward/back scatter-versus-gather asymmetry, the
+sorted channel reduction, the shared fan machinery) and the optional GPU
+custom-kernel (Pallas) path built on top of it -- are described in
+:doc:`dev_projector_kernels`.
+
+
 The QGGMRF prior and halos
 --------------------------
 
@@ -231,6 +241,8 @@ Where this lives in the code
 * ``mbirjax/_sharding/placement.py`` -- the ``Placement`` object and array
   movement.
 * ``mbirjax/_sharding/thread_execution.py`` -- the thread-pool execution helpers.
+* ``mbirjax/projectors.py`` -- the shared fan kernels, the sorted channel
+  reduction, and the kernel-policy guard constants.
 * the per-geometry projector kernels (e.g. ``back_project_one_view_to_band``) in
   ``parallel_beam.py`` / ``cone_beam.py`` / ``translation_model.py`` /
   ``multiaxis_parallel.py``.

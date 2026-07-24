@@ -8,13 +8,18 @@ Unit Tests
 
 In order to run unit tests, install MBIRJAX using the provided install scripts, and from the root directory of the repository, activate the conda environment, and then run the following::
 
-    pytest
+    python -m pytest
+
+(Use ``python -m pytest`` rather than bare ``pytest`` so the active environment's pytest is used
+regardless of PATH ordering.)  To run tests in parallel, use ``python -m pytest -n 4 tests``;
+on GPU machines do not use more than about 4 workers, since each worker initializes the GPU
+and too many concurrent initializations abort the run.
 
 This should be repeated for each supported platform.
 
 Tests that use external data can also be run separately with the command::
 
-    pytest -m data_dependent
+    python -m pytest -m data_dependent
 
 
 Uploading to PyPI
@@ -43,12 +48,12 @@ This is only available for registered maintainers.
    View the package upload here:
    `https://pypi.org/project/mbirjax <https://pypi.org/project/mbirjax>`__
 
-3. Test the uploaded package (NOTE: to test on the GPU, use 'pip install mbirjax[cuda12]')::
+3. Test the uploaded package (NOTE: to test on the GPU, use 'pip install mbirjax[cuda12]' or 'mbirjax[cuda13]', matching your system's CUDA driver)::
 
     pip install mbirjax    # OR, "mbirjax==0.1.1" e.g. for a specific version number
     python -c "import mbirjax"     # spin the wheel
-    pip install pytest
-    pytest tests
+    pip install pytest pytest-xdist
+    python -m pytest tests
 
 4. Run one of the demos in `mbirjax/demo <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
@@ -69,12 +74,12 @@ Follow steps 0-3 as above.  Then continue from step 4.
    View the package upload here:
    `https://test.pypi.org/project/mbirjax <https://test.pypi.org/project/mbirjax>`__
 
-5. Test the uploaded package (NOTE: to test on the GPU, use 'pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple mbirjax[cuda12]')::
+5. Test the uploaded package (NOTE: to test on the GPU, use 'pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple mbirjax[cuda12]' or 'mbirjax[cuda13]', matching your system's CUDA driver)::
 
     pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple mbirjax
     python -c "import mbirjax"     # spin the wheel
-    pip install pytest
-    pytest tests
+    pip install pytest pytest-xdist
+    python -m pytest tests
 
 6. Run one of the demos in `mbirjax/demo <https://github.com/cabouman/mbirjax/tree/main/demo>`__.
 
@@ -89,7 +94,7 @@ Follow steps 0-3 as above.  Then continue from step 4.
 Installing a specified branch
 -----------------------------
 
-Sometimes it's helpful to install a specific branch directly from github.  You can do this with one of the following commands (include [cuda12] to install on a GPU machine)::
+Sometimes it's helpful to install a specific branch directly from github.  You can do this with one of the following commands (include [cuda12] or [cuda13], matching your system's CUDA driver, to install on a GPU machine)::
 
     # For CPU installation:
     pip install git+https://github.com/cabouman/mbirjax.git@<branch_name>

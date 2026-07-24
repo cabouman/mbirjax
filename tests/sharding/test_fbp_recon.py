@@ -82,17 +82,6 @@ class TestFbpReconSingleDevice(unittest.TestCase):
         self.assertNotIsInstance(getattr(out, 'sharding', None),
                                  jax.sharding.NamedSharding)
 
-    def test_direct_recon_matches_fbp_recon(self):
-        """direct_recon is just a thin delegate to fbp_recon.  Gated at the suite's
-        single-shot 1e-5, not exact equality (never the gate for computed floats:
-        the back projection's GPU scatter-adds reorder summation between two calls,
-        measured up to ~8e-6 relative run-to-run)."""
-        model = _make_model()
-        sino = _random_sino(model)
-        a = np.asarray(model.fbp_recon(sino))
-        b = np.asarray(model.direct_recon(sino))
-        assert_sharded_allclose(a, b)
-
 
 class TestFbpReconSharded(unittest.TestCase):
 

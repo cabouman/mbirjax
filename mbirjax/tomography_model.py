@@ -26,7 +26,7 @@ import jax.numpy as jnp
 import mbirjax as mj
 from mbirjax import ParameterHandler
 from mbirjax._utils import is_oom, log_oom_guidance
-from mbirjax._device_setup import gpu_devices, cpu_devices, default_devices
+from mbirjax._device_setup import gpu_devices, cpu_devices, default_devices, get_device_platform
 # Internal sharding primitives (see _sharding), accessed with the `mjs` prefix.
 # Importing the SUBMODULE directly (not aliasing the top-level `mbirjax` and
 # reaching submodules as attributes) is safe even mid-import of mbirjax: it
@@ -37,6 +37,30 @@ import mbirjax._sharding as mjs
 import mbirjax.tomography_utils as tomography_utils
 
 from importlib.metadata import version, PackageNotFoundError
+
+# The projector TILING POLICY: every batching/banding knob and kernel-algorithm flag the
+# projectors consume, selected in ONE place (TomographyModel._select_tile_policy, re-run on
+# every device re-layout) and stored on the model as ``self.tiles``.  Immutable by design:
+# experiments override a field with ``model.tiles = model.tiles._replace(...)`` rather than
+# mutating scattered attributes.  Fields:
+#   fwd_view_batch / back_view_batch  -- per-op vmap widths over views.
+#   fwd_pixel_batch / back_pixel_batch -- per-op pixel tile sizes (the forward driver's pixel
+#       scan; back's pixel concatenation; cone's gather-forward host tiling).
+#   fwd_slice_band / back_slice_band  -- slice-band length overrides for the banded projector
+#       paths; None = the memory-driven _slice_band_length formula.
+#   sort_by_channel -- kernel-algorithm flag: use the sorted segment-sum channel reduction in
+#       the forward kernel (GPU layouts with wide-enough bands; see
+#       projectors.channel_scatter_reduce and parallel_beam's policy override).
+#   back_stacked_gather -- kernel-algorithm flag: the back kernel gathers all psf taps in one
+#       stacked (psf_width * num_pixels, num_rows) gather + reshape-sum over taps (GPU: ~95%
+#       gather-bound, measured 1.6-1.8x; CPU: worse, keeps the per-tap loop).  See
+#       parallel_beam.back_project_one_view_to_pixel_batch.
+TilePolicy = namedtuple('TilePolicy', ['fwd_view_batch', 'back_view_batch',
+                                       'fwd_pixel_batch', 'back_pixel_batch',
+                                       'fwd_slice_band', 'back_slice_band',
+                                       'fwd_pallas', 'back_pallas', 'back_pallas_band',
+                                       'fwd_pallas_band',
+                                       'sort_by_channel', 'back_stacked_gather'])
 
 # Persistent jit-compilation cache: repeat runs of the same model shapes load
 # compiled executables from disk instead of recompiling (a real win for
@@ -66,10 +90,29 @@ if jax.config.jax_compilation_cache_dir is None:
 os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.94')
 
 recon_param_names = ['num_iterations', 'granularity', 'partition_sequence', 'fm_rmse', 'prior_loss',
-                     'regularization_params', 'stop_threshold_change_pct', 'alpha_values']
+                     'regularization_params', 'stop_threshold_change_pct', 'alpha_values',
+                     'delta_norm_per_slice']
 ReconParams = namedtuple('ReconParams', recon_param_names)
 
 TomographyParamNames = mj.ParamNames | Literal['view_params_name']
+
+# The regularization strengths that auto_set_regularization_params computes and reports as the fields
+# of the RegularizationParams namedtuple in the recon dict.
+_AUTO_REGULARIZATION_PARAM_NAMES = ('sigma_y', 'sigma_x', 'sigma_prox')
+
+# Recon-time regularization knobs, separated out by get_all_params so a consumer (e.g.
+# save_cone_preprocessing) can drop them and let them be re-chosen at reconstruction time: the auto-set
+# strengths plus the meta-knobs that drive them.  The qGGMRF prior SHAPE params (p, q, T,
+# qggmrf_nbr_wts) are intentionally NOT here -- they are structural (e.g. TranslationModel sets
+# qggmrf_nbr_wts as a geometry default), so they stay with optional.
+_REGULARIZATION_PARAM_NAMES = _AUTO_REGULARIZATION_PARAM_NAMES + ('snr_db', 'sharpness', 'auto_regularize_flag')
+
+# Internal bookkeeping params that are re-derived at construction, so get_all_params drops them from
+# the returned dicts (rebuilding via build_model restores them): geometry_type is moved into
+# required_params (as the class identity); the rest are set by the geometry constructors, and
+# re-setting them would only trigger a spurious recompile (or, for use_gpu, a deprecation warning).
+_CONSTRUCTION_DERIVED_PARAM_NAMES = ('geometry_type', 'view_params_name',
+                                     'view_params_component_names', 'file_format', 'version', 'use_gpu')
 
 
 class TomographyModel(ParameterHandler):
@@ -127,17 +170,14 @@ class TomographyModel(ParameterHandler):
         # by _qggmrf_interface_masks; invalidated by _set_device_layout on every recompile).
         self._qggmrf_interface_masks_cache = None
 
-        # PER-OP view-batch knobs, recomputed ADAPTIVELY from the device layout in
-        # _set_device_layout() -> _set_view_batch_sizes(); these are only the pre-layout initial
-        # values.  Forward and back projection want OPPOSITE view-batch policies (forward: small
-        # batches, its transient scales with the batch width per device; back: one vmap over the
-        # whole per-device view shard, the scan carry is the enemy) -- see _set_view_batch_sizes.
-        # The jitted projectors read these at CALL time (late binding in create_projectors), so a
-        # configure_devices() re-layout takes effect on the next projection call.
-        self.fwd_view_batch_size_for_vmap = 128
-        self.back_view_batch_size_for_vmap = 128
-        self.pixel_batch_size_for_vmap = 2048
-        self.transfer_pixel_batch_size = 100 * self.pixel_batch_size_for_vmap
+        # The projector TILING POLICY (batch sizes, band lengths, kernel-algorithm flags) is
+        # selected in ONE place -- _select_tile_policy, called from _set_device_layout on every
+        # re-layout -- and stored here as an immutable TilePolicy namedtuple.  The projector
+        # wrappers read self.tiles at CALL time (late binding), so a configure_devices()
+        # re-layout takes effect on the next projection call, and an experiment can override a
+        # field with ``model.tiles = model.tiles._replace(...)``.  Geometry classes override
+        # _select_tile_policy for measured, geometry-specific choices.
+        self.tiles = None                       # set by set_devices() -> _set_device_layout below
         self.set_devices()
         self.create_projectors()
         try:
@@ -175,6 +215,64 @@ class TomographyModel(ParameterHandler):
             names = names[1:]
 
         return names
+
+    def get_all_params(self):
+        """
+        Return this model's parameters as ``(required_params, optional_params, regularization)``.
+
+        This is the single source of truth for reading a model's parameters back out.  The three
+        dicts partition the parameters so a caller can reconstruct or serialize the model and choose
+        which parts to apply (see :func:`~mbirjax.utilities.build_model`):
+
+        * **required_params** -- the arguments the model constructor takes (from its ``__init__``
+          signature), with the view-dependent arguments reconstructed from storage (e.g. ``angles``
+          and ``helical_z_shifts`` are unpacked from the stored ``view_params_array``), plus a
+          ``geometry_type`` entry so the model class can be resolved.  ``build_model(required_params)``
+          alone rebuilds the model.
+        * **optional_params** -- the remaining geometry/detector parameters that are applied with
+          ``set_params`` (detector pitches, offsets, ``delta_voxel``, ``recon_shape``, voxel aspects).
+        * **regularization** -- the recon-time regularization knobs (``sigma_y``, ``sigma_x``,
+          ``sigma_prox``, ``snr_db``, ``sharpness``, ``auto_regularize_flag``), separated so a
+          consumer such as ``save_cone_preprocessing`` can drop them and let them be re-chosen at
+          reconstruction time.
+
+        Returns:
+            tuple: ``(required_params, optional_params, regularization)`` -- three dicts of values.
+        """
+        required_names = list(self.get_required_param_names())
+
+        # The view-dependent constructor arguments are stored as a single array.  Cone packs several
+        # of them (angles, helical_z_shifts) into one ``view_params_array`` under names listed in
+        # ``view_params_component_names``; the other geometries store their single view array under
+        # its constructor-argument name, so no reconstruction is needed there.
+        has_components = 'view_params_component_names' in self.params
+        if has_components:
+            component_names = self.get_params('view_params_component_names')
+            for name in component_names:
+                required_names.remove(name)
+
+        required_params, optional_params = self.get_required_params_from_dict(
+            self.params, required_param_names=required_names, values_only=True)
+
+        if has_components:
+            view_params_name = self.get_params('view_params_name')
+            view_array = self.get_params(view_params_name)
+            for i, name in enumerate(component_names):
+                required_params[name] = view_array[:, i]
+            # The packed array is rebuilt from its components at construction; do not persist it too.
+            optional_params.pop(view_params_name, None)
+
+        # Drop the construction-derived bookkeeping params (rebuilding restores them); geometry_type
+        # is instead carried in required_params, as str(type(self)), so (required, optional) is a
+        # self-contained model description that build_model can reconstruct the class from.
+        for name in _CONSTRUCTION_DERIVED_PARAM_NAMES:
+            optional_params.pop(name, None)
+        required_params['geometry_type'] = str(type(self))
+
+        regularization = {name: optional_params.pop(name)
+                          for name in _REGULARIZATION_PARAM_NAMES if name in optional_params}
+
+        return required_params, optional_params, regularization
 
     @overload
     def get_params(self, parameter_names: Union[TomographyParamNames, list[TomographyParamNames]]): ...
@@ -307,8 +405,12 @@ class TomographyModel(ParameterHandler):
 
     @staticmethod
     def _platform_label(device):
-        """Short uppercase platform name for a jax device ('GPU' / 'CPU' / 'TPU')."""
-        return {'cpu': 'CPU', 'tpu': 'TPU'}.get(device.platform, 'GPU')
+        """Short uppercase platform name for a jax device ('GPU' / 'CPU' / 'TPU').
+
+        Thin delegator to :func:`mbirjax.get_device_platform` (the single source of truth);
+        kept for the existing internal/test call sites.
+        """
+        return get_device_platform(device)
 
     def _device_report(self):
         """A 'N x PLATFORM (sharded)' summary of the recon devices, for the recon log.
@@ -339,6 +441,16 @@ class TomographyModel(ParameterHandler):
                 report += (' (using {} of {} GPUs: with num_slices={}, more devices would '
                            'leave some entirely idle (a fully padded shard))'.format(
                                n, n_available, num_slices))
+        # Custom-kernel (pallas) paths fall back to XLA silently, so when one IS active
+        # the run log should say so -- a timing comparison must know which kernels ran.
+        # Full detail (including WHY pallas is off) via get_compute_config().
+        pallas = [name for name, flag in
+                  [('back', getattr(self.tiles, 'back_pallas', False)),
+                   ('fwd', getattr(self.tiles, 'fwd_pallas', False)),
+                   ('band-back', getattr(self.tiles, 'back_pallas_band', False)),
+                   ('band-fwd', getattr(self.tiles, 'fwd_pallas_band', False))] if flag]
+        if pallas:
+            report += ' (pallas: {})'.format('+'.join(pallas))
         return report
 
     @property
@@ -354,6 +466,62 @@ class TomographyModel(ParameterHandler):
         is logged at the start of every reconstruction.
         """
         return self._device_report()
+
+    def get_compute_config(self, print_results=True):
+        """Return the resolved COMPUTE configuration of this model as a nested dict.
+
+        This reports how the model will execute -- versions, the resolved device
+        layout, the tile/batching policy (``model.tiles``), and which custom-kernel
+        (pallas) paths are active and why or why not -- as opposed to
+        :meth:`get_params`/:meth:`print_params`, which report the model/geometry
+        parameters.  Useful when comparing timings across machines or builds: the
+        custom-kernel paths fall back to XLA silently, and this is the introspection
+        point that says which kernels a run will actually use.
+
+        Args:
+            print_results (bool, optional): If True (the default, matching
+                :func:`get_memory_stats`), also pretty-print the configuration to
+                stdout; pass False to fetch the dict silently.
+
+        Returns:
+            dict: Sections ``versions``, ``devices``, ``tiles``, ``kernels``,
+            ``jit_cache``.
+
+        Example:
+            >>> ct_model = mj.ParallelBeamModel(sinogram_shape, angles)
+            >>> config = ct_model.get_compute_config()
+            >>> config['kernels']['back_pallas']
+            True
+        """
+        from mbirjax import _pallas_kernels
+        import jaxlib
+        devices = self.shard_devices
+        pallas_ok, pallas_reason = _pallas_kernels.availability()
+        config = {
+            'versions': {'mbirjax': self.version, 'jax': jax.__version__,
+                         'jaxlib': jaxlib.__version__},
+            'devices': {'summary': self._device_report(),
+                        'count': len(devices),
+                        'platform': self._platform_label(devices[0]),
+                        'device_kind': getattr(devices[0], 'device_kind', '')},
+            'tiles': dict(self.tiles._asdict()),
+            'kernels': {'pallas_available': pallas_ok,
+                        'pallas_status': pallas_reason,
+                        'back_pallas': bool(getattr(self.tiles, 'back_pallas', False)),
+                        'fwd_pallas': bool(getattr(self.tiles, 'fwd_pallas', False)),
+                        'back_pallas_band': bool(getattr(self.tiles,
+                                                         'back_pallas_band', False)),
+                        'fwd_pallas_band': bool(getattr(self.tiles,
+                                                        'fwd_pallas_band', False))},
+            'jit_cache': {'persistent_cache_dir': jax.config.jax_compilation_cache_dir},
+        }
+        if print_results:
+            print('Compute configuration:')
+            for section, entries in config.items():
+                print('  {}:'.format(section))
+                for key, value in entries.items():
+                    print('    {}: {}'.format(key, value))
+        return config
 
     def _set_device_layout(self, devices, pinned):
         """Set the device layout from a concrete device list -- the single place that does so.
@@ -395,59 +563,120 @@ class TomographyModel(ParameterHandler):
         num_slices = recon_shape[recon_axis % len(recon_shape)]
         self.recon_placement = mjs.Placement(devices, axis=recon_axis, real_size=num_slices)
         self.sino_placement = mjs.Placement(devices, axis=sino_axis, real_size=num_views)
-        self._set_view_batch_sizes(num_views, len(devices))
+        on_gpu = get_device_platform(devices[0]) == 'GPU'
+        self.tiles = self._select_tile_policy(on_gpu, num_views, num_slices, len(devices))
 
-    def _set_view_batch_sizes(self, num_views, n_devices):
-        """Size the per-op view-batch knobs from the device layout.
+    # Base tiling constants (geometry-independent defaults; geometry classes change measured
+    # values in their _select_tile_policy overrides, not by shadowing these).
+    _FWD_VIEW_CAP = 128                # forward vmap width that stays OOM-safe at the largest sizes
+    _BACK_VIEW_CAP_SINGLE = 128        # unsharded back: wider vmaps raise peak memory ~25%
+    _BACK_VIEW_CAP_SHARDED = 512       # safe for a per-device view shard
+    _PIXEL_BATCH_DEFAULT = 2048        # generic pixel tile (both ops); the long-standing default
 
-        Forward and back projection want OPPOSITE view-batch policies, so each has its own knob:
+    def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
+        """Select the projector TILING POLICY for this device layout -- the ONE decision site.
 
-          * FORWARD: the vmap transient scales with the batch width PER DEVICE (several coexisting
-            ``[view_batch x pixel_batch x det_rows]`` buffers), and view-sharding does NOT shrink
-            it -- sharding cuts the per-device view COUNT, so re-inflating the batch to match the
-            shard just re-creates the single-device transient on every device.  Forward therefore
-            keeps a flat OOM-safe width (512-wide OOMs a single GPU at 1024^3), clipped to the
-            per-device shard.
-          * BACK: sums each device's view shard via ``sum_function_in_batches``; a batch smaller
-            than the shard drops into the accumulating-SCAN path, whose live carry coexists with
-            each batch's transient and inflates the peak.  Back therefore SINGLE-vmaps the whole
-            per-device shard, capped at 512 on multi-device layouts and 128 on a single device
-            (an unsharded 1024^3 back at 512 peaks ~20.7 GB vs 16.3 at 128).
+        Returns a TilePolicy (see its definition above) covering every batching/banding knob and
+        kernel-algorithm flag the projectors consume.  Geometry classes override this method to
+        change ONLY what they have measured (e.g. ParallelBeamModel's GPU forward tiling); the
+        base policy preserves the long-standing defaults:
 
-        Measured H100 peaks at 1024^3 under this policy (GB, n=1/2/4): forward 16.3 / 10.6 / 9.0,
-        back 16.3 / 6.0 / 3.2.
+          * VIEW batches -- forward and back want OPPOSITE policies (measured).  Forward's
+            vmap transient scales with the batch width PER DEVICE (view-sharding does not
+            shrink it), so it keeps a flat OOM-safe width clipped to the shard.  Back
+            single-vmaps its whole per-device view shard (a smaller batch drops into the
+            accumulating-SCAN path, whose live carry inflates the peak), capped per the
+            constants above.
+          * PIXEL batches -- the generic default (_PIXEL_BATCH_DEFAULT) for both ops.
+          * SLICE bands -- None = the memory-driven ``_slice_band_length`` formula.  A number
+            here overrides it (clipped to the slice shard); the per-instance
+            ``fwd/back_project_slice_band`` attributes remain the top-priority experiment hook.
+          * ``sort_by_channel`` -- False: the scatter-add channel reduction (see
+            projectors.channel_scatter_reduce).
 
-        BINDING: the jitted projectors read these attributes AT CALL TIME (late binding in
-        ``Projectors.create_projectors``), so a ``configure_devices()`` re-layout takes effect on
-        the next projection without recreating the projectors.  They are STATIC jit arguments: a
-        changed value retraces, never silently misbatches.
-
-        Deferred refinement: derive the caps from a per-device memory budget + a per-view
-        transient estimate, and snap the back batch DOWN to a DIVISOR of per_shard_views so a
-        ragged tail batch adds no extra compiled kernel.  The regression harness (cone
-        forward+back at 1024^3 x n=1/2/4) validates any change to this policy.
+        BINDING: consumers read ``self.tiles`` at CALL time (late binding), so a
+        ``configure_devices()`` re-layout takes effect on the next projection without recreating
+        the projectors.  Exception: ``sort_by_channel`` is baked into the STATIC ProjectorParams
+        at create_projectors -- every sanctioned platform change recreates the projectors via
+        set_params, and a stale flag can only cost speed, never correctness (the reductions are
+        value-equal).  Values that reach jit are STATIC arguments: a changed value retraces,
+        never silently misbatches.
         """
-        FWD_CAP = 128                  # forward-OOM-safe vmap width at 1024^3, any layout
-        BACK_SINGLE_DEVICE_CAP = 128   # unsharded back: 512-wide peaks ~20.7 GB at 1024^3, 128 -> 16.3
-        BACK_SHARDED_CAP = 512         # safe for a per-device view shard
-        per_shard_views = -(-num_views // max(1, n_devices))   # ceil: views per device after view-sharding
-        back_cap = BACK_SINGLE_DEVICE_CAP if n_devices <= 1 else BACK_SHARDED_CAP
-        self.fwd_view_batch_size_for_vmap = max(1, min(per_shard_views, FWD_CAP))
-        self.back_view_batch_size_for_vmap = max(1, min(per_shard_views, back_cap))
+        per_shard_views = -(-num_views // max(1, n_devices))   # ceil: views per device
+        back_cap = self._BACK_VIEW_CAP_SINGLE if n_devices <= 1 else self._BACK_VIEW_CAP_SHARDED
+        return TilePolicy(
+            fwd_view_batch=max(1, min(per_shard_views, self._FWD_VIEW_CAP)),
+            back_view_batch=max(1, min(per_shard_views, back_cap)),
+            fwd_pixel_batch=self._PIXEL_BATCH_DEFAULT,
+            back_pixel_batch=self._PIXEL_BATCH_DEFAULT,
+            fwd_slice_band=None,
+            back_slice_band=None,
+            # Pallas custom-kernel paths (the 2026-07 GPU-headroom campaign; see
+            # mbirjax/_pallas_kernels.py).  Off in the base policy: geometries enable
+            # them only where measured (ParallelBeamModel, GPU, allowlisted arch) --
+            # the platform-conditional-kernel precedent.  When set, fwd serves ALL
+            # pixel counts (no guard -- plans/projector_kernels/fwd_guard_sweep.md).
+            fwd_pallas=False,
+            back_pallas=False,
+            back_pallas_band=False,
+            fwd_pallas_band=False,
+            sort_by_channel=False,
+            back_stacked_gather=False,
+        )
 
     @property
     def view_batch_size_for_vmap(self):
         raise AttributeError(
-            "view_batch_size_for_vmap was SPLIT into fwd_view_batch_size_for_vmap and "
-            "back_view_batch_size_for_vmap (2026-07-06): forward and back projection need opposite "
-            "view-batch policies (see _set_view_batch_sizes).  Read/set those attributes instead.")
+            "view_batch_size_for_vmap no longer exists: the batching knobs are consolidated in "
+            "the TilePolicy at model.tiles (see _select_tile_policy).  Read model.tiles.fwd_"
+            "view_batch / .back_view_batch; override with model.tiles = model.tiles._replace(...).")
 
     @view_batch_size_for_vmap.setter
     def view_batch_size_for_vmap(self, value):
         raise AttributeError(
-            "view_batch_size_for_vmap was SPLIT into fwd_view_batch_size_for_vmap and "
-            "back_view_batch_size_for_vmap (2026-07-06); setting the old name would silently do "
-            "nothing.  Set the per-op attribute(s) instead.")
+            "view_batch_size_for_vmap no longer exists; setting it would silently do nothing.  "
+            "Use model.tiles = model.tiles._replace(fwd_view_batch=..., back_view_batch=...).")
+
+    @property
+    def fwd_view_batch_size_for_vmap(self):
+        raise AttributeError("moved into TilePolicy: read model.tiles.fwd_view_batch")
+
+    @fwd_view_batch_size_for_vmap.setter
+    def fwd_view_batch_size_for_vmap(self, value):
+        raise AttributeError(
+            "moved into TilePolicy: model.tiles = model.tiles._replace(fwd_view_batch=...)")
+
+    @property
+    def back_view_batch_size_for_vmap(self):
+        raise AttributeError("moved into TilePolicy: read model.tiles.back_view_batch")
+
+    @back_view_batch_size_for_vmap.setter
+    def back_view_batch_size_for_vmap(self, value):
+        raise AttributeError(
+            "moved into TilePolicy: model.tiles = model.tiles._replace(back_view_batch=...)")
+
+    @property
+    def pixel_batch_size_for_vmap(self):
+        raise AttributeError("moved into TilePolicy: read model.tiles.fwd_pixel_batch / "
+                             ".back_pixel_batch")
+
+    @pixel_batch_size_for_vmap.setter
+    def pixel_batch_size_for_vmap(self, value):
+        raise AttributeError(
+            "moved into TilePolicy: model.tiles = model.tiles._replace(fwd_pixel_batch=..., "
+            "back_pixel_batch=...)")
+
+    @property
+    def transfer_pixel_batch_size(self):
+        raise AttributeError(
+            "transfer_pixel_batch_size is now derived at its use site as "
+            "100 * model.tiles.back_pixel_batch")
+
+    @transfer_pixel_batch_size.setter
+    def transfer_pixel_batch_size(self, value):
+        raise AttributeError(
+            "transfer_pixel_batch_size is now derived at its use site as "
+            "100 * model.tiles.back_pixel_batch")
 
     # ------------------------------------------------------------------
     # Sharding hooks (uniform default scheme; override per geometry only
@@ -988,7 +1217,7 @@ class TomographyModel(ParameterHandler):
 
     def save_recon_hdf5(self, filepath, recon, recon_dict=None):
         """
-        Save the reconstruction array and optionally the recon_dict from :meth:`recon`.
+        Save the reconstruction array and optionally the recon_dict from :meth:`~mbirjax.TomographyModel.recon`.
 
         This method creates a file that contains a single dataset named 'recon', with the entries in recon_dict
         serialized to strings and saved as hdf5 dataset attributes.
@@ -1018,7 +1247,7 @@ class TomographyModel(ParameterHandler):
     @staticmethod
     def load_recon_hdf5(filepath, recreate_model=False):
         """
-        This function loads a numpy array stored in an HDF5 file created by :meth:`save_recon_hdf5`.
+        This function loads a numpy array stored in an HDF5 file created by :meth:`~mbirjax.TomographyModel.save_recon_hdf5`.
         It also loads any associated attribute dict and can use the model parameters in that dict to create a new model.
 
         Args:
@@ -1058,7 +1287,36 @@ class TomographyModel(ParameterHandler):
         self.projector_functions = mj.Projectors(self)
 
     @staticmethod
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, projector_params):
+    def compute_channel_coordinate(pixel_indices, single_view_params, projector_params):
+        """
+        Compute the CONTINUOUS projected detector-channel coordinate n_p for one view.
+
+        This is the float coordinate whose rounded value is the horizontal fans' integer
+        channel center.  The projector wrappers round it OUTSIDE the projector programs
+        (projectors._jit_compute_scatter_centers) and pass the concrete integer centers
+        into the kernels -- the horizontal-fan rounding-bug fix (see
+        plans/bugs_and_artifacts/jax rounding bug/phase_d_design.md).  Implementations
+        must reuse the SAME float chain the kernels use for their weights (e.g. return the
+        n_p element of compute_proj_data / compute_horizontal_data), so centers and weights
+        can never disagree.
+
+        Note:
+            This method must be overridden for a specific geometry.
+
+        Args:
+            pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
+            single_view_params (jax array): A 1D array of view-specific parameters (such as angle) for the current view.
+            projector_params (namedtuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
+
+        Returns:
+            jax array of shape (num_pixels,): the continuous channel coordinate per pixel.
+        """
+        warnings.warn('compute_channel_coordinate not implemented for TomographyModel.')
+        return None
+
+    @staticmethod
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, view_params, n_p_centers,
+                                                projector_params):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -1070,6 +1328,10 @@ class TomographyModel(ParameterHandler):
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             view_params (jax array):  A 1D array of view-specific parameters (such as angle) for the current view.
+            n_p_centers (jax array of int): 1D vector of shape (num_pixels,): this view's integer
+                channel centers, computed OUTSIDE the projector program from
+                compute_channel_coordinate (concrete input; do NOT recompute in-kernel --
+                see compute_channel_coordinate).
             projector_params (namedtuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
@@ -1079,8 +1341,8 @@ class TomographyModel(ParameterHandler):
         return None
 
     @staticmethod
-    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params,
-                                             coeff_power=1):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, n_p_centers,
+                                             projector_params, coeff_power=1):
         """
         Calculate the backprojection value at a specified recon voxel cylinder given a sinogram view and parameters.
 
@@ -1091,6 +1353,9 @@ class TomographyModel(ParameterHandler):
             sinogram_view (jax array): one view of the sinogram to be back projected
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             single_view_params (jax array): A 1D array of view-specific parameters (such as angle) for the current view.
+            n_p_centers (jax array of int): 1D vector of shape (num_pixels,): this view's integer
+                channel centers (concrete input; the SAME centers feed the forward projector --
+                see compute_channel_coordinate).
             projector_params (namedtuple):  Tuple containing (sinogram_shape, recon_shape, get_geometry_params())
             coeff_power (int): backproject using the coefficients of (A_ij ** coeff_power).
                 Normally 1, but should be 2 for compute_hessian_diagonal.
@@ -1401,7 +1666,7 @@ class TomographyModel(ParameterHandler):
         Returns a list of per-view-owner sinogram shards ``(views_per_dev, num_det_rows,
         num_channels)``, ``owned_views[i]`` resident on ``devices[i]``.
         """
-        pixel_batch = self.pixel_batch_size_for_vmap
+        pixel_batch = self.tiles.fwd_pixel_batch
         # Gather slice-shards in GLOBAL slice order so the assembled cylinder is correctly ordered.
         slice_owners = sorted(devices, key=lambda d: recon_shard_info[d][1][0])
         # The monolithic forward kernel anchors its slice->detector-row geometry on the REAL
@@ -1564,9 +1829,44 @@ class TomographyModel(ParameterHandler):
         """
         def worker(i, device):
             band = band_on_views[device]                       # (num_pixels, L)
-            return self.projector_functions.sparse_forward_project(
-                band, local_pixels[i], owned_view_indices=view_ranges[device])
+            return self._forward_project_band_to_view_shard(
+                band, local_pixels[i], view_ranges[device])
         return mjs.run_per_device(devices, worker, executor=pool)
+
+    # coeff_powers the geometry's pallas back drivers serve; others keep XLA.
+    _PALLAS_BACK_COEFF_POWERS = ()
+
+    def _pallas_forward_project(self, voxel_values, pixel_indices,
+                                owned_view_indices=()):
+        """The geometry's pallas forward driver (see _pallas_kernels.py); defined
+        only by geometries whose tile policy can set fwd_pallas/fwd_pallas_band."""
+        raise NotImplementedError(
+            'a fwd pallas flag is set but {} defines no pallas forward driver'.format(
+                type(self).__name__))
+
+    def _pallas_back_project_single_device(self, sinogram, pixel_indices,
+                                           coeff_power=1, output_device=None):
+        """The geometry's pallas n=1 back driver (see _pallas_kernels.py).  Defined
+        only by geometries whose tile policy can set ``back_pallas``; the base raises
+        so a policy/hook mismatch fails loudly rather than silently misprojecting."""
+        raise NotImplementedError(
+            'back_pallas is set but {} defines no pallas back driver'.format(
+                type(self).__name__))
+
+    def _forward_project_band_to_view_shard(self, band, pixel_indices, owned_view_indices):
+        """Forward-project one broadcast slice-band into one view-owner's row-band.
+
+        The per-view-owner seam of the banded forward (the adjoint of
+        ``_back_project_view_shard_to_band``): ``band`` is that owner's local
+        ``(num_pixels, L)`` slice-band and ``owned_view_indices`` its GLOBAL view
+        indices; the result is ``(len(owned_view_indices), L, num_channels)`` -- detector
+        rows ``[g0:g1)`` for its own views (the kernel sizes its output rows from the L
+        input slices).  Default (geometry-neutral): the geometry's XLA forward.
+        ``ParallelBeamModel`` OVERRIDES this to route through the pallas forward kernel
+        when ``fwd_pallas_band`` is set (n>=2 -- the multi-device band path).
+        """
+        return self.projector_functions.sparse_forward_project(
+            band, pixel_indices, owned_view_indices=owned_view_indices)
 
     def sparse_back_project(self, sinogram, pixel_indices, coeff_power=1):
         """
@@ -1609,13 +1909,33 @@ class TomographyModel(ParameterHandler):
         (:meth:`_shard_sinogram`, a no-op when already sharded) so the whole body operates on
         the model's single device (``sino_placement.devices[0]``).
         """
+        # Pallas custom-kernel path (GPU, measured archs only; see _pallas_kernels.py).
+        # Value-equal to the XLA path up to float summation order (gated in
+        # tests/test_pallas_kernels.py); falls through to the XLA loop everywhere else.
+        # The DRIVER is geometry-specific (parallel: register-tile rows; cone: the
+        # fused vertical fan), so the flag routes through a geometry hook -- only
+        # geometries that define the hook set the flag in their tile policy.
+        # coeff_power policy: per-geometry (_PALLAS_BACK_COEFF_POWERS).  Parallel
+        # serves {1, 2} (its weights are exact-class); cone serves {1} only -- its
+        # in-kernel affine-m carries a ~2e-5 Hessian error that VCD's grad/Hess
+        # division AMPLIFIES at low-Hessian edge voxels (measured 8.5e-3 recon
+        # divergence in the inc5 trajectory gate), so the once-per-recon Hessian
+        # keeps the XLA path.  Other powers keep XLA everywhere.
+        if (getattr(self.tiles, 'back_pallas', False)
+                and coeff_power in self._PALLAS_BACK_COEFF_POWERS):
+            return self._pallas_back_project_single_device(
+                sinogram, pixel_indices, coeff_power=coeff_power,
+                output_device=output_device)
+
         # Shard at entry so every sinogram slice below is already on the model's single device.
         sinogram = self._shard_sinogram(sinogram)
 
         # Batch the views and pixels to bound vmap memory.  This is a BACK-projection driver, so
         # the view slices follow the back knob (they feed sparse_back_project below).
-        transfer_view_batch_size = self.back_view_batch_size_for_vmap
-        transfer_pixel_batch_size = self.transfer_pixel_batch_size
+        transfer_view_batch_size = self.tiles.back_view_batch
+        # Host-transfer granularity: a large multiple of the pixel tile (the transfer is
+        # communication, not a vmap width; 100x keeps the historical 204800 default).
+        transfer_pixel_batch_size = 100 * self.tiles.back_pixel_batch
         num_views = sinogram.shape[0]
         all_view_indices = jnp.arange(num_views)          # all views (transfer-batched below)
         num_view_batches = jnp.ceil(sinogram.shape[0] / transfer_view_batch_size).astype(int)
@@ -1777,7 +2097,7 @@ class TomographyModel(ParameterHandler):
         # back-vertical cache cliff -- so CPU keeps the sharded path.  (The two kernels have
         # OPPOSITE platform rankings; see the platform-divergent back-kernel lesson in lessons.md.)
         if (len(self.recon_placement.devices) == 1
-                and self.recon_placement.devices[0].platform == 'gpu'):
+                and get_device_platform(self.recon_placement.devices[0]) == 'GPU'):
             owner = self.recon_placement.devices[0]
             out = self._sparse_back_project_single_device(
                 sinogram, pixel_indices, coeff_power=coeff_power, output_device=owner)
@@ -1798,7 +2118,7 @@ class TomographyModel(ParameterHandler):
         slices_per_dev = num_slices // n_dev
         band_len = self._slice_band_length(
             slices_per_dev, n_dev, num_pixels,
-            fixed_band=getattr(self, 'back_project_slice_band', None))
+            fixed_band=self._fixed_slice_band('back'))
         band_bounds = self._balanced_slice_bounds(slices_per_dev, band_len)
 
         # Do the back projection:
@@ -1965,6 +2285,20 @@ class TomographyModel(ParameterHandler):
         return self.projector_functions.sparse_back_project_band(
             view_data, pixel_indices, g0, g1 - g0,
             owned_view_indices=owned_view_indices, coeff_power=coeff_power)
+
+    def _fixed_slice_band(self, op):
+        """Resolve the slice-band override for ``op`` ('fwd' or 'back'), or None for the formula.
+
+        Resolution order: a per-INSTANCE ``fwd_project_slice_band`` / ``back_project_slice_band``
+        attribute (the experiment/test hook -- highest priority), else the tile policy's
+        ``fwd_slice_band`` / ``back_slice_band`` field.  ``_slice_band_length`` clips the result
+        to the slice shard, so an override larger than the shard means one band.
+        """
+        hook = {'fwd': 'forward_project_slice_band', 'back': 'back_project_slice_band'}[op]
+        fixed = getattr(self, hook, None)
+        if fixed is not None:
+            return fixed
+        return self.tiles.fwd_slice_band if op == 'fwd' else self.tiles.back_slice_band
 
     @staticmethod
     def _slice_band_length(slices_per_dev, n_dev, num_pixels, fixed_band=None):
@@ -2226,19 +2560,41 @@ class TomographyModel(ParameterHandler):
                     small_weights = small_weights[:, :num_real_rows]
             # Compute indicator function for sinogram support
             sino_indicator = self._get_sino_indicator(small_sinogram, verbose=self.get_params('verbose'))
+            self._check_lateral_truncation(sino_indicator)
             self.auto_set_sigma_y(small_sinogram, sino_indicator, small_weights)
 
             recon_std = self._get_estimate_of_recon_std(small_sinogram, sino_indicator)
             self.auto_set_sigma_x(recon_std)
             self.auto_set_sigma_prox(recon_std)
 
-        regularization_param_names = ['sigma_y', 'sigma_x', 'sigma_prox']
-        RegularizationParams = namedtuple('RegularizationParams', regularization_param_names)
+        RegularizationParams = namedtuple('RegularizationParams', _AUTO_REGULARIZATION_PARAM_NAMES)
         regularization_param_values = [float(val) for val in self.get_params(
-            regularization_param_names)]  # These should be floats, but the user may have set them to jnp.float
+            _AUTO_REGULARIZATION_PARAM_NAMES)]  # These should be floats, but the user may have set them to jnp.float
         regularization_params = RegularizationParams(*tuple(regularization_param_values))._asdict()
 
         return regularization_params
+
+    def _check_lateral_truncation(self, sino_indicator):
+        """Warn if the sinogram support reaches the detector's edge channels (lateral FoV
+        truncation).
+
+        Args:
+            sino_indicator (ndarray): binary support indicator from :meth:`_get_sino_indicator`,
+                shaped (views, rows, channels) -- typically view-subsampled.
+        """
+        if np.all(sino_indicator):
+            # An all-ones indicator is either the undeterminable-background fallback (which has
+            # already warned on its own) or support genuinely everywhere -- indistinguishable
+            # here, so skip rather than risk a spurious warning on the fallback.
+            return
+        edge_frac = float(np.mean(np.logical_or(sino_indicator[:, :, 0],
+                                                sino_indicator[:, :, -1])))
+        # Detect lateral FoV truncation
+        if edge_frac > 0.02 and self.get_params('verbose') > 0:
+            warnings.warn(
+                f"Lateral FoV truncation detected: the object support reaches the detector's "
+                f"edge channels in {edge_frac:.0%} of the sampled view-rows.  Consider using "
+                f"scale_recon_shape(s, s) where s >= 1.1 to improve image quality.")
 
     def auto_set_sigma_y(self, sinogram, sino_indicator, weights=1):
         """
@@ -2677,7 +3033,7 @@ class TomographyModel(ParameterHandler):
             # configure_devices under use_gpu='automatic'), and a CPU OOM must get CPU guidance.
             recon_devices = self.shard_devices
             on_gpu = bool(recon_devices) and recon_devices[0] is not None \
-                and self._platform_label(recon_devices[0]) == 'GPU'
+                and get_device_platform(recon_devices[0]) == 'GPU'
             log_oom_guidance(self.logger, on_gpu=on_gpu)
         raise e
 
@@ -2738,9 +3094,13 @@ class TomographyModel(ParameterHandler):
                 prior_loss = [0]
             stop_threshold_change_pct = [100 * float(val) for val in loss_vectors[2]]
             alpha_values = [float(val) for val in loss_vectors[3]]
+            # Per-iteration, per-slice L2 norm of the update (list of lists so the recon dict
+            # stays plainly serializable).
+            delta_norm_per_slice = [[float(v) for v in row] for row in loss_vectors[4]]
             num_iterations = len(fm_rmse)
             recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
-                                  regularization_params, stop_threshold_change_pct, alpha_values]
+                                  regularization_params, stop_threshold_change_pct, alpha_values,
+                                  delta_norm_per_slice]
             recon_params = ReconParams(*tuple(recon_param_values))._asdict()
 
         except MemoryError as e:
@@ -2808,7 +3168,7 @@ class TomographyModel(ParameterHandler):
         Returns:
             (recon, recon_stats): tuple of 3D reconstruction and a tuple containing arrays of per-iteration stats.
             With return_checkpoint=True: (recon, recon_stats, checkpoint).
-            recon_stats = (fm_rmse, pm_loss, nmae_update, alpha_values), where fm is forward model, pm is prior model,
+            recon_stats = (fm_rmse, pm_loss, nmae_update, alpha_values, delta_norm_per_slice), where fm is forward model, pm is prior model,
             and nmae_update is ||recon(i+1) - recon(i)||_1 / ||recon(i+1)||_1.
 
         Note:
@@ -3025,16 +3385,21 @@ class TomographyModel(ParameterHandler):
         pm_loss = np.zeros(max_iters)
         nmae_update = np.zeros(max_iters)
         alpha_values = np.zeros(max_iters)
+        # Per-slice L2 norm of each iteration's update (the per-slice convergence diagnostic;
+        # see update_recon_with_slice_sumsq).  Columns = REAL slices: the device form may carry
+        # identically-zero padded slices, cropped at the read below.
+        delta_norm_per_slice = np.zeros((max_iters, recon_shape[2]))
         num_iters = 0
         for i in range(max_iters):
             # Get the current partition (set of subsets) and shuffle the subsets
             partition = partitions[partition_sequence[i]]
 
             # Do an iteration
-            flat_recon, error_sinogram, ell1_for_partition, alpha = self.vcd_partition_iterator(vcd_subset_updater,
-                                                                                                 flat_recon,
-                                                                                                 error_sinogram,
-                                                                                                 partition)
+            (flat_recon, error_sinogram, ell1_for_partition, alpha,
+             delta_sumsq_partition) = self.vcd_partition_iterator(vcd_subset_updater,
+                                                                  flat_recon,
+                                                                  error_sinogram,
+                                                                  partition)
 
             # Compute the stats and display as desired -- one fused pass over the error sinogram
             # (see _vcd_iteration_stats).  real_sino_size == error_sinogram.size except under view
@@ -3045,6 +3410,8 @@ class TomographyModel(ParameterHandler):
             fm_rmse[i] = fm_loss_i
             nmae_update[i] = ell1_for_partition / recon_l1
             alpha_values[i] = alpha
+            # Tiny (num_slices,) device->host read, piggybacking on the per-iteration stats sync.
+            delta_norm_per_slice[i] = np.sqrt(np.asarray(delta_sumsq_partition)[:recon_shape[2]])
 
             if verbose >= 1:
                 iter_output = '\nAfter iteration {} of a max of {}: Pct change={:.4f}, Forward loss={:.4f}'.format(i + first_iteration, max_iters + first_iteration,
@@ -3085,7 +3452,7 @@ class TomographyModel(ParameterHandler):
         # padded slice axis -- the caller's exit handling gathers + crops to the real shape).
         recon_3d = flat_recon.reshape(tuple(recon_shape[:2]) + (flat_recon.shape[-1],))
         losses = (fm_rmse[0:num_iters], pm_loss[0:num_iters], nmae_update[0:num_iters],
-                  alpha_values[0:num_iters])
+                  alpha_values[0:num_iters], delta_norm_per_slice[0:num_iters])
         if return_checkpoint:
             # Zero-copy resume state: references to the loop's own device-form arrays.  Feed
             # these back as init_error_sinogram / fm_hessian (with init_recon = the returned
@@ -3109,16 +3476,20 @@ class TomographyModel(ParameterHandler):
             partition (jax array): 2D array where partition[subset_index] gives a 1D array of pixel indices.
 
         Returns:
-            (flat_recon, error_sinogram, ell1_for_partition, alpha): The first two have the same shape as above, but
-            are updated to reduce overall loss function.
+            (flat_recon, error_sinogram, ell1_for_partition, alpha, delta_sumsq_partition): The first two have
+            the same shape as above, but are updated to reduce overall loss function.
             The ell1_for_partition includes the changes from all subsets of this partition.
             alpha is the relative step size in the gradient descent step, averaged over the subsets
             in the partition.
+            delta_sumsq_partition is the per-slice sum of squared update values accumulated over the
+            partition's subsets (device array, slice-sharded) -- since the subsets tile the in-mask
+            pixels, this is the squared per-slice L2 norm of the iteration's total update.
         """
 
         # Loop over the subsets of the partition, using random subset_indices to order them.
         ell1_for_partition = 0
         alpha_sum = 0
+        delta_sumsq_partition = 0
         subset_indices = np.random.permutation(partition.shape[0])
 
         times = np.zeros(13)
@@ -3136,12 +3507,54 @@ class TomographyModel(ParameterHandler):
         staged_halos = self._stage_halos(flat_recon) if stage_per_pass else None
         for index in subset_indices:
             subset = partition[index]
-            flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset = vcd_subset_updater(
+            flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, delta_sumsq_subset = vcd_subset_updater(
                 flat_recon, error_sinogram, subset, staged_halos)
             ell1_for_partition += ell1_for_subset
             alpha_sum += alpha_for_subset
+            # Shard-local accumulate (slice-sharded (num_slices,) vectors); stays on device
+            # until the per-iteration stats read in vcd_recon.
+            delta_sumsq_partition = delta_sumsq_partition + delta_sumsq_subset
 
-        return flat_recon, error_sinogram, ell1_for_partition, alpha_sum / partition.shape[0]
+        return (flat_recon, error_sinogram, ell1_for_partition, alpha_sum / partition.shape[0],
+                delta_sumsq_partition)
+
+    def _get_update_direction(self, forward_grad, prior_grad, forward_hess,
+                              prior_hess, pixel_indices):
+        """Return the update direction for one subset of pixels.
+
+        The base implementation is the preconditioned gradient:
+            update_direction = -(forward_grad + prior_grad) / (forward_hess + prior_hess)
+        Geometry subclasses may override this to apply a different preconditioner.
+
+        Rules for overrides:
+
+        - Preserve the cost's minimizers: in order to preserve the cost's minimizers,
+          this function must return a linear positive definite transformation of the total
+          gradient. That is:
+              update_direction = - M (forward_grad + prior_grad)
+          where M is a linear positive definite operator.
+        - forward_grad and forward_hess may be consumed here (the base implementation
+          donates forward_grad); prior_grad and prior_hess are used again by the
+          caller's line search and must not be donated.
+        - Do device math in module-level jitted helpers with fixed signatures: branch
+          on host state only to choose a helper, and pass run-varying arrays as
+          arguments (a value closed over by a jitted helper is baked in at trace time
+          and silently goes stale if rebound).  Add no per-subset host synchronization.
+
+        Args:
+            forward_grad: data-term gradient, shape (num_subset_pixels, num_slices_device).
+            prior_grad: prior gradient, same shape.
+            forward_hess: data-term Hessian diagonal, same shape.
+            prior_hess: prior curvature, same shape (a scalar on the proximal-map path).
+            pixel_indices: flat in-plane indices of this subset, shape (num_subset_pixels,),
+                replicated on the recon mesh.  Unused by the base implementation;
+                spatially-aware overrides may use it to gather slice-sharded arrays.
+
+        Returns:
+            The update direction, same shape as forward_grad.
+        """
+        return _diagonal_update_direction(forward_grad, prior_grad,
+                                          forward_hess, prior_hess)
 
     def create_vcd_subset_updater(self, fm_hessian, weights, prox_input=None):
         """
@@ -3163,7 +3576,7 @@ class TomographyModel(ParameterHandler):
         qggmrf_params = tuple((b, sigma_x, p, q, T))
         sigma_prox = self.get_params('sigma_prox')
         recon_shape = self.get_params('recon_shape')
-        max_alpha = self.get_params('max_overrelaxation')
+        max_alpha = self.get_params('max_alpha')
         sparse_back_project = self.sparse_back_project
         sparse_forward_project = self.sparse_forward_project
         try:
@@ -3245,8 +3658,11 @@ class TomographyModel(ParameterHandler):
             # Get the forward hessian for this subset
             forward_hess = fm_constant * fm_hessian[recon_indices]
 
-            # Compute update vector update direction in recon domain
-            delta_recon_at_indices = - ((forward_grad + prior_grad) / (forward_hess + prior_hess))
+            # Compute the update direction in the recon domain -- the per-subset
+            # preconditioning seam (base: the fused diagonally-preconditioned
+            # direction; geometry models may override _get_update_direction).
+            delta_recon_at_indices = self._get_update_direction(
+                forward_grad, prior_grad, forward_hess, prior_hess, recon_indices)
 
             # Compute delta^T \nabla Q(x_hat; x'=x_hat) for use in finding alpha
             prior_linear = jnp.sum(prior_grad * delta_recon_at_indices)
@@ -3257,12 +3673,14 @@ class TomographyModel(ParameterHandler):
                                       jnp.sum(prior_hess * delta_recon_at_indices ** 2))
 
             # Free the (now-dead) gradient/Hessian buffers BEFORE the memory-heavy forward projection.
-            # forward_grad/forward_hess were last read by delta_recon_at_indices; prior_grad/prior_hess by
+            # forward_grad/forward_hess were last read by _get_update_direction (which donates
+            # forward_grad -- its buffer lives on inside delta_recon_at_indices); prior_grad/prior_hess by
             # prior_linear/prior_quadratic_approx just above.  In eager mode a queued op pins its inputs, so
             # blocking on those two scalars (which transitively force delta_recon_at_indices, hence the
-            # forward_* reads) guarantees all four are consumed; the del then releases them -- ~4 subset-
-            # sized arrays (~11.6 GB at the coarse 1024^3 subset) -- so sparse_forward_project's ~5x-volume
-            # transient has room.  Compute-free on a compute-bound GPU: the host was running ahead anyway
+            # forward_* reads) guarantees all four are consumed; the del then releases the ~3 subset-sized
+            # buffers still held (~8.7 GB at the coarse 1024^3 subset; forward_grad's buffer was donated
+            # into delta_recon_at_indices, so its name holds nothing by now) -- so sparse_forward_project's
+            # ~5x-volume transient has room.  Compute-free on a compute-bound GPU: the host was running ahead anyway
             # and the projection depends on delta_recon_at_indices regardless.  (A no-op if ever jitted.)
             jax.block_until_ready((prior_linear, prior_quadratic_approx))
             del forward_grad, prior_grad, forward_hess, prior_hess
@@ -3308,7 +3726,8 @@ class TomographyModel(ParameterHandler):
             # slice-sharded to match flat_recon, so update_recon stays a local scatter.
             delta_recon_at_indices = alpha * delta_recon_at_indices
 
-            flat_recon = update_recon(flat_recon, recon_indices, delta_recon_at_indices)
+            flat_recon, delta_sumsq_subset = update_recon_with_slice_sumsq(
+                flat_recon, recon_indices, delta_recon_at_indices)
 
             # Update sinogram and loss: error_sinogram <- error_sinogram - alpha * delta_sinogram,
             # IN PLACE via a buffer-DONATING fused multiply-add (alpha replicated onto the sino mesh
@@ -3339,7 +3758,7 @@ class TomographyModel(ParameterHandler):
                 jax.block_until_ready((flat_recon, error_sinogram))
                 weighted_error_sinogram.delete()
 
-            return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset
+            return flat_recon, error_sinogram, ell1_for_subset, alpha_for_subset, delta_sumsq_subset
 
         return vcd_subset_updater
 
@@ -3437,7 +3856,9 @@ class TomographyModel(ParameterHandler):
         executable, one set of collective allocations, and no full-size temporaries.
 
         ``real_sino_size`` is the REAL element count for the error-sino RMSE (see the caller: padded
-        entries are identically zero and must not dilute the RMSE).
+        entries are identically zero and must not dilute the RMSE).  Callers MUST pass it as a
+        FLOAT: it is a traced argument, so a Python int > 2^31 raises OverflowError at the jit
+        boundary (lessons.md §4), and being traced it cannot float() itself in the body.
         """
         fm_loss = TomographyModel.get_forward_model_loss(error_sinogram, sigma_y, weights,
                                                          num_real_elements=num_real_elements)
@@ -3514,9 +3935,11 @@ class TomographyModel(ParameterHandler):
             fm_rmse = [float(val) for val in loss_vectors[0]]
             stop_threshold_change_pct = [100 * float(val) for val in loss_vectors[2]]
             alpha_values = [float(val) for val in loss_vectors[3]]
+            delta_norm_per_slice = [[float(v) for v in row] for row in loss_vectors[4]]
             num_iterations = len(fm_rmse)
             recon_param_values = [num_iterations, granularity, partition_sequence, fm_rmse, prior_loss,
-                                  regularization_params, stop_threshold_change_pct, alpha_values]
+                                  regularization_params, stop_threshold_change_pct, alpha_values,
+                                  delta_norm_per_slice]
             recon_params = ReconParams(*tuple(recon_param_values))._asdict()
             self.set_params(no_warning=True, sigma_prox=self_sigma_prox)
 
@@ -3583,6 +4006,11 @@ class TomographyModel(ParameterHandler):
         This can be used before starting a reconstruction to improve results when part of the object
         projects outside the detector. The method updates the internal `recon_shape` parameter.
 
+        For lateral field-of-view truncation (flagged by the "Lateral FoV truncation detected"
+        warning), use ``scale_recon_shape(s, s)`` with ``s`` typically chosen as ``s >= 1.1``.
+        For the cone-beam AXIAL direction, prefer ``axial_pad_fraction`` (default 0 = no
+        padding), which pads the slice axis in ``auto_set_recon_geometry``.
+
         Args:
             row_scale (float): Scale factor for the number of rows in the reconstruction.
             col_scale (float): Scale factor for the number of columns in the reconstruction.
@@ -3613,6 +4041,32 @@ from functools import partial
 def update_recon(cur_flat_recon, cur_indices, cur_delta):
     cur_flat_recon = cur_flat_recon.at[cur_indices].add(cur_delta)
     return cur_flat_recon
+
+
+@partial(jax.jit, donate_argnames='forward_grad')
+def _diagonal_update_direction(forward_grad, prior_grad, forward_hess, prior_hess):
+    # The diagonally-preconditioned descent direction -- the base implementation of
+    # TomographyModel._get_update_direction -- fused into one kernel: written eagerly
+    # this expression would dispatch four ops per subset and materialize the two
+    # subset-sized sum intermediates at the coarse-subset memory high-water mark.
+    # Donating forward_grad lets the output reuse its buffer (it is dead at the call
+    # site).  forward_hess is dead there too but is left undonated: with a single
+    # output only one donation can be honored, and an unusable donation warns.
+    return -((forward_grad + prior_grad) / (forward_hess + prior_hess))
+
+
+@partial(jax.jit, donate_argnames='cur_flat_recon')
+def update_recon_with_slice_sumsq(cur_flat_recon, cur_indices, cur_delta):
+    # update_recon plus this subset's per-slice sum of squared update values.  Because the
+    # subsets of a partition tile the (in-mask) pixels, accumulating these across one
+    # partition pass gives the per-slice L2 norm of the whole iteration's update -- the
+    # per-slice convergence diagnostic reported as delta_norm_per_slice in the recon dict.
+    # Fused into this jit so XLA folds the reduction into the scatter's read of cur_delta
+    # (no extra eager op or memory pass in the per-subset hot path); the pixel axis is the
+    # unsharded axis of the slice-sharded recon, so the reduction is shard-local.
+    # (A separate function so the denoiser's plain update_recon call sites are untouched.)
+    cur_flat_recon = cur_flat_recon.at[cur_indices].add(cur_delta)
+    return cur_flat_recon, jnp.sum(cur_delta * cur_delta, axis=0)
 
 
 @partial(jax.jit, donate_argnames='error_sinogram')

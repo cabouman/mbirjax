@@ -16,22 +16,6 @@ from conftest import preferred_devices
 
 class TestShardingScaffolding(unittest.TestCase):
 
-    def test_multiple_devices_available(self):
-        """At least 2 devices exist (real GPUs, or virtual CPUs via XLA_FLAGS)."""
-        n = len(jax.devices())
-        if n < 2:
-            self.skipTest("Need >= 2 devices for sharding tests.")
-        self.assertTrue(True)
-
-    def test_device_setup_flag_present(self):
-        """The XLA virtual-device flag is set (by conftest or _device_setup)."""
-        import os
-        self.assertIn(
-            "xla_force_host_platform_device_count",
-            os.environ.get("XLA_FLAGS", ""),
-            "XLA_FLAGS should contain the virtual-device count flag."
-        )
-
     def test_preferred_devices_returns_two(self):
         """preferred_devices(2) returns exactly two devices."""
         devs = preferred_devices(2)

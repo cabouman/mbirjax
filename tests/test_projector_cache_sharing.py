@@ -35,6 +35,14 @@ class TestProjectorCacheSharing(unittest.TestCase):
         angles = jnp.asarray(np.linspace(0, np.pi, self.SINO_SHAPE[0], endpoint=False))
         model = mbirjax.ParallelBeamModel(self.SINO_SHAPE, angles)
         model.set_params(verbose=0)
+        # This is a de-closuring gate for the MODULE-LEVEL XLA jitted projectors
+        # (_jit_sparse_forward_project / _jit_sparse_back_project).  On an allowlisted GPU
+        # the tile policy routes the forward AND back through the pallas path, which never
+        # touches those module caches -- so the +1/+0 counts below would not hold.  Force
+        # the XLA projectors so the invariant is exercised on every platform (a no-op on
+        # CPU, where the pallas flags are already off).
+        model.tiles = model.tiles._replace(fwd_pallas=False, back_pallas=False,
+                                           fwd_pallas_band=False, back_pallas_band=False)
         return model
 
     def test_two_instances_share_compiled_programs(self):

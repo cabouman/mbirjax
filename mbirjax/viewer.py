@@ -1066,7 +1066,7 @@ def slice_viewer(*datasets, data_dicts=None, title='', vmin=None, vmax=None, sli
     Features include synchronized slice navigation, ROI statistics, axis transposition, file loading,
     dynamic intensity range adjustment, and interactive GUI tools for zooming and panning.
 
-    Each image can have an associated data dict, typically obtained from :meth:`TomographyModel.recon`, which
+    Each image can have an associated data dict, typically obtained from :meth:`TomographyModel.recon <mbirjax.TomographyModel.recon>`, which
     can be viewed as a text file within the viewer.
 
     Designed primarily for inspecting CT or other volumetric reconstructions in research workflows.
@@ -1076,7 +1076,7 @@ def slice_viewer(*datasets, data_dicts=None, title='', vmin=None, vmax=None, sli
             - 2D arrays are automatically promoted to 3D via a singleton axis.
             - `None` values are replaced with placeholder zero arrays.
 
-        data_dicts (None or dict or list of None or dicts, optional): Dictionary of string entries to associated with the data (e.g., from :meth:`TomographyModel.get_recon_dict`)
+        data_dicts (None or dict or list of None or dicts, optional): Dictionary of string entries to associated with the data (e.g., from :meth:`TomographyModel.get_recon_dict <mbirjax.TomographyModel.get_recon_dict>`)
         title (str, optional): Window title. Defaults to an empty string.
         vmin (float, optional): Minimum intensity value for display. Defaults to the global minimum across all datasets.
         vmax (float, optional): Maximum intensity value for display. Defaults to the global maximum across all datasets.

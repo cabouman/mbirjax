@@ -8,12 +8,29 @@ The ``preprocess`` module provides scanner-specific preprocessing and more gener
 See `demo_nsi.py <https://github.com/cabouman/mbirjax_applications/tree/main/nsi>`__ in the
 `mbirjax_applications <https://github.com/cabouman/mbirjax_applications>`__ repo for example uses.
 
+One-Call Preprocessing
+----------------------
+
+Each supported scanner allows one-call preprocessing with the scanner's ``get_sino_and_model`` function, which loads a scan, computes its sinogram, and returns a ready-to-reconstruct model.
+
+.. code-block:: python
+
+    sino, model = mbirjax.preprocess.nsi.get_sino_and_model(dataset_dir)
+    weights = mbirjax.gen_weights(sino, weight_type='transmission_root')
+    recon, recon_dict = model.recon(sino, weights=weights)
+
+The call selects the correct geometry class for the scanner (for example, the Zeiss reader picks
+``ParallelBeamModel`` for an Ultra scan and ``ConeBeamModel`` for a Versa scan) and computes the
+reconstruction geometry from the real detector parameters, so the returned model is ready to be used.
+Reconstruction weights can be generated with :func:`mbirjax.gen_weights`.
+
+
 NorthStar Instrument (NSI) reader
 ---------------------------------
 
 .. currentmodule:: mbirjax.preprocess.nsi
 
-.. autofunction:: compute_sino_and_params
+.. autofunction:: get_sino_and_model
 .. autofunction:: load_scans_and_params
 
 
@@ -22,7 +39,7 @@ Zeiss Versa and Ultra reader
 
 .. currentmodule:: mbirjax.preprocess.zeiss
 
-.. autofunction:: compute_sino_and_params
+.. autofunction:: get_sino_and_model
 .. autofunction:: load_scans_and_params
 
 
@@ -31,7 +48,8 @@ Zeiss translation tomography functions
 
 .. currentmodule:: mbirjax.preprocess.zeiss_tct
 
-.. autofunction:: compute_sino_and_params
+.. autofunction:: get_sino_and_model
+.. autofunction:: compute_weight
 .. autofunction:: load_scans_and_params
 
 
@@ -40,7 +58,7 @@ PYMBIR functions
 
 .. currentmodule:: mbirjax.preprocess.pymbir
 
-.. autofunction:: compute_sino_and_params
+.. autofunction:: get_sino_and_model
 
 
 General preprocess functions
@@ -49,7 +67,8 @@ General preprocess functions
 .. currentmodule:: mbirjax.preprocess
 
 .. autofunction:: compute_sino_transmission
-.. autofunction:: auto_crop_sino_conebeam
+.. autofunction:: detect_blank_margins
+.. autofunction:: apply_detector_crop
 .. autofunction:: align_sino_views
 .. autofunction:: interpolate_defective_pixels
 .. autofunction:: correct_det_rotation
@@ -57,8 +76,8 @@ General preprocess functions
 .. autofunction:: downsample_view_data
 .. autofunction:: crop_view_data
 .. autofunction:: apply_cylindrical_mask
-.. autofunction:: save_preprocessing
-.. autofunction:: load_preprocessing
+.. autofunction:: save_cone_preprocessing
+.. autofunction:: load_cone_preprocessing
 .. autofunction:: read_tif_stack_dir
 .. autofunction:: read_tif_img
 

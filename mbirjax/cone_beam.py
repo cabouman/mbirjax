@@ -10,8 +10,10 @@ import numpy as np
 
 import mbirjax as mj
 from mbirjax import TomographyModel, tomography_utils, ParameterHandler
+from mbirjax.projectors import (horizontal_fan_project, horizontal_fan_back,
+                                vertical_fan_band_gather, SORTED_CHANNEL_REDUCE_MIN_COLS)
 
-ConeBeamParamNames = mj.ParamNames | Literal['view_params_array', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset']
+ConeBeamParamNames = mj.ParamNames | Literal['view_params_array', 'source_detector_dist', 'source_iso_dist', 'recon_slice_offset', 'axial_pad_fraction']
 
 # Default slice-band size for the cone back projector's rolled vertical-fan loop.  The
 # back projector computes the horizontal fan once per view, then walks the recon slice
@@ -30,6 +32,22 @@ CONE_SLICE_BAND_SIZE = 128
 # instead.  It also replaces the old entries_per_cylinder_batch parameter; 128 matches the
 # old default, so the forward output is unchanged.
 CONE_FORWARD_DET_ROW_BATCH = 128
+
+# (a, b, p, c) for the slice damping s_k = (c t^p + a b^p)/(t^p + b^p),
+# t_k = L |z_k| / (R dz) -- the "C4" preconditioner (dj-space-domain doc).
+# Not a public parameter; for sweeps set ct_model._dc_damping = (a,b,p,c) or None.
+_DC_DAMPING_DEFAULT = (0.25, 100.0, 0.7, 0.5)
+
+
+@partial(jax.jit, donate_argnames='forward_grad')
+def _dc_damped_update_direction(forward_grad, prior_grad, forward_hess, prior_hess, s_row):
+    # d = -(g - (1 - s_k) gbar_k) / H with gbar_k the H^-1-weighted slice mean of g
+    # over the subset's pixels (axis 0 = unsharded axis, so the reduction is
+    # shard-local).  s == 1 reduces to the base -(g / H); MAP fixed point unchanged.
+    g = forward_grad + prior_grad
+    h_inv = 1.0 / (forward_hess + prior_hess)
+    gbar = jnp.sum(h_inv * g, axis=0) / jnp.sum(h_inv, axis=0)
+    return -(g - ((1.0 - s_row) * gbar)[None, :]) * h_inv
 
 
 class ConeBeamModel(TomographyModel):
@@ -62,15 +80,24 @@ class ConeBeamModel(TomographyModel):
         **recon_slice_offset** (float, default=0) -
         This parameter controls the vertical offset of the reconstruction in ALU. If recon_slice_offset is positive, the region below iso is reconstructed.
 
+        **axial_pad_fraction** (float or (top, bottom) tuple, default=0) -
+        Scales the axial padding added by ``auto_set_recon_geometry``; 0 = none, 1 = full.
+        Top is the low slice and detector row indexes; bottom is the high indexes
+        (z points down).
+
     See Also
     --------
     TomographyModel : The base class from which this class inherits.
     """
 
+    # (a, b, p, c) slice damping; None disables.  See _DC_DAMPING_DEFAULT.
+    _dc_damping = _DC_DAMPING_DEFAULT
+
     def __init__(self, sinogram_shape, angles, source_detector_dist, source_iso_dist, helical_z_shifts=None,
                  use_curved_detector=False):
 
         self.bp_psf_radius = 1
+        self._dc_damping_cache = None
 
         if helical_z_shifts is None:
             # If helical_z_shifts is not provided or None,
@@ -91,7 +118,8 @@ class ConeBeamModel(TomographyModel):
         super().__init__(sinogram_shape, view_params_array=view_params_array,
                          source_detector_dist=source_detector_dist, source_iso_dist=source_iso_dist,
                          view_params_name=view_params_name, view_params_component_names=view_params_component_names,
-                         recon_slice_offset=0.0, use_curved_detector=use_curved_detector)
+                         recon_slice_offset=0.0, axial_pad_fraction=0.0,
+                         use_curved_detector=use_curved_detector)
 
     @overload
     def get_params(self, parameter_names: Union[ConeBeamParamNames, list[ConeBeamParamNames]]) -> Any: ...
@@ -112,6 +140,60 @@ class ConeBeamModel(TomographyModel):
         else:
             magnification = source_detector_dist / source_iso_dist
         return magnification
+
+    def _dc_damping_slice_profile(self):
+        """Placed per-slice damping vector (device-form length), or None if disabled.
+
+        Circular: s_k from t_k = L |z_k| / (R dz).  Helical: view-averaged,
+        s_k = mean_i s(L |z_k - z_i| / (R dz)); reduces to circular when all z_i
+        are equal (untested on real helical data as of 2026-07-23).
+        Host-computed, padded with 1.0, sharded on the recon mesh slice axis, and
+        cached with a host-only key (no per-subset device sync).
+        """
+        cfg = self._dc_damping
+        if cfg is None:
+            return None
+        recon_shape = self.get_params('recon_shape')
+        dv, slice_aspect, oz, R = self.get_params(
+            ['delta_voxel', 'voxel_slice_aspect', 'recon_slice_offset', 'source_iso_dist'])
+        vpa = self.get_params('view_params_array')
+        padded = self.recon_placement.padded_size
+        key = (tuple(cfg), tuple(recon_shape), dv, slice_aspect, oz, R, padded,
+               id(vpa), tuple(str(d) for d in self.recon_placement.devices))
+        if self._dc_damping_cache is not None and self._dc_damping_cache[0] == key:
+            return self._dc_damping_cache[1]
+
+        # Sign matches the projectors' recon_slice_offset - helical_z_shift.
+        z_shifts = np.asarray(vpa[:, 1]) if vpa.shape[0] else np.zeros(1)
+
+        a, b, p, c = cfg
+        nz = recon_shape[2]
+        L = recon_shape[0] * dv
+        dz = slice_aspect * dv
+        z = (np.arange(nz) - (nz - 1) / 2.0) * dz + oz
+
+        def profile(t):
+            return (c * t ** p + a * b ** p) / (t ** p + b ** p)
+
+        if z_shifts.max() - z_shifts.min() == 0:
+            s = profile(L * np.abs(z - z_shifts[0]) / (R * dz))
+        else:
+            t = L * np.abs(z[:, None] - z_shifts[None, :]) / (R * dz)
+            s = profile(t).mean(axis=1)
+        s = np.concatenate([s, np.ones(padded - nz)]).astype(np.float32)
+        s_placed = self._shard_on_axis(jnp.asarray(s), axis=0, what='DC damping profile')
+        self._dc_damping_cache = (key, s_placed)
+        return s_placed
+
+    def _get_update_direction(self, forward_grad, prior_grad, forward_hess,
+                              prior_hess, pixel_indices):
+        # DC damping of each slice's update (qGGMRF and prox paths).
+        s_row = self._dc_damping_slice_profile()
+        if s_row is None:
+            return super()._get_update_direction(forward_grad, prior_grad,
+                                                 forward_hess, prior_hess, pixel_indices)
+        return _dc_damped_update_direction(forward_grad, prior_grad,
+                                           forward_hess, prior_hess, s_row)
 
     def verify_valid_params(self):
         """
@@ -230,7 +312,12 @@ class ConeBeamModel(TomographyModel):
         return psf_radius
 
     def auto_set_recon_geometry(self, no_compile=False, no_warning=False):
-        """ Compute the automatic recon shape cone beam reconstruction.
+        """ Compute the automatic recon shape for cone beam reconstruction.
+
+        The reconstruction width (xy) is chosen to be the detector field of view at iso.
+        The axial height (z) is chosen to be the detector height at iso swept over any helical travel plus any additional padding.
+        The padding is scaled for each end by the ``axial_pad_fraction``.
+        A fraction of 1 pads each end to the deepest z reached by any measured ray.
         """
         delta_det_row, delta_det_channel = self.get_params(['delta_det_row', 'delta_det_channel'])
 
@@ -258,20 +345,117 @@ class ConeBeamModel(TomographyModel):
         # Detector height mapped to iso
         H_iso = num_det_rows * (delta_det_row / magnification)
     
-        # Total axial coverage: include all slices that are projected onto at least one view
+        # Base axial coverage: the detector height at iso, swept over the helix travel
         num_recon_slices = int(jnp.ceil((H_iso + z_travel) / delta_voxel_slice))
         num_recon_slices = max(1, num_recon_slices)
-    
-        recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
-        
+
         # Center the recon about the helix travel (for circular, z_min=z_max=0 -> offset 0)
         recon_slice_offset = float(0.5 * (z_min + z_max))
 
+        # ---- Per-end axial padding (see docstring) ----
+        # An edge ray at height v diverges across the support to |z| = |v|*(SID + R)/SDD > |v|/mag;
+        # extend each end by its own excess over H_iso/2 (ends differ under det_row_offset; helical
+        # excesses attach at z_max/z_min).  Derivation: plans/flash_remediation/phase_2d_remedies.html.
+        source_detector_dist, det_row_offset, det_channel_offset, use_ror_mask = self.get_params(
+            ['source_detector_dist', 'det_row_offset', 'det_channel_offset', 'use_ror_mask'])
+        support_radius = mj.get_support_radius((num_recon_rows, num_recon_cols), delta_voxel_row,
+                                               delta_voxel, use_ror_mask=use_ror_mask)
+        # Detector row-edge heights v in ALU, via the model's own detector convention (the outer
+        # edges of the first and last rows sit at m = -0.5 and num_det_rows - 0.5; v does not
+        # depend on the channel argument n, so n = 0 is arbitrary).
+        _, v_row_low = self.detector_mn_to_uv(-0.5, 0.0, delta_det_channel, delta_det_row,
+                                              det_channel_offset, det_row_offset,
+                                              num_det_rows, num_det_channels)
+        _, v_row_high = self.detector_mn_to_uv(num_det_rows - 0.5, 0.0, delta_det_channel,
+                                               delta_det_row, det_channel_offset, det_row_offset,
+                                               num_det_rows, num_det_channels)
+        # z points down: the +z detector edge (max v) is the physical bottom, the -z edge the top.
+        v_bot = max(float(v_row_low), float(v_row_high))    # bottom edge (+z)
+        v_top = min(float(v_row_low), float(v_row_high))    # top edge (-z)
+        # Iso-z reach per unit detector height at the far side of the support: written as
+        # 1/mag + R/SDD, which equals (SID + R)/SDD for finite SDD and degrades gracefully to
+        # 1/mag = 1 at SDD = inf (rays parallel in z, so the excess reduces to pure
+        # det_row_offset compensation).
+        z_per_v_far_side = 1.0 / float(magnification)
+        if not jnp.isinf(source_detector_dist):
+            z_per_v_far_side += support_radius / float(source_detector_dist)
+        excess_bot = max(0.0, v_bot * z_per_v_far_side - float(H_iso) / 2)    # attaches at z_max (bottom)
+        excess_top = max(0.0, -v_top * z_per_v_far_side - float(H_iso) / 2)   # attaches at z_min (top)
+        # axial_pad_fraction scales each end's padding: 1 = full, 0 = none,
+        # a (top, bottom) pair sets the ends separately (top = low slice indexes).
+        axial_pad_fraction = self.get_params('axial_pad_fraction')
+        if isinstance(axial_pad_fraction, (tuple, list)):
+            if len(axial_pad_fraction) != 2:
+                raise ValueError('axial_pad_fraction must be a float or a (top_fraction, '
+                                 'bottom_fraction) pair; got {!r}.'.format(axial_pad_fraction))
+            pad_frac_top, pad_frac_bot = (float(f) for f in axial_pad_fraction)
+        else:
+            pad_frac_top = pad_frac_bot = float(axial_pad_fraction)
+        if pad_frac_top < 0 or pad_frac_bot < 0:
+            raise ValueError('axial_pad_fraction must be >= 0; got {!r}.'.format(axial_pad_fraction))
+        num_slices_top = int(np.ceil(pad_frac_top * excess_top / delta_voxel_slice))
+        num_slices_bot = int(np.ceil(pad_frac_bot * excess_bot / delta_voxel_slice))
+        if not no_warning and self.get_params('verbose') >= 1:
+            print('Axial padding: +{}/+{} slices (top/bottom, axial_pad_fraction={}; '
+                  'reduce it if slice memory is tight).'.format(num_slices_top, num_slices_bot,
+                                                                axial_pad_fraction))
+        num_recon_slices += num_slices_top + num_slices_bot
+        # Recenter so the added slices land at the ends that need them
+        # (bottom slices sit at larger z, so bottom padding increases the offset)
+        recon_slice_offset += 0.5 * (num_slices_bot - num_slices_top) * float(delta_voxel_slice)
+
+        recon_shape = (num_recon_rows, num_recon_cols, num_recon_slices)
+
         self.set_params(no_compile=no_compile, no_warning=no_warning, recon_shape=recon_shape, delta_voxel=delta_voxel, recon_slice_offset=recon_slice_offset)
+
+    # Measured GPU forward pixel batch for LARGE problems (cone_fwd_tile_sweep.py):
+    # ~1.5x at the 1024^3 class for 1.5-4 GB more memory (a deliberate trade), but
+    # neutral-to-worse at the 512^3 class -- so it applies only above the slice threshold,
+    # which sits between the two measured sizes.
+    _FWD_PIXEL_BATCH_GPU_LARGE = 4096
+    _FWD_PIXEL_BATCH_MIN_SLICES = 768   # 1024-class (1008 slices) qualifies; 512-class (448) does not
+
+    def _select_tile_policy(self, on_gpu, num_views, num_slices, n_devices):
+        """Cone tiling: on GPU the horizontal fan uses the SORTED channel reduction
+        (defined at projectors.channel_scatter_reduce), and large problems get the measured
+        larger forward pixel batch (constants above).
+
+        The sorted reduce's columns are the FULL detector rows (cone forward is never
+        row-banded), so its per-call sort amortizes at any realistic detector; the guard
+        below only trips on tiny ones.
+
+        Deliberately NOT set: ``back_stacked_gather``.  The stacked horizontal-fan gather
+        wins in isolation but changes the FULL cone back kernel not at all -- the gather
+        latency already hides behind the vertical-fan band work (cone_back_kernel_ab.py).
+        Parallel back, with no vertical fan to hide behind, is where it wins.
+        """
+        tiles = super()._select_tile_policy(on_gpu, num_views, num_slices, n_devices)
+        if not on_gpu:
+            return tiles
+        num_det_rows = self.get_params('sinogram_shape')[1]
+        if num_slices >= self._FWD_PIXEL_BATCH_MIN_SLICES:
+            tiles = tiles._replace(fwd_pixel_batch=self._FWD_PIXEL_BATCH_GPU_LARGE)
+        # The fused-vfan back kernel (e5_cone_fused_back.py: 9.4x the XLA band sweep;
+        # value contract = gradient 1e-5 / Hessian 1e-4, the affine-m rounding note in
+        # _pallas_kernels.py).  n=1 -> the single-device short-circuit; n>1 -> the
+        # per-owner band path; same availability gates as parallel.
+        from mbirjax import _pallas_kernels
+        ok = _pallas_kernels.is_available()
+        # Forward guard: the E6 kernel statically unrolls +-bp_psf_radius row taps;
+        # beyond bp=2 (fine-slice/coarse-row geometries) the unroll grows and the
+        # measured envelope ends -- XLA is kept (the MAX_PSF_RADIUS precedent).
+        fwd_ok = ok and int(self.get_geometry_parameters().bp_psf_radius) <= 2
+        return tiles._replace(
+            sort_by_channel=num_det_rows >= SORTED_CHANNEL_REDUCE_MIN_COLS,
+            back_pallas=ok and n_devices == 1,
+            back_pallas_band=ok and n_devices > 1,
+            fwd_pallas=fwd_ok and n_devices == 1,
+            fwd_pallas_band=fwd_ok and n_devices > 1)
 
     @staticmethod
     @partial(jax.jit, static_argnames='projector_params')
-    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, single_view_params, projector_params):
+    def forward_project_pixel_batch_to_one_view(voxel_values, pixel_indices, single_view_params, n_p_centers,
+                                                projector_params):
         """
         Forward project a set of voxels determined by indices into the flattened array of size num_rows x num_cols.
 
@@ -280,11 +464,16 @@ class ConeBeamModel(TomographyModel):
                 voxel_values[i, j] is the value of the voxel in slice j at the location determined by indices[i].
             pixel_indices (jax array of int):  1D vector of indices into flattened array of size num_rows x num_cols.
             single_view_params: These are the angle and helical_z_shift for the view being forward projected.
+            n_p_centers (jax array of int): (num_pixels,) integer channel centers for this view,
+                computed OUTSIDE this program (see compute_channel_coordinate).
+                Consumed by the horizontal fan; the vertical fan's per-slice rounds remain
+                in-jit (documented accepted risk; a per-slice precompute is not
+                materializable).
             projector_params (namedtuple):  tuple of (sinogram_shape, recon_shape, get_geometry_params())
 
         Returns:
             jax array of shape (num_det_rows, num_det_channels)
-        """        
+        """
         recon_shape = projector_params.recon_shape
         num_recon_slices = recon_shape[2]
         if voxel_values.shape[0] != pixel_indices.shape[0] or len(voxel_values.shape) < 2 or \
@@ -294,12 +483,14 @@ class ConeBeamModel(TomographyModel):
         vertical_fan_projector = ConeBeamModel.forward_vertical_fan_pixel_batch_to_one_view
         horizontal_fan_projector = ConeBeamModel.forward_horizontal_fan_pixel_batch_to_one_view
 
-        # named_scope tags the HLO/trace with a stable, code-localized region name (profiling
+        # named_scope tags the compiled program (HLO, XLA's intermediate representation) and
+        # profiler traces with a stable, code-localized region name (profiling
         # attribution that survives recompiles + jax-version renames; see experiments/profiling).
         with jax.named_scope("cone/forward/vertical_fan"):
             new_voxel_values = vertical_fan_projector(voxel_values, pixel_indices, single_view_params, projector_params)
         with jax.named_scope("cone/forward/horizontal_fan"):
-            sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, single_view_params, projector_params)
+            sinogram_view = horizontal_fan_projector(new_voxel_values, pixel_indices, single_view_params,
+                                                     n_p_centers, projector_params)
 
         return sinogram_view
 
@@ -329,7 +520,8 @@ class ConeBeamModel(TomographyModel):
         return new_pixels
 
     @staticmethod
-    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, single_view_params, projector_params):
+    def forward_horizontal_fan_pixel_batch_to_one_view(voxel_values, pixel_indices, single_view_params,
+                                                       n_p_centers, projector_params):
         """
         Apply a horizontal fan beam transformation to a set of voxel cylinders. These cylinders are assumed to have
         slices aligned with detector rows, so that a horizontal fan beam maps a cylinder slice to a detector row.
@@ -352,29 +544,20 @@ class ConeBeamModel(TomographyModel):
         num_views, num_det_rows, num_det_channels = projector_params.sinogram_shape
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
-        L_max = jnp.minimum(1, W_p_c)
+        n_p, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Build the view CHANNEL-MAJOR -- (num_det_channels, num_det_rows) rather than
-        # (num_det_rows, num_det_channels) -- so the per-pixel channel scatter writes a
-        # CONTIGUOUS row (stride 1) instead of a column of stride num_det_channels.  A
-        # power-of-2 num_det_channels column stride aliases the CPU cache, and the
-        # channel scatter is (measured) the dominant cone-forward cost on both CPU and
-        # GPU; the contiguous write avoids it.  Transpose back to (rows, channels) on
-        # return (one cheap pass, fused by XLA) so the output layout is unchanged.  This
-        # mirrors ParallelBeamModel.forward_project_pixel_batch_to_one_view.
-        sinogram_view_T = jnp.zeros((num_det_channels, num_det_rows))
-
-        # Do the horizontal projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-            n = n_p_center + n_offset
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            sinogram_view_T = sinogram_view_T.at[n, :].add(A_chan_n.reshape((-1, 1)) * voxel_values)
-
+        # The shared trapezoid-rule fan (see horizontal_fan_project in projectors.py, which
+        # owns the channel-major layout rationale and the sort_by_channel branch -- for cone
+        # the reduce columns are the FULL detector rows, so ConeBeamModel._select_tile_policy
+        # enables the sorted reduce on GPU except at tiny detectors; trace-time branch since
+        # projector_params is static).  Cone's weight scale -- in-plane voxel area over the
+        # footprint length -- is a PER-PIXEL (num_pixels,) array (per-pixel magnification);
+        # the helper broadcasts it.
+        weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
+        sinogram_view_T = horizontal_fan_project(n_p, n_p_centers, W_p_c, weight_scale,
+                                                 voxel_values, num_det_channels, gp.psf_radius,
+                                                 use_sorted=projector_params.sort_by_channel)
         return sinogram_view_T.T
 
     @staticmethod
@@ -477,8 +660,8 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames=['projector_params', 'slice_band_size'])
-    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, projector_params,
-                                             coeff_power=1, slice_band_size=None):
+    def back_project_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params, n_p_centers,
+                                             projector_params, coeff_power=1, slice_band_size=None):
         """
         Back project one view to multiple pixels (voxel cylinders).
 
@@ -513,7 +696,8 @@ class ConeBeamModel(TomographyModel):
         # named_scope: stable, code-localized profiling regions (see experiments/profiling).
         with jax.named_scope("cone/back/pixel/horizontal_fan"):
             det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
-                sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
+                sinogram_view, pixel_indices, single_view_params, n_p_centers, projector_params,
+                coeff_power=coeff_power)
 
         # Tile the slice axis into uniform bands; jax.lax.map needs equal-shape iterations, so
         # the last band runs past num_recon_slices and is cropped off below.
@@ -542,7 +726,7 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     def back_horizontal_fan_one_view_to_pixel_batch(sinogram_view, pixel_indices, single_view_params,
-                                                    projector_params, coeff_power=1):
+                                                    n_p_centers, projector_params, coeff_power=1):
         """
         Apply the back projection of a horizontal fan beam transformation to a single sinogram view
         and return the resulting voxel cylinders.
@@ -566,65 +750,31 @@ class ConeBeamModel(TomographyModel):
         num_pixels = pixel_indices.shape[0]
 
         # Get the data needed for horizontal projection
-        n_p, n_p_center, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
-        L_max = jnp.minimum(1, W_p_c)
+        n_p, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params, projector_params)
         delta_voxel_row = gp.voxel_row_aspect * gp.delta_voxel
 
-        # Read the view CHANNEL-MAJOR -- transpose to (num_det_channels, num_det_rows)
-        # up front so the per-pixel channel gather reads a CONTIGUOUS row (stride 1)
-        # instead of a column of stride num_det_channels.  A power-of-2 num_det_channels
-        # column stride aliases the CPU cache, and the channel gather is (measured) the
-        # dominant cone-back cost on GPU; the contiguous access avoids it.  This is the
-        # adjoint of the forward kernel's channel-major scatter (mirror of
-        # ParallelBeamModel.back_project_one_view_to_pixel_batch).
+        # The shared adjoint trapezoid-rule fan (see horizontal_fan_back in projectors.py,
+        # which owns the channel-major layout rationale and the back_stacked_gather branch
+        # -- deliberately NOT enabled by cone's policy: measured a 1.00x composition no-op,
+        # the gather hides behind the vertical-fan band work).  The per-pixel weight scale
+        # mirrors the forward fan.
         sinogram_view_T = sinogram_view.T            # (num_det_channels, num_det_rows)
-
-        # Allocate the voxel cylinder array
-        det_voxel_cylinder = jnp.zeros((num_pixels, num_det_rows))
-
-        # Do the horizontal projection
-        for n_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-            n = n_p_center + n_offset
-            abs_delta_p_c_n = jnp.abs(n_p - n)
-            L_p_c_n = jnp.clip((W_p_c + 1) / 2 - abs_delta_p_c_n, 0, L_max)
-            A_chan_n = ((delta_voxel_row * gp.delta_voxel) / footprint_xy) * L_p_c_n
-            A_chan_n *= (n >= 0) * (n < num_det_channels)
-            A_chan_n = A_chan_n ** coeff_power
-            det_voxel_cylinder = jnp.add(det_voxel_cylinder, A_chan_n.reshape((-1, 1)) * sinogram_view_T[n, :])
-
-        return det_voxel_cylinder
+        weight_scale = (delta_voxel_row * gp.delta_voxel) / footprint_xy
+        return horizontal_fan_back(sinogram_view_T, n_p, n_p_centers, W_p_c, weight_scale,
+                                   gp.psf_radius, coeff_power=coeff_power,
+                                   use_stacked=projector_params.back_stacked_gather)
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Banded vertical fans + per-view banded kernels
+    # Banded vertical fans + per-view banded kernels.  The shared contract (global-index
+    # z anchoring / tiling-invariance, inert padding, single-device band walk + the
+    # multi-device per-band entry) is documented ONCE at the canonical note above
+    # projectors.vertical_fan_band_gather.
     #
-    # These back-project a view onto a contiguous band of GLOBAL recon-slice indices
-    # [g0, g0+L): the vertical fan is restricted to that slice range, while the
-    # horizontal fan is the same for every band and is computed once per view.  This
-    # is the interface the multi-device back projector uses -- the recon's slice axis
-    # is split into bands so each device handles a slice range, and the per-band
-    # results are concatenated.  It also lets a single device process the slices in
-    # bands instead of holding the whole cylinder at once.
-    #
-    # The FORWARD projection does NOT band.  A band of input slices reaches a wide,
-    # mostly-empty window of detector rows, so a banded forward recomputes the
-    # dominant horizontal stage per band for little memory gain (measured: streaming
-    # the bands was 5-14x slower on CPU for ~13-23% transient memory -- a bad trade).
-    # The multi-device forward instead gathers the slice cylinder per pixel-batch and
-    # runs the monolithic forward, so there is no banded forward kernel here.
-    #
-    # Physical z-coordinates come from the problem's recon_shape and the GLOBAL slice
-    # index (k = g0 + k_local), never from the length of the band that is passed in,
-    # so a sub-band gives exactly the same coordinates as the full cylinder.  A slice
-    # whose global index is at or beyond the real slice count (a padded slice, used
-    # when the slice axis is padded to split evenly across devices) receives nothing,
-    # so padding is inert.
-    #
-    # These are the production cone back vertical fan: back_project_one_view_to_pixel_batch
-    # walks the slice axis in bands of these via back_vertical_fan_band_pixel_batch (the
-    # monolithic vertical fan they replaced has been removed).  back_project_one_view_to_band
-    # (horizontal fan once + one band) is the per-band entry the multi-device back projector
-    # will use.  The monolithic forward stays -- the sharded forward gathers the slice
-    # cylinder and calls it.
+    # Cone-specific: the FORWARD projection does NOT band -- a band of input slices reaches
+    # a wide, mostly-empty window of detector rows, so a banded forward recomputes the
+    # dominant horizontal stage per band for little memory gain (measured: 5-14x slower for
+    # ~13-23% transient memory).  The multi-device forward instead gathers the slice
+    # cylinder per pixel-batch and runs the monolithic forward.
     # ──────────────────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -648,20 +798,13 @@ class ConeBeamModel(TomographyModel):
         slice_indices = g0 + jnp.arange(num_band_slices)            # GLOBAL band indices
         m_p, m_p_center, W_p_r, cos_alpha_p_z = ConeBeamModel.compute_vertical_data_single_pixel(
             pixel_index, slice_indices, single_view_params, projector_params)
-        L_max = jnp.minimum(1, W_p_r)
-
-        new_cylinder = jnp.zeros(num_band_slices)
-        for m_offset in jnp.arange(start=-gp.psf_radius, stop=gp.psf_radius + 1):
-            m = m_p_center + m_offset
-            abs_delta_p_r_m = jnp.abs(m_p - m)
-            L_p_r_m = jnp.clip((W_p_r + 1) / 2 - abs_delta_p_r_m, 0, L_max)
-            A_row_m = L_p_r_m / cos_alpha_p_z
-            A_row_m *= (m >= 0) * (m < num_det_rows)
-            A_row_m = A_row_m ** coeff_power
-            new_cylinder = jnp.add(new_cylinder, A_row_m * detector_column_values[m])
-        # Padded global slices (index >= S_real) are inert.  No-op when g0+L <= S_real.
-        new_cylinder = new_cylinder * (slice_indices < num_recon_slices)
-        return new_cylinder
+        # The shared banded vertical-fan gather (see vertical_fan_band_gather in
+        # projectors.py; translation shares it verbatim -- weights L / cos_alpha, padded
+        # slices zeroed).
+        return vertical_fan_band_gather(detector_column_values, slice_indices, m_p,
+                                        m_p_center, W_p_r, cos_alpha_p_z, num_det_rows,
+                                        num_recon_slices, gp.psf_radius,
+                                        coeff_power=coeff_power)
 
     @staticmethod
     def back_vertical_fan_band_pixel_batch(det_voxel_cylinder, pixel_indices, single_view_params,
@@ -677,8 +820,8 @@ class ConeBeamModel(TomographyModel):
 
     @staticmethod
     @partial(jax.jit, static_argnames=['projector_params', 'num_band_slices'])
-    def back_project_one_view_to_band(sinogram_view, pixel_indices, single_view_params, projector_params,
-                                      g0, num_band_slices, coeff_power=1):
+    def back_project_one_view_to_band(sinogram_view, pixel_indices, single_view_params, n_p_centers,
+                                      projector_params, g0, num_band_slices, coeff_power=1):
         """Banded back projection of one view onto GLOBAL recon slices [g0, g0+L).
 
         Horizontal fan once (full det rows) -> banded vertical fan.  Returns
@@ -688,7 +831,8 @@ class ConeBeamModel(TomographyModel):
         # is where the L1-bound transpose lives; see experiments/profiling/key_findings.md).
         with jax.named_scope("cone/back/band/horizontal_fan"):
             det_voxel_cylinder = ConeBeamModel.back_horizontal_fan_one_view_to_pixel_batch(
-                sinogram_view, pixel_indices, single_view_params, projector_params, coeff_power=coeff_power)
+                sinogram_view, pixel_indices, single_view_params, n_p_centers, projector_params,
+                coeff_power=coeff_power)
         with jax.named_scope("cone/back/band/vertical_fan"):
             return ConeBeamModel.back_vertical_fan_band_pixel_batch(
                 det_voxel_cylinder, pixel_indices, single_view_params, projector_params,
@@ -750,10 +894,71 @@ class ConeBeamModel(TomographyModel):
 
         return vertical_data
 
+    # Both powers through the fused kernel.  (A gradient-only interlude on
+    # 2026-07-13 responded to an 8.5e-3 VCD trajectory divergence later root-caused
+    # as INTRINSIC edge-voxel conditioning -- the XLA-vs-XLA view-batch control
+    # showed the same signature, and the Hessian ablation changed nothing.  The
+    # Hessian's own per-call gate is 2.0e-5 against its 1e-4 contract; see the
+    # findings doc's "inc5 VCD divergence" section.)
+    _PALLAS_BACK_COEFF_POWERS = (1, 2)
+
+    @staticmethod
+    def compute_hfan_data(pixel_indices, single_view_params, projector_params):
+        """(n_p, W_p_c, weight_scale) for the shared trapezoid weight builders
+        (_pallas_kernels._jit_compute_back_weights): cone's horizontal-fan data with
+        the weight scale of back_horizontal_fan_one_view_to_pixel_batch."""
+        gp = projector_params.geometry_params
+        n_p, W_p_c, footprint_xy = ConeBeamModel.compute_horizontal_data(
+            pixel_indices, single_view_params, projector_params)
+        weight_scale = (gp.voxel_row_aspect * gp.delta_voxel * gp.delta_voxel) / footprint_xy
+        return n_p, W_p_c, weight_scale
+
+    def _pallas_forward_project(self, voxel_values, pixel_indices,
+                                owned_view_indices=()):
+        """Cone's pallas forward driver: the E6 fused kernel (inverse-affine vfan
+        inside the segment walk); serves n=1 and the n>=2 per-owner cylinder calls."""
+        from mbirjax import _pallas_kernels
+        return _pallas_kernels.cone_forward_project(
+            self, voxel_values, pixel_indices, owned_view_indices=owned_view_indices)
+
+    def _pallas_back_project_single_device(self, sinogram, pixel_indices,
+                                           coeff_power=1, output_device=None):
+        """Cone's pallas n=1 back driver: the fused-vfan kernel over the full slice
+        range (see _pallas_kernels.cone_back_project_single_device)."""
+        from mbirjax import _pallas_kernels
+        return _pallas_kernels.cone_back_project_single_device(
+            self, sinogram, pixel_indices, coeff_power=coeff_power,
+            output_device=output_device)
+
+    def _back_project_view_shard_to_band(self, view_data, pixel_indices, g0, g1,
+                                         owned_view_indices, coeff_power):
+        """Cone's per-owner banded back: the fused-vfan pallas kernel when enabled
+        (full-row views -- a cone slice draws from a RANGE of rows, so no crop),
+        else the base XLA banded path."""
+        if (getattr(self.tiles, 'back_pallas_band', False)
+                and coeff_power in self._PALLAS_BACK_COEFF_POWERS):
+            from mbirjax import _pallas_kernels
+            return _pallas_kernels.cone_back_project_band(
+                self, view_data, pixel_indices, g0, g1 - g0,
+                owned_view_indices=owned_view_indices, coeff_power=coeff_power)
+        return super()._back_project_view_shard_to_band(
+            view_data, pixel_indices, g0, g1, owned_view_indices, coeff_power)
+
+    @staticmethod
+    def compute_channel_coordinate(pixel_indices, single_view_params, projector_params):
+        """Continuous projected channel coordinate n_p for one view (the float chain whose
+        rounded value is the horizontal fans' integer center; see the base-class docstring
+        for the concrete-input contract).  Reuses compute_horizontal_data verbatim
+        so the centers are consistent with the in-kernel weights by construction."""
+        return ConeBeamModel.compute_horizontal_data(pixel_indices, single_view_params,
+                                                     projector_params)[0]
+
     @staticmethod
     def compute_horizontal_data(pixel_indices, single_view_params, projector_params):
         """
-        Compute the quantities n_p, n_p_center, W_p_c, footprint_xy needed for horizontal projection.
+        Compute the quantities n_p, W_p_c, footprint_xy needed for horizontal projection.
+        (The integer center round(n_p) is deliberately NOT computed here -- see
+        compute_channel_coordinate.)
 
         Behavior differs by detector type:
 
@@ -768,7 +973,7 @@ class ConeBeamModel(TomographyModel):
             projector_params (namedtuple): tuple of (sinogram_shape, recon_shape, get_geometry_params()).
 
         Returns:
-            n_p, n_p_center, W_p_c, footprint_xy
+            n_p, W_p_c, footprint_xy
         """
         angle = single_view_params[0]
         helical_z_shift = single_view_params[1]
@@ -799,7 +1004,8 @@ class ConeBeamModel(TomographyModel):
 
         # Calculate indices on the detector grid
         n_p = (u_p + gp.det_channel_offset) / gp.delta_det_channel + det_center_channel  # Sync with detector_uv_to_mn
-        n_p_center = jnp.round(n_p).astype(int)
+        # NOTE: no round here -- the integer center is computed outside the projector
+        # programs (see compute_channel_coordinate).
 
         # theta_p and W_p_c computation differ between flat and curved detectors
         if not gp.use_curved_detector: # 'flat'
@@ -817,7 +1023,7 @@ class ConeBeamModel(TomographyModel):
             # No cos(theta_p) denominator: arc parameterisation absorbs the foreshortening
             W_p_c = pixel_mag * (footprint_xy / gp.delta_det_channel)
 
-        horizontal_data = (n_p, n_p_center, W_p_c, footprint_xy)
+        horizontal_data = (n_p, W_p_c, footprint_xy)
 
         return horizontal_data
 
@@ -1065,7 +1271,16 @@ class ConeBeamModel(TomographyModel):
         det_half_height_iso = 0.5 * num_rows * delta_det_row / M_0
         visible = jnp.abs(z_k[:, None] - helical_z_shifts[None, :]) <= det_half_height_iso
         coverage = jnp.sum(visible, axis=1)
-        z_weight = num_views / coverage
+        # REAL slices can also have zero coverage: auto_set_recon_geometry pads the slab past
+        # the central-ray height H_iso/2, and this weight's
+        # visibility criterion is the central-ray one -- so the padding slices at the travel
+        # ends are grazed only by diverging edge rays and count as out of view here.  FDK has
+        # essentially no data for them, so the honest initialization is 0 (the VCD iterations
+        # fill them from the grazing rays and the prior); jnp.maximum keeps the discarded branch
+        # of the where finite.
+        z_weight = jnp.where(coverage > 0, num_views / jnp.maximum(coverage, 1), 0.0)
+        # Padded device-form slices (k >= num_real_slices) stay zero as well: they are
+        # identically zero by the forced-zero invariant and must remain so.
         z_weight = jnp.where(k < num_real_slices, z_weight, 0.0)
         recon = recon * z_weight[None, None, :]
 
@@ -1122,7 +1337,8 @@ class ConeBeamModel(TomographyModel):
         return recon if output_sharded else self._gather_recon(recon)
 
     def split_sino_recon(self, sino, weights=None, half_overlap=5, init_recon=None, max_iterations=15, stop_threshold_change_pct=0.2,
-                         first_iteration=0, compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True):
+                         first_iteration=0, compute_prior_loss=False, logfile_path='~/.mbirjax/logs/recon.log', print_logs=True,
+                         align_split_grid=False):
         """
         This function reduces memory usage for cone beam MBIR reconstruction by approximately a factor of 2
         by splitting the detector rows into two overlapping halves, reconstructing each half separately,
@@ -1131,10 +1347,24 @@ class ConeBeamModel(TomographyModel):
         The function can be called with the same arguments as TomographyModel.recon(), and it should return a
         reconstruction which is approximately equal to the reconstruction returned by TomographyModel.recon().
 
+        Each half keeps ``half_overlap`` detector rows past the iso row, and its reconstruction
+        extends ``half_overlap_recon`` slices past the split, where half_overlap_recon =
+        ceil(half_overlap_sino * (1 + R/SID) * rho) + 2 with rho = delta_det_row/(magnification *
+        delta_voxel_slice) and R the recon-support radius.  The (1 + R/SID) factor makes every
+        slice the kept rows can SEE representable (the cone-divergence bound of
+        auto_set_recon_geometry, evaluated at the iso ray); without it each half is axially
+        truncated at its extension end, which shows up as alternating stripes at the stitch seam
+        on real scans (see plans/flash_remediation/).  The +2 margin covers the voxel footprint
+        and the worst-case half-slice misalignment between the sinogram cut row and the recon
+        split slice.
+
         Args:
             sino (jnp.ndarray | np.ndarray): Full sinogram of shape (num_views, num_rows, num_cols).
             weights (jnp.ndarray | np.ndarray, optional): Optional sinogram weights with the same shape as `sino`.
-            half_overlap (int): Number of overlapping detector rows and recon slices per half. (total overlap = 2 * half_overlap)
+            half_overlap (int): Number of overlapping detector rows past the iso row per half (when
+                recon slices are coarser than the iso-mapped rows, the row overlap is scaled up so
+                it still spans ``half_overlap`` slices).  The recon overlap is derived from it by
+                the geometry formula above.
             init_recon (optional): Same as in the recon method.
             max_iterations (int, optional): Same as in the recon method.
             stop_threshold_change_pct (float, optional): Same as in the recon method.
@@ -1143,11 +1373,20 @@ class ConeBeamModel(TomographyModel):
             logfile_path (str, optional): Same as in the TomographyModel.recon() method.  The two
                 halves' logs are merged into this single file, each under a section header.
             print_logs (bool, optional): Same as in the TomographyModel.recon() method.
+            align_split_grid (bool, optional): If True, align the recon split slice with the
+                sinogram cut row: first by choosing the cut row (effective only when rho != 1,
+                where the row and slice grids are incommensurate), then by shifting the whole
+                recon grid by the sub-slice residual (at most half a slice).  Alignment removes
+                the seam-stripe driver outright, but the shifted output samples the object at
+                z-positions up to delta_voxel_slice/2 away from what recon() would use -- an
+                equally valid reconstruction that is NOT registration-identical to recon(), which
+                is why it is opt-in.  The applied shift is reported in the returned dictionary
+                under 'split_params'.  Defaults to False.
 
         Returns:
-            Tuple[np.ndarray, dict]:
-                - Reconstructed volume (numpy array).
-                - Dictionary of metadata containing recon and model parameters for each half.
+            Tuple[np.ndarray, dict]: the reconstructed volume (numpy array), and a
+                metadata dictionary containing recon and model parameters for each
+                half, plus 'split_params' (the overlaps and any alignment shift used).
 
         Raises:
             ValueError: If inputs are missing or shapes are inconsistent, if half_overlap < 2,
@@ -1163,8 +1402,10 @@ class ConeBeamModel(TomographyModel):
             ...                          source_detector_dist=1000.0,
             ...                          source_iso_dist=500.0)
             >>> recon, recon_info = model.split_sino_recon(sino, half_overlap=4)
+            >>> # 64 detector-height slices + 2 padding slices at each end
+            >>> # (see auto_set_recon_geometry):
             >>> recon.shape  # Quilted reconstruction volume
-            (64, 64, 64)
+            (64, 64, 68)
         """
         # -------- Basic validation --------
         if half_overlap < 2:
@@ -1181,8 +1422,8 @@ class ConeBeamModel(TomographyModel):
 
         # Operate on the host: split here and let each half's recon re-shard its own half, so the full
         # sinogram is never on the devices at once (the memory saving).  np.asarray is a no-op for a
-        # numpy input and gathers a device/sharded input once; it also lets the weight halves below be
-        # writable numpy copies, so the caller's weights array is never mutated by the sine taper.
+        # numpy input and gathers a device/sharded input once; the per-half slices below are then
+        # cheap host views.
         sino = np.asarray(sino)
         if weights is not None:
             weights = np.asarray(weights)
@@ -1203,16 +1444,75 @@ class ConeBeamModel(TomographyModel):
         delta_det_row = self.get_params('delta_det_row')
         full_det_row_offset = self.get_params('det_row_offset')
         delta_voxel = self.get_params('delta_voxel')
-        voxel_slice_aspect = self.get_params('voxel_slice_aspect')
+        voxel_slice_aspect, voxel_row_aspect = self.get_params(['voxel_slice_aspect', 'voxel_row_aspect'])
         delta_voxel_slice = voxel_slice_aspect * delta_voxel
         full_recon_shape = self.get_params('recon_shape')
         full_recon_slice_offset = self.get_params('recon_slice_offset')
+        source_iso_dist, use_ror_mask = self.get_params(['source_iso_dist', 'use_ror_mask'])
         magnification = self.get_magnification()
 
         # Get recon shape parameters
         full_recon_rows, full_recon_cols, full_recon_slices = full_recon_shape
 
-        # -------- Compute the recon slice nearest to iso --------
+        # -------- Overlaps: detector rows kept past the cut, recon slices kept past the split --------
+        # Sino overlap: when recon slices are coarser than the iso-mapped rows, scale the row
+        # overlap up so it still spans about half_overlap slices (the knob keeps its meaning in
+        # both unit systems).
+        delta_detector_row_at_iso = max(delta_det_row / magnification, 1e-12)
+        ratio_pixel_to_sino_pitch = delta_voxel_slice / delta_detector_row_at_iso
+        if ratio_pixel_to_sino_pitch > 1:
+            half_overlap_sino = int(jnp.round(half_overlap * ratio_pixel_to_sino_pitch))
+        else:
+            half_overlap_sino = half_overlap
+        # Recon overlap from geometry (see docstring): every slice the kept rows can SEE must be
+        # representable, or each half is axially truncated at its extension end and the seam
+        # stripes.  rho = slices seen per kept row at the iso ray; (1 + R/SID) is the
+        # cone-divergence bound evaluated at the far side of the support (the split-seam analogue
+        # of auto_set_recon_geometry's per-end extension); +2 covers the voxel footprint and the
+        # worst-case half-slice cut/split misalignment.
+        rho = 1.0 / ratio_pixel_to_sino_pitch
+        support_radius = mj.get_support_radius(full_recon_shape, voxel_row_aspect * delta_voxel,
+                                               delta_voxel, use_ror_mask=use_ror_mask)
+        half_overlap_recon = int(np.ceil(
+            half_overlap_sino * (1.0 + support_radius / float(source_iso_dist)) * rho)) + 2
+
+        """
+        Compute detector shape parameters for top and bottom sinograms
+        """
+        # -------- Choose the detector row nearest to iso (the cut row) --------
+        det_iso_row_float = ((full_num_rows - 1) / 2.0) + (full_det_row_offset / delta_det_row)
+        det_iso_row_index = int(jnp.round(det_iso_row_float))
+
+        # Validate iso-row index is inside (0, num_rows)
+        if not (0 < det_iso_row_index < full_num_rows):
+            raise ValueError(
+                f"Computed det_iso_row_index={det_iso_row_index} is out of valid range (0, {full_num_rows-1}). "
+            )
+
+        # -------- Optional cut/split alignment (align_split_grid) --------
+        # The seam-stripe driver is the SUB-SLICE misalignment eps between the cut row's
+        # iso-mapped plane and the split slice, eps = wrap(split_offset - cut_offset_rows * rho)
+        # with both round-off terms in [-1/2, 1/2].  Two mechanisms remove it: choosing a
+        # different cut row changes eps by rho per row (effective only when rho != 1; at rho == 1
+        # the row and slice grids are commensurate and eps is invariant under every index
+        # choice), and a sub-slice shift of the whole recon grid removes the residual exactly.
+        # The shift moves the OUTPUT grid by up to half a slice -- an equally valid sampling that
+        # is not registration-identical to recon(), which is why this is opt-in.
+        grid_shift_alu = 0.0
+        if align_split_grid:
+            def _wrap_half(x):
+                return (x + 0.5) % 1.0 - 0.5
+            iso_float_unshifted = (full_recon_slices - 1) / 2.0 - full_recon_slice_offset / delta_voxel_slice
+            split_off_unshifted = round(iso_float_unshifted) - iso_float_unshifted
+            candidates = [c for c in range(det_iso_row_index - 2, det_iso_row_index + 3)
+                          if 0 < c < full_num_rows]
+            eps_by_cut = {c: _wrap_half(split_off_unshifted - (c - det_iso_row_float) * rho)
+                          for c in candidates}
+            det_iso_row_index = min(eps_by_cut, key=lambda c: abs(eps_by_cut[c]))
+            grid_shift_alu = -float(eps_by_cut[det_iso_row_index]) * delta_voxel_slice
+            full_recon_slice_offset = full_recon_slice_offset + grid_shift_alu
+
+        # -------- Compute the recon slice nearest to iso (the split slice) --------
         full_recon_iso_slice_index_float = (full_recon_slices - 1) / 2.0 - full_recon_slice_offset / delta_voxel_slice
         split_index = int(jnp.round(full_recon_iso_slice_index_float))
         top_num_slices = split_index + 1
@@ -1221,10 +1521,20 @@ class ConeBeamModel(TomographyModel):
         # This will be used to slightly shift the slices so that they align with a standard reconstruction.
         split_offset = split_index - full_recon_iso_slice_index_float
 
-        # Fallback: If split index creates an empty top or bottom half sinogram, then warn and do a normal MBIR recon.
-        if (split_index < 1) or (split_index > full_recon_slices - 2):
+        # Residual sub-slice cut/split misalignment, for the returned split_params (0 up to float
+        # noise when align_split_grid=True; the +2 overlap margin absorbs it when False).
+        split_cut_mismatch = float((split_offset - (det_iso_row_index - det_iso_row_float) * rho
+                                    + 0.5) % 1.0 - 0.5)
+
+        # Fallback: if the split leaves either half too thin -- an empty half sinogram, or fewer
+        # kept slices than the recon overlap (the stitch spans 2 * half_overlap_recon slices) --
+        # then warn and do a normal MBIR recon.
+        if (split_index < 1 or split_index > full_recon_slices - 2
+                or top_num_slices < half_overlap_recon
+                or full_recon_slices - top_num_slices < half_overlap_recon):
             warnings.warn(
-                "split_index is too close to the volume boundary; falling back to standard MBIR reconstruction.",
+                "split_index is too close to the volume boundary for the recon overlap; "
+                "falling back to standard MBIR reconstruction.",
                 UserWarning,
             )
             return self.recon(
@@ -1239,29 +1549,6 @@ class ConeBeamModel(TomographyModel):
                 print_logs=print_logs,
             )
 
-        # Compute overlaps for sinogram and recon
-        delta_detector_row_at_iso = max(delta_det_row / magnification, 1e-12)
-        ratio_pixel_to_sino_pitch = delta_voxel_slice / delta_detector_row_at_iso
-        if ratio_pixel_to_sino_pitch > 1:
-            half_overlap_sino = int(jnp.round(half_overlap * ratio_pixel_to_sino_pitch))
-            half_overlap_recon = half_overlap
-        else:
-            half_overlap_sino = half_overlap
-            half_overlap_recon = int(jnp.round(half_overlap * 1/ratio_pixel_to_sino_pitch))
-
-        """
-        Compute detector shape parameters for top and bottom sinograms
-        """
-        # -------- Choose the detector row nearest to iso --------
-        det_iso_row_float = ((full_num_rows - 1) / 2.0) + (full_det_row_offset / delta_det_row)
-        det_iso_row_index = int(jnp.round(det_iso_row_float))
-
-        # Validate iso-row index is inside (0, num_rows)
-        if not (0 < det_iso_row_index < full_num_rows):
-            raise ValueError(
-                f"Computed det_iso_row_index={det_iso_row_index} is out of valid range (0, {full_num_rows-1}). "
-            )
-
         # -------- Per-half scalar parameters (cheap; the heavy arrays + models are built one half at a
         # time in _recon_one_half below, so only ONE half's inputs are resident at once) --------
         top_lo, top_hi = 0, min(det_iso_row_index + half_overlap_sino, full_num_rows)
@@ -1274,22 +1561,23 @@ class ConeBeamModel(TomographyModel):
 
         full_det_center = (full_num_rows - 1) / 2.0
 
-        # Sine filter (float32) applied to the overlap rows of each half's weights to reduce boundary
-        # artifacts.  Note that 0 weight is used deliberately on the most extreme row to reduce ringing.
-        num_filter_pts = half_overlap_sino
-        sine_filter_inputs = (np.pi / 2) * np.linspace(0, 1, num_filter_pts, endpoint=False)
-        sine_filter = np.sin(sine_filter_inputs).astype(np.float32)
+        # NOTE: earlier versions applied a quarter-sine taper to each half's overlap-row weights.
+        # With the geometry-derived recon overlap above, the overlap data is fully explainable by
+        # each half's extended slices, so the taper is unnecessary -- and the flash-remediation
+        # campaign showed it is a regime-dependent suppressor that fails at coarse downsampling
+        # while the matched extension fixes the seam in every regime tested
+        # (plans/flash_remediation/).  The taper is therefore retired.
 
         # Regularization params come from the FULL sinogram; the halves copy them and set
         # auto_regularize_flag=False so they do not re-derive from their partial sinograms.
         self.auto_set_regularization_params(sino)
 
-        def _recon_one_half(lo, hi, recon_shape, recon_slice_offset, taper_top, half_logfile_path):
+        def _recon_one_half(lo, hi, recon_shape, recon_slice_offset, is_top, half_logfile_path):
             """Reconstruct one detector-row half on the host; return (host_recon, recon_dict).
 
             Builds the half's model, sinogram slice, and weights, runs recon, and gathers the result to
-            the host.  All the heavy state (the weights copy, the half model, the device recon) is local,
-            so it is released when this returns -- only ONE half's inputs are resident at a time, which is
+            the host.  All the heavy state (the half model, the device recon) is local, so it is
+            released when this returns -- only ONE half's inputs are resident at a time, which is
             the point of doing half a recon at a time.  The returned reconstruction is a host array.
             """
             num_rows = hi - lo
@@ -1308,23 +1596,15 @@ class ConeBeamModel(TomographyModel):
             if self.shard_devices is not None:
                 model.configure_devices(self.shard_devices)
 
-            # Sinogram slice (a host view) and FRESH writable weights (a copy, never a view into the
-            # caller's weights -- the taper writes into them and the halves overlap).
+            # Sinogram and weight slices are host VIEWS (nothing mutates them; weights=None passes
+            # through so the half recon uses its constant-weight path with no ones array built).
             sino_half = sino[:, lo:hi, :]
-            if weights is None:
-                weights_half = np.ones_like(sino_half)
-            else:
-                weights_half = np.array(weights[:, lo:hi, :])
-            # Taper the overlap rows: the top half tapers its LAST rows (reversed ramp), the bottom its FIRST.
-            if taper_top:
-                weights_half[:, -half_overlap_sino:] = weights_half[:, -half_overlap_sino:] * sine_filter[None, ::-1, None]
-            else:
-                weights_half[:, :half_overlap_sino] = weights_half[:, :half_overlap_sino] * sine_filter[None, :, None]
+            weights_half = None if weights is None else weights[:, lo:hi, :]
 
             # init_recon slice: the top half takes the first recon_shape[2] slices, the bottom the last.
             half_init = None
             if init_recon is not None:
-                half_init = init_recon[:, :, :recon_shape[2]] if taper_top else init_recon[:, :, -recon_shape[2]:]
+                half_init = init_recon[:, :, :recon_shape[2]] if is_top else init_recon[:, :, -recon_shape[2]:]
 
             recon_half, recon_dict = model.recon(sino_half, weights=weights_half, init_recon=half_init,
                                                  max_iterations=max_iterations,
@@ -1348,10 +1628,10 @@ class ConeBeamModel(TomographyModel):
             log_path, half_log_paths = None, (None, None)
         try:
             recon_top_half, recon_top_dict = _recon_one_half(top_lo, top_hi, top_recon_shape,
-                                                             top_recon_slice_offset, taper_top=True,
+                                                             top_recon_slice_offset, is_top=True,
                                                              half_logfile_path=half_log_paths[0])
             recon_bot_half, recon_bot_dict = _recon_one_half(bot_lo, bot_hi, bot_recon_shape,
-                                                             bot_recon_slice_offset, taper_top=False,
+                                                             bot_recon_slice_offset, is_top=False,
                                                              half_logfile_path=half_log_paths[1])
         finally:
             if log_path:
@@ -1380,6 +1660,15 @@ class ConeBeamModel(TomographyModel):
                            'notes_top': recon_top_dict['notes'],
                            'notes_bottom': recon_bot_dict['notes'],
                            'model_params_top': recon_top_dict['model_params'],
-                           'model_params_bottom': recon_bot_dict['model_params'], }
+                           'model_params_bottom': recon_bot_dict['model_params'],
+                           # The overlaps actually used, the residual sub-slice cut/split
+                           # misalignment, and any align_split_grid shift of the OUTPUT grid
+                           # (in ALU; the returned volume samples a grid whose
+                           # recon_slice_offset differs from the model's by this amount).
+                           'split_params': {'half_overlap_sino': int(half_overlap_sino),
+                                            'half_overlap_recon': int(half_overlap_recon),
+                                            'align_split_grid': bool(align_split_grid),
+                                            'grid_shift_alu': float(grid_shift_alu),
+                                            'split_cut_mismatch_slices': split_cut_mismatch}, }
 
         return recon_full, recon_full_dict

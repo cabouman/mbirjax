@@ -119,13 +119,13 @@ if __name__ == '__main__':
     filename = os.path.join(dataset_dir_scan, hdf5_files[0])
 
     print('\nLoading ORNL sinogram and geometry')
-    full_sino, cone_beam_params, optional_params = (
-        mjp.pymbir.compute_sino_and_params(filename, bh_correction=False))
+    full_sino, ct_model = (
+        mjp.pymbir.get_sino_and_model(filename, bh_correction=False))
     print('Full measured sinogram shape: {}'.format(full_sino.shape))
 
     print('\nLoading baseline-corrected ORNL sinogram')
-    baseline_sino, _, _ = (
-        mjp.pymbir.compute_sino_and_params(filename, bh_correction=True))
+    baseline_sino, _ = (
+        mjp.pymbir.get_sino_and_model(filename, bh_correction=True))
 
     with h5py.File(filename, 'r') as h5_file:
         BHCN_params = h5_file.attrs['BHC_params']
@@ -151,9 +151,11 @@ if __name__ == '__main__':
     #####################
     # Uniform short-scan subset
     #####################
-    angle_candidates = cone_beam_params['angles']
-    num_det_channels = cone_beam_params['sinogram_shape'][2]
-    source_detector_dist = cone_beam_params['source_detector_dist']
+    # Recover the raw geometry values (previously read from the params dict) from the returned model.
+    required_params, _, _ = ct_model.get_all_params()
+    angle_candidates = required_params['angles']
+    num_det_channels = required_params['sinogram_shape'][2]
+    source_detector_dist = required_params['source_detector_dist']
     detector_cone_angle = 2 * np.arctan2(
         num_det_channels / 2, source_detector_dist)
 
@@ -194,8 +196,6 @@ if __name__ == '__main__':
     #####################
     # Build CT model for the selected views
     #####################
-    ct_model = mj.ConeBeamModel(**cone_beam_params)
-    ct_model.set_params(**optional_params)
     ct_model_uniform = mj.copy_ct_model(ct_model, uniform_angles)
 
     #####################

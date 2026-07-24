@@ -28,15 +28,13 @@ def main():
     learning_rate = 0.01
 
     # Load and preprocess data
-    sino, translation_params, optional_params = mjp.zeiss.compute_sino_and_params(dataset_dir, crop_pixels_bottom=53, verbose=0)
+    sino, tct_model, weights = mjp.zeiss_tct.get_sino_and_model(dataset_dir, crop_pixels_bottom=53, verbose=0)
 
-    translation_vectors = translation_params["translation_vectors"]
+    translation_vectors = np.array(tct_model.get_params("translation_vectors"))
     for epoch in range(num_epochs):
         print(f"\n===============Epoch {epoch}============")
         # Initialize model for reconstruction.
-        translation_params["translation_vectors"] = translation_vectors
-        tct_model = mj.TranslationModel(**translation_params)
-        tct_model.set_params(**optional_params)
+        tct_model.set_params(translation_vectors=translation_vectors)
         tct_model.set_params(sharpness=0.0)
         # recon_shape = tct_model.get_params('recon_shape')
 

@@ -9,6 +9,7 @@ preferred_devices`` (pytest puts this directory on sys.path, so ``conftest``
 resolves here).
 """
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 
@@ -83,3 +84,41 @@ def preferred_devices(n: int):
     if len(cpus) >= n:
         return cpus[:n]
     return None
+
+
+# ---------------------------------------------------------------------------
+# Shared sharded-projector test helpers.
+#
+# These three were byte-identical across the three per-geometry sharded test
+# modules (test_cone_sharded / test_multiaxis_sharded / test_translation_sharded)
+# and are lifted here so the merged tests/sharding/test_geometry_sharded.py can
+# import them once.  They are geometry-NEUTRAL: _usable_device_counts drives the
+# device sweep off the model's own sinogram_shard_axis()/recon_shard_axis(), so it
+# works for cone, multiaxis, and translation without change.
+# ---------------------------------------------------------------------------
+def _random_sino(model, seed=0):
+    shape = model.get_params('sinogram_shape')
+    rng = np.random.default_rng(seed)
+    return jnp.asarray(rng.standard_normal(shape, dtype=np.float32))
+
+
+def _random_recon(model, seed=1):
+    shape = tuple(int(x) for x in model.get_params('recon_shape'))
+    rng = np.random.default_rng(seed)
+    return jnp.asarray(rng.standard_normal(shape, dtype=np.float32))
+
+
+def _usable_device_counts(model):
+    """Available device counts > 1 (from conftest) that divide both sharded axes."""
+    sino_shape = model.get_params('sinogram_shape')
+    recon_shape = model.get_params('recon_shape')
+    sino_axis = model.sinogram_shard_axis() % len(sino_shape)
+    recon_axis = model.recon_shard_axis() % len(recon_shape)
+    counts = []
+    for n in (2, 4):
+        devs = preferred_devices(n)
+        if devs is None:
+            continue
+        if sino_shape[sino_axis] % n == 0 and recon_shape[recon_axis] % n == 0:
+            counts.append((n, devs))
+    return counts

@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Skip-0 schedule: default vs skip-0 reconstruction comparison</title>
+<!-- Page SOURCE only: the figures are not in the repo.  The complete page (with
+     images) is published at /depot/bouman/www/mbirjax/skip_0_results/ and the
+     figures live in that directory's r2_recon_figs/. -->
+<style>
+  body{font-family:sans-serif;max-width:1400px;margin:auto;padding:0 1em;line-height:1.45}
+  img{max-width:100%}
+  h2{margin-top:2em;border-bottom:1px solid #ddd;padding-bottom:0.2em}
+  h3{margin-top:1.6em}
+  table{border-collapse:collapse;margin:0.5em 0}
+  td,th{border:1px solid #bbb;padding:3px 10px;text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  .cap{color:#555;font-size:0.9em;margin-top:0.2em}
+  .nav{font-size:0.95em;color:#333}
+  .chip{display:inline-block;padding:2px 12px;border-radius:12px;font-size:0.85em;
+        font-weight:bold;margin-right:8px}
+  .s10{background:#dbeafe;color:#1e40af}   /* sharpness 1.0 = blue */
+  .s20{background:#ffedd5;color:#9a3412}   /* sharpness 2.0 = orange */
+  .i15{background:#e5e7eb;color:#111}
+  .i20{background:#c7ccd4;color:#111}
+  hr.sep{width:40%;margin:2em auto 0 0;border:0;border-top:2px solid #ccc}
+</style>
+</head>
+<body>
+
+<h1>Does dropping the first full-volume iteration change the reconstruction?</h1>
+
+<p class="nav"><b>Contents:</b>
+<a href="#overview">Overview</a> &middot;
+<a href="#methods">Data and methods</a> &middot;
+<a href="#look">What to look for</a> &middot;
+<a href="#lilly_ds8">lilly_ds8</a> &middot;
+<a href="#z62">z62</a> &middot;
+<a href="#lilly_ds4">lilly_ds4</a> &middot;
+<a href="#zoom">Center-slice zoom</a> &middot;
+<a href="#provenance">Provenance</a></p>
+
+<h2 id="overview">Overview and summary</h2>
+<p>
+MBIRJAX's <b>default</b> VCD schedule ([0,2,4,6,7]) begins with a granularity-0
+iteration: a single subset containing <i>every</i> voxel cylinder, i.e. a full-volume
+update.  That first iteration is the memory high-water mark of the whole
+reconstruction, and we would like to drop it.  The <b>skip&nbsp;0</b> candidate
+([2,4,6,7]) simply starts at granularity&nbsp;2 (4&nbsp;subsets) instead.  This page
+shows head-to-head reconstructions &mdash; same data, same regularization, same
+iteration count; the <i>only</i> difference is the schedule.
+</p>
+<p>
+<b>Bottom line:</b> on three real datasets at two sharpness settings, default and
+skip&nbsp;0 are visually indistinguishable at 15 and 20 iterations, and the
+quantitative metrics agree (skip&nbsp;0 ties or very slightly leads in every measured
+cell).  Each schedule's difference from the converged reference is the same &mdash; the
+two difference panels in every figure with a reference are identical &mdash; so the
+schedules follow the same convergence path.  Dropping the granularity-0 iteration is
+safe.
+</p>
+
+<h2 id="methods">Data and methods</h2>
+<ul>
+<li><b>Datasets.</b> <i>lilly_ds8</i> and <i>lilly_ds4</i>: the NSI D01788
+autoinjector scan preprocessed at downsample (8,8) with view subsample 8 (sinogram
+225&times;235&times;187, recon 187&times;187&times;286) and at (4,4)/4 (sinogram
+450&times;470&times;374, recon 374&times;374&times;667).  <i>z62</i>: the ORNL Versa
+Z62 cylinder (partition-study cache, 201 views, recon 512&times;512&times;640).</li>
+<li><b>Reconstruction.</b> Cone-beam MBIR with <code>transmission_root</code> weights;
+sharpness &isin; {1.0, 2.0} set before <code>auto_set_regularization_params</code>
+(auto-regularization then frozen).  Both schedules run the plain library solver with
+the same seed, so subset partitions match.  Volumes were captured at 15, 20, and 30
+iterations in one continuous run per variant.</li>
+<li><b>Reference.</b> Where shown, the leftmost column is a 150-iteration
+default-schedule reconstruction of the same cost function &mdash; effectively the
+converged answer both schedules are heading toward.  (lilly_ds4 at sharpness 2.0 has
+no cached reference; that comparison is image-only.)</li>
+<li><b>Metric.</b> The tables give NRMSE vs the reference <b>in percent</b> &mdash;
+the relative RMS difference from the converged answer over the interior (disk of
+0.85&times; the recon radius, 10% of slices excluded at each axial end).  Lower =
+closer to converged; 5% means the reconstruction differs from the reference by 5% RMS.</li>
+<li><b>Display window.</b> Every figure of a dataset uses the SAME grayscale window:
+the 1st&ndash;99th percentile of that dataset's sharpness-1.0 reference volume.  Each
+figure title shows the window and the full data min/max.</li>
+<li><b>Volumes.</b> All captured volumes and references are in depot at
+<code>/depot/bouman/data/mbirjax_metrics/slice_parity/</code> (<code>recons/</code>,
+<code>refs/</code>) for inspection with <code>slice_viewer</code>.</li>
+</ul>
+
+<h2 id="look">What to look for</h2>
+<p>
+Each figure has two view groups &mdash; an axial mid-slice (top) and a coronal mid-cut
+(bottom).  Within a group, the upper row shows the reconstructions (reference | default
+| skip&nbsp;0) and, <b>directly below the default and skip&nbsp;0 reconstructions</b>,
+their difference from the 150-iteration reference (<i>default&nbsp;&minus;&nbsp;reference</i>,
+<i>skip&nbsp;0&nbsp;&minus;&nbsp;reference</i>).  So each difference image sits under the
+reconstruction it belongs to; there is nothing under the reference itself.  The
+difference images use one shared color scale <b>per dataset</b> (the colorbar at the
+right of each figure), set from the 99th percentile of the whole-volume error so the
+scale is representative; the bright axial-end flash zones exceed it and may clip.
+</p>
+<p>
+<b>Between</b> figures, the sharpness setting and iteration count change, labeled by the
+colored chips in each figure heading (<span class="chip s10">sharpness 1.0</span> is
+blue, <span class="chip s20">sharpness 2.0</span> is orange; the gray chip gives the
+iteration count).  The grayscale recon window is fixed across all figures of a dataset
+(see Methods).  lilly_ds4 at sharpness&nbsp;2.0 has no reference, so it shows the two
+reconstructions only.
+</p>
+<ul>
+<li><b>The two difference panels are the point:</b> <i>default&nbsp;&minus;&nbsp;reference</i>
+and <i>skip&nbsp;0&nbsp;&minus;&nbsp;reference</i> are visually identical in every
+figure &mdash; the two schedules are converging to the same place at the same rate.  Any
+coherent structural difference between them would argue against dropping the iteration;
+none appears.</li>
+<li><b>What the difference panels show</b> is where each reconstruction still differs
+from the converged reference at this iteration count: near-zero (gray) through the
+well-converged interior, with signed error at high-contrast edges and, in the coronal
+cuts, strong bands at the axial ends.</li>
+<li><b>Bands at the axial ends</b> (top/bottom of the coronal cuts): the cone-beam
+flash zones &mdash; large, un-converged, and clipping the diff scale; excluded from the
+metric and addressed separately by the flash-remediation work.</li>
+<li><b>The cone fan-plane (center-slice) effect:</b> on lilly_ds4 sharpness&nbsp;2.0 it
+shows as a mid-height band in the direct <i>skip&nbsp;0&nbsp;&minus;&nbsp;default</i>
+difference in the <a href="#zoom">zoom section</a> below (the sharpness-2.0 figures here
+have no reference, so they show reconstructions only).  Both schedules have the same
+noise spike there; it stands out only because the two runs' noise realizations diverge
+most where voxels are least anchored.</li>
+</ul>
+
+<h2 id="lilly_ds8">lilly_ds8</h2>
+<p class="nav"><b>Variants:</b>
+<a href="#lilly_ds8-s10-i15">sharpness=1.0 &middot; 15 it</a> &middot;
+<a href="#lilly_ds8-s10-i20">sharpness=1.0 &middot; 20 it</a> &middot;
+<a href="#lilly_ds8-s20-i15">sharpness=2.0 &middot; 15 it</a> &middot;
+<a href="#lilly_ds8-s20-i20">sharpness=2.0 &middot; 20 it</a></p>
+<p class="cap">NRMSE vs reference, percent (lower = better):</p>
+<table>
+<tr><th>sharpness</th><th>variant</th><th>15 it</th><th>20 it</th><th>30 it</th></tr>
+<tr><td>1.0</td><td>default</td><td>7.04%</td><td>6.27%</td><td>5.17%</td></tr>
+<tr><td>1.0</td><td>skip 0</td><td>6.87%</td><td>6.15%</td><td>5.09%</td></tr>
+<tr><td>2.0</td><td>default</td><td>11.14%</td><td>9.86%</td><td>8.09%</td></tr>
+<tr><td>2.0</td><td>skip 0</td><td>10.85%</td><td>9.65%</td><td>7.95%</td></tr>
+</table>
+<h3 id="lilly_ds8-s10-i15"><span class="chip s10">sharpness 1.0</span><span class="chip i15">15 iterations</span></h3>
+<img src="r2_recon_figs/lilly_ds8_s1.0_it15.png">
+<hr class="sep">
+<h3 id="lilly_ds8-s10-i20"><span class="chip s10">sharpness 1.0</span><span class="chip i20">20 iterations</span></h3>
+<img src="r2_recon_figs/lilly_ds8_s1.0_it20.png">
+<hr class="sep">
+<h3 id="lilly_ds8-s20-i15"><span class="chip s20">sharpness 2.0</span><span class="chip i15">15 iterations</span></h3>
+<img src="r2_recon_figs/lilly_ds8_s2.0_it15.png">
+<hr class="sep">
+<h3 id="lilly_ds8-s20-i20"><span class="chip s20">sharpness 2.0</span><span class="chip i20">20 iterations</span></h3>
+<img src="r2_recon_figs/lilly_ds8_s2.0_it20.png">
+
+<h2 id="z62">z62</h2>
+<p class="nav"><b>Variants:</b>
+<a href="#z62-s10-i15">sharpness=1.0 &middot; 15 it</a> &middot;
+<a href="#z62-s10-i20">sharpness=1.0 &middot; 20 it</a> &middot;
+<a href="#z62-s20-i15">sharpness=2.0 &middot; 15 it</a> &middot;
+<a href="#z62-s20-i20">sharpness=2.0 &middot; 20 it</a></p>
+<p class="cap">NRMSE vs reference, percent (lower = better):</p>
+<table>
+<tr><th>sharpness</th><th>variant</th><th>15 it</th><th>20 it</th><th>30 it</th></tr>
+<tr><td>1.0</td><td>default</td><td>3.11%</td><td>2.72%</td><td>2.17%</td></tr>
+<tr><td>1.0</td><td>skip 0</td><td>3.03%</td><td>2.65%</td><td>2.11%</td></tr>
+<tr><td>2.0</td><td>default</td><td>3.20%</td><td>2.81%</td><td>2.27%</td></tr>
+<tr><td>2.0</td><td>skip 0</td><td>3.14%</td><td>2.75%</td><td>2.22%</td></tr>
+</table>
+<h3 id="z62-s10-i15"><span class="chip s10">sharpness 1.0</span><span class="chip i15">15 iterations</span></h3>
+<img src="r2_recon_figs/z62_s1.0_it15.png">
+<hr class="sep">
+<h3 id="z62-s10-i20"><span class="chip s10">sharpness 1.0</span><span class="chip i20">20 iterations</span></h3>
+<img src="r2_recon_figs/z62_s1.0_it20.png">
+<hr class="sep">
+<h3 id="z62-s20-i15"><span class="chip s20">sharpness 2.0</span><span class="chip i15">15 iterations</span></h3>
+<img src="r2_recon_figs/z62_s2.0_it15.png">
+<hr class="sep">
+<h3 id="z62-s20-i20"><span class="chip s20">sharpness 2.0</span><span class="chip i20">20 iterations</span></h3>
+<img src="r2_recon_figs/z62_s2.0_it20.png">
+
+<h2 id="lilly_ds4">lilly_ds4</h2>
+<p class="nav"><b>Variants:</b>
+<a href="#lilly_ds4-s10-i15">sharpness=1.0 &middot; 15 it</a> &middot;
+<a href="#lilly_ds4-s10-i20">sharpness=1.0 &middot; 20 it</a> &middot;
+<a href="#lilly_ds4-s20-i15">sharpness=2.0 &middot; 15 it</a> &middot;
+<a href="#lilly_ds4-s20-i20">sharpness=2.0 &middot; 20 it</a></p>
+<p class="cap">NRMSE vs reference at sharpness 1.0, percent (no reference exists for
+sharpness 2.0 &mdash; image-only there):</p>
+<table>
+<tr><th>sharpness</th><th>variant</th><th>15 it</th><th>20 it</th><th>30 it</th></tr>
+<tr><td>1.0</td><td>default</td><td>10.31%</td><td>9.37%</td><td>7.90%</td></tr>
+<tr><td>1.0</td><td>skip 0</td><td>10.11%</td><td>9.21%</td><td>7.78%</td></tr>
+</table>
+<h3 id="lilly_ds4-s10-i15"><span class="chip s10">sharpness 1.0</span><span class="chip i15">15 iterations</span></h3>
+<img src="r2_recon_figs/lilly_ds4_s1.0_it15.png">
+<hr class="sep">
+<h3 id="lilly_ds4-s10-i20"><span class="chip s10">sharpness 1.0</span><span class="chip i20">20 iterations</span></h3>
+<img src="r2_recon_figs/lilly_ds4_s1.0_it20.png">
+<hr class="sep">
+<h3 id="lilly_ds4-s20-i15"><span class="chip s20">sharpness 2.0</span><span class="chip i15">15 iterations</span></h3>
+<img src="r2_recon_figs/lilly_ds4_s2.0_it15.png">
+<hr class="sep">
+<h3 id="lilly_ds4-s20-i20"><span class="chip s20">sharpness 2.0</span><span class="chip i20">20 iterations</span></h3>
+<img src="r2_recon_figs/lilly_ds4_s2.0_it20.png">
+
+<h2 id="zoom">Center-slice (fan-plane) zoom &mdash; lilly_ds4 sharpness 2.0</h2>
+<p>
+In the direct <i>skip&nbsp;0&nbsp;&minus;&nbsp;default</i> difference (third panel, with
+its own colorbar), a band appears at mid-height, z&nbsp;&asymp;&nbsp;329&ndash;331: the
+cone fan plane (the volume midpoint is 333; the offset matches the detector row offset).
+The rightmost panel below plots per-slice
+axial second-difference RMS &mdash; the "slice decoupled from its neighbors" noise
+signature &mdash; for both schedules.  Both show the same sharp spike at the fan
+plane, and the two curves essentially coincide: skip&nbsp;0 is higher by less than 1%
+at 15 iterations and less than 0.1% at 30, against a &plusmn;20% slice-to-slice
+variation of the same metric.  The center-slice effect is a property of the surrogate
+and the cone geometry, not of the schedule; the difference image highlights that band
+only because the least-anchored voxels are where two otherwise-equivalent runs
+diverge most.  (This figure deliberately uses a much tighter window than the main
+figures, to make the noise texture visible.)
+</p>
+<img src="r2_recon_figs/lilly_ds4_s2.0_it15_centerzoom.png">
+
+<h2 id="provenance">Provenance</h2>
+<p class="cap">
+Capture: gautschi job 13481068 (branch <code>greg/gpu_headroom</code>), script
+<code>plans/experiments/slice_parity/r2_recon_capture.py</code>; figures by
+<code>r2_recon_figs.py</code>.  Study context and the full schedule-search results:
+<code>plans/slice_parity/slice_parity_plan.md</code> (R2 section).  Note: this capture
+ran each variant continuously (production-like); the instrumented R2 study restarted
+the solver each iteration, and the NRMSE values differ by a few percent (relative)
+between the two harnesses &mdash; the skip-0&nbsp;&le;&nbsp;default ordering held in
+all 10 reference-checked cells here.
+</p>
+
+</body>
+</html>

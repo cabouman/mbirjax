@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flash remediation — Phase 2d: recommended remedies</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #555; --card: #f6f7f9;
+    --accent: #0a5c8a; --border: #d8dde3; --good: #0a7a3d; --bad: #a4232e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --fg: #e6e6e6; --muted: #a5adb5; --card: #1d2126;
+      --accent: #6fb8dd; --border: #333a42; --good: #57c785; --bad: #e57373;
+    }
+  }
+  html { background: var(--bg); }
+  body {
+    margin: 0 auto; padding: 2rem 1.5rem 4rem; max-width: 1080px;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.3rem; margin: 2.5rem 0 0.75rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { font-size: 1.05rem; margin: 1.6rem 0 0.5rem; }
+  .subtitle { color: var(--muted); margin-bottom: 1.5rem; }
+  .tldr {
+    background: var(--card); border-left: 4px solid var(--accent);
+    padding: 0.9rem 1.1rem; border-radius: 0 8px 8px 0; margin: 1.25rem 0;
+  }
+  .tldr p { margin: 0.4rem 0; }
+  table { border-collapse: collapse; margin: 1rem 0; font-size: 0.92rem; }
+  th, td { border: 1px solid var(--border); padding: 0.4rem 0.8rem; text-align: left; vertical-align: top; }
+  th { background: var(--card); }
+  .good { color: var(--good); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  a { color: var(--accent); text-decoration-color: var(--accent); }
+  code { background: var(--card); padding: 0.08rem 0.35rem; border-radius: 4px; font-size: 0.88em; }
+  pre {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.8rem 1rem; overflow-x: auto; font-size: 0.85rem; line-height: 1.45;
+  }
+  pre code { background: none; padding: 0; }
+  .note { font-size: 0.9rem; color: var(--muted); }
+  ul { padding-left: 1.3rem; }
+  li { margin: 0.35rem 0; }
+  .eq { text-align: center; margin: 0.9rem 0; font-size: 1.02rem; }
+</style>
+</head>
+<body>
+
+<h1>Flash remediation — Phase 2d: recommended remedies</h1>
+<p class="subtitle">The proposed fixes for axial truncation, lateral truncation, and the
+split-reconstruction seam — rationale, evidence, implementation sketches, and an honest
+weighing of pros and cons (including "do nothing")
+&middot; 2026-07-09 &middot; evidence pages: <code>phase_1_results.html</code>,
+<code>phase_2a_axial_results.html</code>, <code>phase_2b_radial_results.html</code>,
+<code>phase_2c_split_results.html</code> &middot; plan of record:
+<code>flash_remediation_plan.md</code> &middot; Originally written plan-only;
+implementation began 2026-07-11 on <code>greg/kernel_investigation</code> (axial first,
+real-data validation after each step) — this page is the design record.</p>
+
+<div class="tldr">
+  <p><strong>TL;DR — the three verdicts.</strong></p>
+  <ul>
+    <li><strong><a href="#axial">Axial</a>:</strong> extend the slab to the exact
+    geometric bound <em>automatically</em>, inside
+    <code>auto_set_recon_geometry</code> — a separate excess for each end (they differ
+    under <code>det_row_offset</code>, and helical z-shifts attach per end), with R
+    taken from the recon grid. Truncation is the norm in practice — a holder or fixture
+    virtually always leaves the field of view at one end — so an always-on extension is
+    used on at least one end, over-padding is provably harmless, and no threshold exists
+    at all; the waste is bounded by one end's share of ~10&ndash;20% more slices.</li>
+    <li><strong><a href="#lateral">Lateral</a>:</strong> detect and warn, but <em>do not
+    auto-pad</em> — the required padding ("cover the object") is not derivable from
+    geometry or reliably from truncated data, under-padding costs orders of magnitude,
+    and lateral padding is O(scale&sup2;) in memory: this is the finicky-threshold case
+    where assisted-manual beats automation.</li>
+    <li><strong><a href="#seam">Split seam</a>:</strong> set h<sub>recon</sub> from the
+    geometry formula as the default (threshold-free, +~3% memory, verified in two
+    regimes and two library versions); offer grid-shift alignment as an opt-in; retire
+    the taper when the formula lands. Doing nothing is not defensible here — the shipped
+    default visibly stripes at 8&times; downsampling.</li>
+  </ul>
+</div>
+
+<h2 id="axial">1&nbsp;&nbsp;Axial truncation (detector rows / z)</h2>
+
+<h3>The problem and the remedy</h3>
+<p>When the object extends past the covered slab in z, the unexplained attenuation piles
+up at the slab ends as a bright flash with z-ringing that grows with iterations
+(Phase&nbsp;1: end NRMSE 9&times; worse than padded). The remedy is reconstruction
+support, not data manipulation: extend the slab so every measured ray is explainable.
+As seen in the figure below, the maximum axial extension is <em>bounded by
+geometry</em>. A detector point at height v (relative to the plane of the source) sees
+material out to z = v&middot;(SID + R)/SDD at the far side of the support, so the
+extension is computed <strong>per end</strong>, as the excess of each detector edge's
+reach over the slab the existing calculation already provides:</p>
+<p class="eq">E<sub>top</sub> = max(0,&nbsp; v<sub>top</sub>&middot;(SID + R)/SDD &minus;
+H<sub>iso</sub>/2), &emsp; E<sub>bot</sub> = max(0,&nbsp;
+|v<sub>bot</sub>|&middot;(SID + R)/SDD &minus; H<sub>iso</sub>/2),</p>
+<p class="eq">v<sub>top</sub> = N<sub>rows</sub>&middot;&delta;<sub>row</sub>/2 &minus;
+det_row_offset, &emsp; v<sub>bot</sub> = &minus;N<sub>rows</sub>&middot;&delta;
+<sub>row</sub>/2 &minus; det_row_offset, &emsp;
+R = &half;&middot;max(N<sub>r</sub>&middot;&delta;<sub>vox,r</sub>,
+N<sub>c</sub>&middot;&delta;<sub>vox,c</sub>).</p>
+<p class="note">Sign convention: these are the library's own
+(<code>detector_mn_to_uv</code>: v = (m &minus; center)&middot;&delta;<sub>row</sub>
+&minus; det_row_offset), in which a <em>negative</em> offset shifts the detector up —
+e.g. the NSI Lilly scan's det_row_offset of &minus;1.95 rows pairs with a
+recon_slice_offset of +1.95 slices. An earlier revision of this page wrote
+v<sub>top</sub> with the opposite offset sign; the implementation calls
+<code>detector_mn_to_uv</code> directly so the code cannot drift from the
+convention.</p>
+<p>Three things to notice. <strong>The two ends differ</strong>: a nonzero
+<code>det_row_offset</code> makes one detector edge taller than the other, so its wedge
+is deeper — translate the detector up and the top wedge grows while the bottom one
+shrinks (figure below) — and a single symmetric scale factor would under-pad one end by
+exactly the offset term. <strong>R is the radius of the reconstruction support, from the
+recon shape and voxel widths, not from the sinogram</strong>: the bound is set by which
+voxels rays can traverse, so it must track the actual grid (for the default shape this
+reduces to the familiar R/SID = C&middot;&delta;<sub>c</sub>/(2&middot;SDD) &asymp;
+0.1&ndash;0.2, i.e. a ~10&ndash;20% total extension). And <strong>helical z-shifts
+attach naturally per end</strong>: the top excess extends the coverage that already ends
+at z<sub>max</sub> of the travel, the bottom excess the end at z<sub>min</sub>; the
+interior of the travel is already covered. Two facts make this bound special
+(Phase&nbsp;2a): padding <em>past</em> it is <strong>bit-exact identical</strong> to
+padding <em>to</em> it (the extra slices intersect no rays), so there is no over-padding
+risk to tune away; and the row taper is strictly counterproductive here (2.4&times;
+worse alone; hurts every padded variant it was added to), so the remedy has one moving
+part.</p>
+
+<figure>
+<svg viewBox="0 0 480 360" xmlns="http://www.w3.org/2000/svg" role="img" style="max-width:640px; display:block; margin:0 auto;"
+     aria-label="Asymmetric side view: detector shifted up makes the top wedge much taller and the bottom wedge shorter">
+  <!-- source plane (z = 0) -->
+  <line x1="40" y1="170" x2="390" y2="170" stroke="currentColor" stroke-width="0.7" stroke-dasharray="2 4"/>
+  <text x="44" y="182" font-size="9.5" fill="currentColor">source plane z = 0</text>
+  <!-- cone rays to the shifted detector (center well above the source plane) -->
+  <line x1="40" y1="170" x2="390" y2="25" stroke="#888" stroke-width="1.2"/>
+  <line x1="40" y1="170" x2="390" y2="245" stroke="#888" stroke-width="1.2"/>
+  <!-- FoV band and axis -->
+  <line x1="210" y1="20" x2="210" y2="300" stroke="#888" stroke-width="0.8" stroke-dasharray="3 4"/>
+  <line x1="330" y1="20" x2="330" y2="300" stroke="#888" stroke-width="0.8" stroke-dasharray="3 4"/>
+  <line x1="270" y1="20" x2="270" y2="304" stroke="currentColor" stroke-width="0.8" stroke-dasharray="2 3"/>
+  <text x="252" y="314" font-size="10" fill="currentColor">rotation axis</text>
+  <!-- per-end excess wedges (reach is a shallow V across the band: max at both FoV edges) -->
+  <polygon points="210,50 270,75 330,50 330,75 210,75" fill="#c97f7f"/>
+  <polygon points="210,232 270,219 330,232 330,219 210,219" fill="#c97f7f"/>
+  <!-- slab = detector span mapped to iso (asymmetric about the source plane) -->
+  <rect x="210" y="75" width="120" height="144" fill="#7fa8c9" fill-opacity="0.45"/>
+  <rect x="210" y="75" width="120" height="144" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-dasharray="6 4"/>
+  <text x="216" y="210" font-size="11" fill="currentColor">slab = detector span at iso</text>
+  <!-- extended support -->
+  <rect x="210" y="50" width="120" height="182" fill="none" stroke="#b04040" stroke-width="1.5" stroke-dasharray="3 3"/>
+  <!-- source and detector -->
+  <circle cx="40" cy="170" r="4.5" fill="currentColor"/>
+  <text x="14" y="156" font-size="11" fill="currentColor">source</text>
+  <line x1="390" y1="25" x2="390" y2="245" stroke="currentColor" stroke-width="4"/>
+  <!-- detector center vs source plane: det_row_offset -->
+  <line x1="384" y1="135" x2="396" y2="135" stroke="#e08a2e" stroke-width="1.6"/>
+  <line x1="404" y1="135" x2="404" y2="170" stroke="#e08a2e" stroke-width="1.2"/>
+  <line x1="400" y1="135" x2="408" y2="135" stroke="#e08a2e" stroke-width="1"/>
+  <line x1="400" y1="170" x2="408" y2="170" stroke="#e08a2e" stroke-width="1"/>
+  <text x="410" y="156" font-size="9.5" fill="#e08a2e">det_row_offset</text>
+  <!-- v_top / v_bot brackets -->
+  <line x1="424" y1="25" x2="424" y2="170" stroke="currentColor" stroke-width="0.8"/>
+  <line x1="418" y1="25" x2="430" y2="25" stroke="currentColor" stroke-width="0.8"/>
+  <text x="432" y="100" font-size="10.5" fill="currentColor">v_top</text>
+  <line x1="424" y1="178" x2="424" y2="245" stroke="currentColor" stroke-width="0.8"/>
+  <line x1="418" y1="245" x2="430" y2="245" stroke="currentColor" stroke-width="0.8"/>
+  <text x="432" y="216" font-size="10.5" fill="currentColor">|v_bot|</text>
+  <!-- wedge labels -->
+  <text x="14" y="38" font-size="10.5" fill="#b04040">E_top: much taller — the detector is shifted up</text>
+  <line x1="140" y1="44" x2="216" y2="58" stroke="#b04040" stroke-width="0.8"/>
+  <text x="14" y="278" font-size="10.5" fill="#b04040">E_bot: shorter (clamped at 0 if the</text>
+  <text x="14" y="290" font-size="10.5" fill="#b04040">existing slab already covers this end)</text>
+  <line x1="150" y1="272" x2="218" y2="228" stroke="#b04040" stroke-width="0.8"/>
+  <!-- helical note -->
+  <text x="336" y="290" font-size="10" fill="currentColor">helical: E_top attaches at</text>
+  <text x="336" y="302" font-size="10" fill="currentColor">z_max of the travel,</text>
+  <text x="336" y="314" font-size="10" fill="currentColor">E_bot at z_min</text>
+</svg>
+<figcaption><strong>The per-end excess.</strong> Side view with the detector shifted up
+(<code>det_row_offset</code> &lt; 0 in the library's sign convention; the figure's
+bracket shows its magnitude). Each end's wedge (red) is that detector edge's
+reach, v&middot;(SID+R)/SDD across the support (a shallow V, largest at the far side),
+minus the covered slab — so the top wedge is taller and the bottom shorter, each end is
+clamped at zero, each is ceil'd to whole slices, and the slab center shifts by
+(E<sub>top</sub> &minus; E<sub>bot</sub>)/2 to keep the added slices where the geometry
+needs them. (For clarity the slab is drawn already aligned to the detector's mapped
+span; today's auto-geometry centers it at mid-travel ignoring
+<code>det_row_offset</code>, and the implementation's max(0,&nbsp;&middot;) form absorbs
+that recentering as part of the per-end excess.)</figcaption>
+</figure>
+
+<h3>Recommended implementation</h3>
+<p>Do the extension automatically where the recon shape is born —
+<code>ConeBeamModel.auto_set_recon_geometry</code> — which today sets
+<code>num_recon_slices = ceil((H_iso + z_travel) / &delta;_slice)</code> centered at
+mid-travel. The per-end excesses are added to that existing calculation, and the
+formulas are not new: they are the model's own coordinate chain
+(<code>recon_ijk_to_xyz</code> &rarr; <code>geometry_xyz_to_uv_mag</code>, where
+pixel_mag = 1/(1/mag &minus; y/SDD), &rarr; <code>detector_uv_to_mn</code>) inverted at
+the detector row edges and evaluated at the far side of the support (y = &minus;R, where
+pixel_mag is smallest and z = v&middot;(SID+R)/SDD is largest):</p>
+<pre><code># in ConeBeamModel.auto_set_recon_geometry, after the existing
+# num_recon_slices = ceil((H_iso + z_travel) / delta_voxel_slice):
+R = 0.5 * max(num_recon_rows * delta_voxel_row, num_recon_cols * delta_voxel)  # support radius (note below)
+
+# detector row EDGES in v: invert detector_uv_to_mn at m = -0.5 and num_det_rows - 0.5
+v_top = (num_det_rows - 0.5 - det_center_row) * delta_det_row - det_row_offset
+v_bot = (-0.5 - det_center_row) * delta_det_row - det_row_offset
+
+# reach at the far side of the support (y = -R); excess over the existing symmetric slab
+excess_top = max(0.0, v_top * (SID + R) / SDD - H_iso / 2)   # attaches at z_max of the travel
+excess_bot = max(0.0, -v_bot * (SID + R) / SDD - H_iso / 2)  # attaches at z_min
+
+n_top = int(jnp.ceil(excess_top / delta_voxel_slice))
+n_bot = int(jnp.ceil(excess_bot / delta_voxel_slice))
+num_recon_slices += n_top + n_bot
+recon_slice_offset += 0.5 * (n_top - n_bot) * delta_voxel_slice   # recenter to the true reach
+
+# in scale_recon_shape (which stays a pure, fixed scaler): warn on uncompensated lateral growth
+if max(row_scale, col_scale) > 1 and slice_scale == 1:
+    warn("lateral scaling enlarges the axial visibility bound; consider a compensating "
+         "slice_scale (the per-end excess grows in proportion to the support radius R)")</code></pre>
+<p class="note">Notes for implementation time. <em>What exactly is R:</em> the z-reach of
+a voxel depends on its distance from the <em>source</em>, which maxes at SID + (its
+distance from the axis) — so R should be the maximum axis-distance of any voxel the
+projector actually updates: the RoR cylinder radius if the reconstruction is masked to
+one, but the grid half-diagonal (&radic;2 larger) if corner voxels are updated too;
+check against the projector, don't guess. <em>Resolved 2026-07-11 from the code:</em>
+both the VCD pixel partitions and the full-index forward/back projections restrict to
+<code>get_2d_ror_mask</code>, which is by default the ellipse <em>inscribed</em> in the
+grid — so R is the voxel-edge half-width of the longer axis (the formula above), and the
+implementation reads the <code>use_ror_mask</code> parameter: <code>False</code> or a
+custom mask updates corner voxels and switches R to the grid half-diagonal.
+<em>Side benefit:</em> because the two ends
+are computed separately, the automatic shape becomes correct for offset detectors —
+today's calculation is <code>det_row_offset</code>-blind and preprocessing pipelines
+compensate by hand-setting <code>recon_slice_offset</code>.
+<em>det_channel_offset:</em> the z formulas are unchanged — an oblique ray to lateral
+position u has in-plane length &radic;(SDD&sup2;+u&sup2;) &gt; SDD and thus a smaller
+z-slope, so the extremum is always the near-midline far-side ray and dividing by SDD is
+conservative for the rest. A channel offset acts indirectly: over a full rotation it
+enlarges the effective FoV to (W/2 + |c<sub>off</sub>|)/mag (the offset-detector
+half-fan trick), which should enlarge the recon rows/cols and hence R — and flows into
+the axial bound automatically because R comes from the recon shape. (It also exposes
+that today's lateral auto-shape is channel-offset-blind in the same way — the same
+per-end idea applies to the channel direction; a sibling gap, out of scope here.)
+<em>Large det_row_offset:</em> if the offset exceeds half the detector height, both
+edges have the same sign — no measured ray reaches z = 0 — and the max(0,&nbsp;&middot;)
+clamps handle it with no modification: the near end simply gets no extension (the clamp
+in fact activates once the offset exceeds &asymp;(H/2)&middot;(R/SID)/(1+R/SID), i.e.
+~10&ndash;20% of the half-height). What the add-only design then costs is waste, not
+correctness: the offset-blind base slab keeps its unmeasured near end. The complete
+shape would also <em>trim</em> that end — to v<sub>near</sub>&middot;(SID&minus;R)/SDD,
+the one place the near-side factor appears — a refinement worth doing only if half-cone
+scans matter. <em>Escape hatch:</em> users
+who set <code>recon_shape</code> explicitly bypass auto-geometry entirely, and that
+should stay. <em>Scope:</em> translation and multiaxis-parallel geometries have
+analogous per-end bounds; cone beam first.</p>
+
+<h3>Pros, cons, and the verdict</h3>
+<ul>
+  <li class="good">The pad size needs no tuning: it is an exact geometric bound, and
+      exceeding it is provably free — the failure mode "picked the wrong pad" does not
+      exist. Always-on also means <em>no threshold anywhere</em>: no detector, no air
+      floor, no trigger to calibrate.</li>
+  <li class="good"><strong>Truncation is the norm, not the exception</strong>: in
+      practice some holder or fixture virtually always extends past the field of view at
+      one end, so the extension is used on at least one end of nearly every real scan —
+      the true waste is bounded by the <em>other</em> end's share (~5&ndash;10% of
+      slices), and the holder gets reconstructed instead of flashing into the
+      object.</li>
+  <li class="good">Large, regime-robust benefit when truncation is present: 9&times; end
+      NRMSE, interior z-ringing removed; ranking held under wide cone, sharp
+      regularization, and photon noise (P2a-R).</li>
+  <li class="good">The per-end form makes the automatic shape correct for offset
+      detectors and helical travel for free (excesses attach at z<sub>max</sub> /
+      z<sub>min</sub>), and computing R from the recon grid keeps the bound tied to the
+      actual support; <code>scale_recon_shape</code> stays a pure scaler and simply
+      warns when lateral growth is left uncompensated in z.</li>
+  <li class="bad">Default recon shapes grow by ~R/SID slices (~10&ndash;20%) for
+      everyone — memory and compute, though slices are the linear (cheap) axis, unlike
+      lateral's O(scale&sup2;).</li>
+  <li class="bad">It is a default-behavior change: output shapes grow and interior
+      values shift (for the better), so downstream baselines churn — including our own
+      regression dashboards, which gate on values and memory. That wants a deliberate
+      re-baseline and a release note, not a surprise.</li>
+  <li class="bad">The end wedge remains half-sampled with or without padding (the
+      extreme slices are smooth in every variant) — padding removes the artifact, not
+      the physics; worth one line in the docs.</li>
+</ul>
+<p><strong>Verdict: implement, automatically, in
+<code>auto_set_recon_geometry</code>.</strong> The holder reality makes always-on the
+right default and eliminates the last knob; validate on the real SiC scan
+(Phase&nbsp;3) and re-baseline the regression suite in the same change.</p>
+
+<h2 id="lateral">2&nbsp;&nbsp;Lateral truncation (detector channels / FoV)</h2>
+
+<h3>The problem and why there is no formula</h3>
+<p>When the object extends past the field of view laterally, every channel is
+contaminated (a point at radius r crosses all channels |c| &le; r at some view), so the
+damage is not confined to the rim: a bright RoR-edge ring (~4.5&times; body) plus a
+<em>whole-interior</em> positive bias (Phase&nbsp;1). The channel taper is falsified for
+this case — it cosmetically softens the rim and leaves the interior bias untouched
+(Phase&nbsp;2b) — and the remedy is again support: pad the reconstruction until it
+<em>covers the object</em>. The knee is exactly at cover in every overshoot and regime
+tested, and the penalty is asymmetric:</p>
+<p class="eq">under-padding &rarr; orders of magnitude; &emsp; over-padding &rarr;
+percent-level (and O(scale&sup2;) memory).</p>
+<p>The difficulty: <strong>"cover" is not derivable</strong>. There is no geometric bound
+(the only physical constraint is the rotation clearance R<sub>obj</sub> &lt; min(SID,
+SDD&minus;SID), about 8&times; the FoV at our base geometry — useless as a pad size), and
+the object's support edge is <em>off the detector</em>, so truncated data does not show
+where the object ends. Candidate estimators all have real failure modes: edge-channel
+magnitude extrapolation is object-dependent and can under-pad (the catastrophic side of
+the asymmetry); iterative pad-recon-check converges but multiplies reconstruction cost;
+only the user's physical knowledge of the object diameter is reliable. A further
+expectation-setter from the 4&times;-overshoot showcase: with severe truncation, even
+correct cover recovers structure but leaves a near-uniform DC offset (interior-tomography
+ambiguity) that no padding can remove without a known-air anchor.</p>
+
+<h3>Recommended implementation</h3>
+<p>No new machinery is needed for the detection: <code>auto_set_regularization_params</code>
+already computes a <em>sinogram support indicator</em> on a view-subsampled sinogram
+(<code>_get_sino_indicator</code>, built on
+<code>estimate_background_cluster_boundaries</code>) as input to
+<code>auto_set_sigma_y</code> — a calibrated object-vs-air split with a built-in safety
+margin. Truncation detection is then just "does the support reach the detector edge,"
+computed where the indicator already exists, at no extra cost and with no new
+threshold:</p>
+<pre><code># in auto_set_regularization_params, where the subsampled sinogram's support
+# indicator is already computed for auto_set_sigma_y:
+sino_indicator = self._get_sino_indicator(small_sinogram)
+
+edge_frac = np.mean(sino_indicator[:, :, 0] | sino_indicator[:, :, -1])
+if edge_frac > 0.02:   # robustness guard against stray pixels, not a calibrated knob
+    warn(f"lateral FoV truncation detected (object support reaches the detector edge "
+         f"in {edge_frac:.0%} of sampled view-rows): expect an RoR-edge ring and "
+         "interior bias; pad with scale_recon_shape(s, s), s >= object_diameter / "
+         "FoV_diameter. Round s UP: under-padding is far worse than over-padding. "
+         "Severe truncation also leaves a DC offset no padding can remove.")</code></pre>
+<p class="note">The same indicator applied to the first/last detector <em>rows</em> gives
+an axial-truncation check for free, should one ever be wanted alongside the automatic §1
+extension (e.g. to report how much of the extension a scan actually uses). One honest
+limitation inherited from the indicator: its safety margin means very faint edge
+attenuation can go undetected — the benign direction (mild artifact, status quo), and
+the same conservatism the regularization estimate itself relies on.</p>
+
+<h3>Pros, cons, and the verdict</h3>
+<ul>
+  <li class="good">The warning is free and threshold-free: it reuses the calibrated
+      object-vs-air support indicator that <code>auto_set_regularization_params</code>
+      already computes for <code>auto_set_sigma_y</code>, on the already-subsampled
+      sinogram. No catastrophic branch, and the message names the fix with its one
+      crucial usage rule (round up).</li>
+  <li class="bad">Automatic padding would need a cover estimate from data that cannot
+      show the cover; a wrong guess either hits the orders-of-magnitude under-pad
+      penalty or buys O(scale&sup2;) memory nobody asked for. Many special cases, one
+      finicky threshold chained to another.</li>
+  <li class="bad">Assisted-manual leaves users who ignore warnings with the status quo —
+      accepted; the artifact is visible and the message tells them exactly what to
+      do.</li>
+</ul>
+<p><strong>Verdict: detect and warn; deliberately do nothing automatic.</strong> This is
+the case where the balance tips against automation: the estimate that automation needs is
+the one quantity the data cannot supply. Revisit only if Phase&nbsp;3 (z62, BGA) turns up
+a cover estimator that survives real scans.</p>
+
+<h2 id="seam">3&nbsp;&nbsp;The split_sino_recon seam</h2>
+
+<h3>The problem and the two-part cause</h3>
+<p>The split reconstructs detector-row halves separately and stitches; its seam stripes
+(&plusmn;40% zigzag on real data) come from geometry alone (Phase&nbsp;2c): each half's
+kept rows see h<sub>sino</sub>&middot;(1+R/SID)&middot;&rho; slices past the split
+(&rho; = pitch ratio &asymp; 1) while its recon extends only h<sub>recon</sub> — and the
+load-bearing driver is the sub-row misalignment &epsilon; between the sinogram cut row
+and the recon split slice (&epsilon; &asymp; 0.4 rows on Lilly), without which the
+truncation is benign at the default depth. The shipped sine taper suppresses the stripes
+at 4&times; downsampling but fails at 8&times;; the shipped default is therefore visibly
+broken in a regime users actually run, and "do nothing" loses on the evidence.</p>
+
+<h3>Fix A (recommended default): the geometry-derived extension</h3>
+<p class="eq">h<sub>recon</sub> =
+&lceil;h<sub>sino</sub>&middot;(1+R/SID)&middot;&rho;&rceil; + m, &emsp;
+&rho; = &delta;<sub>row</sub> / (mag&middot;&delta;<sub>slice</sub>), &emsp; m = 2,</p>
+<p>so every slice the kept rows can see is representable. The conversion &rho; is written
+directly — the physical content is the perpendicular-ray row&rarr;iso conversion 1/mag,
+and dividing by &delta;<sub>slice</sub> puts it in slice units; at the defaults
+(&delta;<sub>slice</sub> = &delta;<sub>c</sub>/mag, square detector pixels) the
+magnifications cancel and &rho; = 1 (Lilly: 0.9995). R is the recon-support radius,
+exactly as in §1. The margin m covers the voxel footprint <em>and</em> the worst-case
+half-slice cut&ndash;split misalignment — the seam-scale analogue of §1's per-end offset
+term. <strong>This is §1's wedge evaluated at the perpendicular ray</strong>, which is
+why the extension is so small: the seam sits at the iso row, where the cone divergence
+is minimal, so the excess beyond h<sub>sino</sub>&middot;&rho; is only
+h<sub>sino</sub>&middot;&rho;&middot;(R/SID) &asymp; 1 slice — in contrast to the slab
+ends, where the same geometry scales with the full detector half-height. Evidence: at
+8&times; it takes the seam from 7.9&times;10<sup>&minus;3</sup> to
+9.0&times;10<sup>&minus;4</sup> with the formula value (h<sub>recon</sub> = 9), and depth
+beyond the formula changes nothing (h = 12 identical); at 4&times; it beats the taper and
+keeps converging (3.2&times;10<sup>&minus;4</sup> at 60 iterations) where the no-taper
+default is frozen. Threshold-free, regime-robust, verified on two library versions.</p>
+<pre><code># in split_sino_recon, replacing the pitch-ratio-only overlap computation:
+R = 0.5 * max(num_recon_rows * delta_voxel_row, num_recon_cols * delta_voxel)  # as in section 1
+rho = delta_det_row / (magnification * delta_voxel_slice)  # slices seen per overlap row; 1 at defaults
+
+half_overlap_sino = half_overlap
+half_overlap_recon = int(np.ceil(half_overlap * (1 + R / source_iso_dist) * rho)) + 2</code></pre>
+<p class="note">Cost at the Lilly 8&times; problem: each half grows by 4 slices on ~120,
+about +3% memory — small against the 2&times; the split exists to save. The current code's
+h_recon = h_sino symmetry is exactly the shortfall the stripes live in.</p>
+
+<h3>Fix B (opt-in): align the cut and the split</h3>
+<p>Removing the driver &epsilon; outright took the ablation seam to
+1.1&times;10<sup>&minus;5</sup> at the <em>default</em> depth — the best number any
+variant achieved. But there is an honest catch: with &rho; = 1 (the default), the row and
+slice grids are commensurate, so &epsilon; is <strong>invariant under every choice of cut
+row and split slice</strong> — integer moves change nothing modulo one slice. The only
+way to align is to shift the global reconstruction grid itself:</p>
+<pre><code># opt-in flag: align_split_grid=True
+eps = frac(split_slice_position - cut_row_plane_position)   # in slices, |eps| <= 0.5
+
+ct_model.set_params(recon_slice_offset=recon_slice_offset - eps * delta_voxel_slice)</code></pre>
+<p>The shifted grid samples the same object at z-positions up to half a slice away from
+what <code>recon()</code> would use — an equally valid reconstruction, but no longer
+bit-comparable or registration-identical to an unsplit run. That is fine for a
+memory-constrained final reconstruction and wrong for A/B comparisons, so it must stay
+opt-in. (When &rho; &ne; 1 the grids are incommensurate and a cheap index search can
+reduce &epsilon; without any grid shift; worth implementing as the first branch.)</p>
+
+<h3>The taper, and the verdict</h3>
+<p>With Fix A in place the taper is unnecessary in every regime tested, and Phase 2c
+showed it is a regime-dependent suppressor rather than a fix (11&times; at 4&times;,
+1.3&times; at 8&times;). Retiring it alongside Fix A is the clean move; retaining it as
+insurance for untested regimes (helical-adjacent geometries, extreme pitch ratios) is
+defensible and costs only an invisible ~10<sup>&minus;3</sup> perturbation. Recommend:
+<strong>ship Fix A as the default, retire the taper in the same change after a
+Phase&nbsp;3 spot-check on one more real scan, offer Fix B behind
+<code>align_split_grid</code></strong>. One standing caveat: all of this assumes the
+circular orbit (source in the iso plane); any relaxation of that re-opens the design.</p>
+
+<h2>4&nbsp;&nbsp;Cross-cutting principles</h2>
+<ul>
+  <li><strong>Support beats down-weighting.</strong> Every taper variant lost to giving
+      the model the voxels to explain the data — at the slab ends, at the FoV rim, and at
+      the seam.</li>
+  <li><strong>Respect asymmetric penalties.</strong> Where a size must be chosen
+      (lateral cover), under-shooting costs orders of magnitude and over-shooting costs
+      percent: round up, and prefer exact bounds (axial, split) wherever geometry
+      provides them.</li>
+  <li><strong>Automate only where the failure mode is benign.</strong> The axial pad and
+      the split extension have no catastrophic branch; the lateral cover estimate does —
+      hence detect-and-warn there.</li>
+  <li><strong>Validate on real scans before changing defaults</strong> (Phase&nbsp;3:
+      SiC axial, z62 radial, BGA severe truncation) — this campaign twice watched
+      synthetic-only conclusions fail on real data.</li>
+</ul>
+
+<p class="note">Evidence and reproduction: each section's numbers trace to the
+corresponding results page (Phases 1, 2a, 2b, 2c) and its scripts under
+<code>plans/experiments/flash_remediation/</code>.</p>
+
+</body>
+</html>

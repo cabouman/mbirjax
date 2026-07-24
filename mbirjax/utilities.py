@@ -1659,6 +1659,68 @@ def get_ct_model(geometry_type, sinogram_shape, angles, source_detector_dist=Non
     return model
 
 
+_geometry_class_by_type_str = None
+
+
+def _resolve_geometry_class(geometry_type):
+    """Resolve a geometry model class from the ``geometry_type`` string that
+    :meth:`~mbirjax.TomographyModel.get_all_params` records (``str(type(model))``)."""
+    global _geometry_class_by_type_str
+    if _geometry_class_by_type_str is None:
+        _geometry_class_by_type_str = {
+            str(cls): cls for cls in (mj.ConeBeamModel, mj.ParallelBeamModel,
+                                      mj.TranslationModel, mj.MultiAxisParallelModel)}
+    try:
+        return _geometry_class_by_type_str[geometry_type]
+    except KeyError:
+        raise ValueError("build_model: unrecognized geometry_type {!r}; expected one of {}."
+                         .format(geometry_type, list(_geometry_class_by_type_str)))
+
+
+def build_model(required_params, optional_params=None, regularization=None):
+    """
+    Construct a model from parameter dicts and compute its reconstruction geometry.
+
+    The single place the ``construct -> set_params -> auto_set_recon_geometry`` sequence lives, so a
+    caller never forgets the final ``auto_set_recon_geometry`` (which would leave the reconstruction
+    grid sized with default detector pitches).  Because ``required_params`` carries ``geometry_type``
+    (see :meth:`~mbirjax.TomographyModel.get_all_params`), the correct model class is resolved here
+    and ``(required_params, optional_params)`` is a self-contained model description -- calling this
+    reads like calling the constructor through the new interface.
+
+    Args:
+        required_params (dict): The model constructor's arguments, including ``geometry_type`` (as
+            returned in the first element of ``get_all_params``).
+        optional_params (dict, optional): Additional parameters applied with ``set_params`` (detector
+            pitches, offsets, ``delta_voxel``, ``recon_shape``, ...).  Defaults to None.
+        regularization (dict, optional): Recon-time regularization parameters applied with
+            ``set_params``.  Defaults to None (the model's default regularization).
+
+    Returns:
+        TomographyModel: the constructed model, with ``auto_set_recon_geometry`` applied.
+    """
+    required_params = dict(required_params)
+    model_class = _resolve_geometry_class(required_params.pop('geometry_type'))
+    model = model_class(**required_params)
+
+    optional_params = dict(optional_params) if optional_params else {}
+    # A pinned recon_shape must be applied AFTER auto_set_recon_geometry, or the automatic pass would
+    # overwrite it (the translation reader pins recon_shape; a faithful save/load round-trip relies
+    # on this ordering).
+    pinned_recon_shape = optional_params.pop('recon_shape', None)
+    # Apply the structural/optional params WITH name validation, so a typo'd key still raises; then
+    # apply the regularization knobs with no_warning to suppress the "directly setting regularization"
+    # advisory (this is a faithful rebuild, not a user hand-setting sigma_x).
+    if optional_params:
+        model.set_params(**optional_params)
+    if regularization:
+        model.set_params(no_warning=True, **regularization)
+    model.auto_set_recon_geometry()
+    if pinned_recon_shape is not None:
+        model.set_params(no_warning=True, recon_shape=pinned_recon_shape)
+    return model
+
+
 def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_det_rows=None, new_num_det_cols=None):
     """
     Create a TomographyModel with the same type and parameters as the given ct_model except with the new input angles
@@ -1678,30 +1740,27 @@ def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_
     Returns:
         An instance of ConeBeamModel or ParallelBeam model
     """
-    required_param_names = ct_model.get_required_param_names()
-
-    #  Get the shape of the old sinogram
-    new_shape = list(ct_model.get_params('sinogram_shape'))
     if str(type(ct_model)).find('ConeBeamModel') > 0:
-        # Get the names used to save the view parameters and to set the view parameters in the __init__
-        view_params_name = ct_model.get_params('view_params_name')  # This is the name saved in the parameter list
-        view_params_component_names = ct_model.get_params('view_params_component_names')  # These are the names used in __init__
-        if view_params_component_names[0] != 'angles' or view_params_component_names[1] != 'helical_z_shifts':
-            raise ValueError('copy_ct_model: Unexpected Conebeam view parameter names: {}'.format(view_params_component_names))
-        for name in view_params_component_names:
-            required_param_names.remove(name)
+        is_cone = True
+    elif str(type(ct_model)).find('ParallelBeamModel') > 0:
+        is_cone = False
+    else:
+        raise TypeError('copy_ct_model() is restricted to ConeBeam and ParallelBeam Models')
 
-        required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
-                                                                               required_param_names=required_param_names,
-                                                                               values_only=True)
-        view_params = ct_model.get_params(view_params_name)
-        old_angles = view_params[:, 0]
-        old_helical_z_shifts = view_params[:, 1]
+    # get_all_params is the single source of truth for reading the params back out: it gives the
+    # constructor args with the view components already unpacked (angles + helical_z_shifts for cone)
+    # and geometry_type in required, so build_model can reconstruct the class.
+    required, optional, regularization = ct_model.get_all_params()
 
+    old_angles = required['angles']
+    new_shape = list(required['sinogram_shape'])
+
+    if is_cone:
+        old_helical_z_shifts = required['helical_z_shifts']
         if new_angles is None and new_helical_z_shifts is None:
             new_helical_z_shifts = old_helical_z_shifts
         elif new_angles is not None and new_helical_z_shifts is None:
-            if np.any(old_helical_z_shifts != 0):
+            if np.any(np.asarray(old_helical_z_shifts) != 0):
                 raise ValueError('copy_ct_model: new_helical_z_shifts must be specified when changing angles for a helical scan.')
             new_helical_z_shifts = np.zeros_like(new_angles)
         elif new_angles is not None and new_helical_z_shifts is not None:
@@ -1710,45 +1769,21 @@ def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_
         elif new_angles is None and new_helical_z_shifts is not None:
             if len(old_helical_z_shifts) != len(new_helical_z_shifts):
                 raise ValueError('copy_ct_model: new_helical_z_shifts must have the same length as the existing angles.')
-
-        required_params['helical_z_shifts'] = new_helical_z_shifts
-
-    elif str(type(ct_model)).find('ParallelBeamModel') > 0:
-        required_params, other_params = ct_model.get_required_params_from_dict(ct_model.params,
-                                                                               required_param_names=required_param_names,
-                                                                               values_only=True)
-        old_angles = ct_model.get_params('angles')
-    else:
-        raise TypeError('copy_ct_model() is restricted to ConeBeam and ParallelBeam Models')
-
+        required['helical_z_shifts'] = new_helical_z_shifts
 
     if new_angles is None:
         new_angles = old_angles
     new_shape[0] = len(new_angles)
-
     if new_num_det_rows is not None:
         new_shape[1] = new_num_det_rows
-
     if new_num_det_cols is not None:
         new_shape[2] = new_num_det_cols
+    required['angles'] = new_angles
+    required['sinogram_shape'] = tuple(new_shape)
 
-    if str(type(ct_model)).find('ConeBeamModel') > 0:
-        other_params['view_params_array'] = jnp.stack(
-            [jnp.asarray(new_angles).ravel(),
-             jnp.asarray(required_params['helical_z_shifts']).ravel()],
-            axis=1
-        )
-
-    # Set the new sinogram shape and angles
-    required_params['sinogram_shape'] = tuple(new_shape)
-    required_params['angles'] = new_angles
-    new_model = type(ct_model)(**required_params)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        del other_params['recon_shape']  # This should be set automatically by the constructor
-        new_model.set_params(**other_params)
-
-    return new_model
+    # The sinogram shape changed, so drop recon_shape and let build_model's auto pass recompute it.
+    optional.pop('recon_shape', None)
+    return build_model(required, optional, regularization)
 
 
 def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors, voxel_row_aspect=1.0, voxel_slice_aspect=1.0):

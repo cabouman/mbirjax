@@ -41,17 +41,11 @@ if __name__ == "__main__":
     snr_db = 30.0
 
     print("\n************** NSI dataset preprocessing **************")
-    sino, cone_beam_params, optional_params = mjp.nsi.compute_sino_and_params(dataset_dir,
-                                                                              downsample_factor=downsample_factor,
-                                                                              subsample_view_factor=subsample_view_factor)
+    sino, ct_model = mjp.nsi.get_sino_and_model(dataset_dir,
+                                                downsample_factor=downsample_factor,
+                                                subsample_view_factor=subsample_view_factor)
 
     print("\n***************** Set up MBIRJAX model ****************")
-    # Construct cone beam object using NSI parameters
-    ct_model = mj.ConeBeamModel(**cone_beam_params)
-
-    # Set optional NSI geometry parameters
-    ct_model.set_params(**optional_params)
-
     # Set user determined parameter values
     ct_model.set_params(sharpness=sharpness, snr_db=snr_db, verbose=1)
     ct_model.set_params(recon_slice_offset=recon_slice_offset)

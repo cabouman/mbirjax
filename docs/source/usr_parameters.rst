@@ -53,10 +53,10 @@ positivity_flag
 
 This parameter determines if positivity is enforced in MBIR reconstruction.
 
-.. _param-max_overrelaxation:
+.. _param-max_alpha:
 
-max_overrelaxation
-""""""""""""""""""
+max_alpha
+"""""""""
 :Type: float (Defaults to 1.5)
 
 This parameter limits the step size of VCD updates.
@@ -98,8 +98,13 @@ recon_shape
 """""""""""
 :Type: tuple (num_rows, num_cols, num_slices)
 
-Array size of reconstruction. This is set automatically and is available from ``get_params('recon_shape')``.
-It is recommended to use :meth:`~mbirjax.TomographyModel.scale_recon_shape` to increase this by a factor of 10–15% when the object extends beyond the field of view.
+Array size of reconstruction. This is set automatically (by ``auto_set_recon_geometry``) and is available from ``get_params('recon_shape')``.
+
+For cone beam, the automatic shape can pad each end of the slice axis using
+the cone beam-specific ``axial_pad_fraction`` parameter.
+If the object extends beyond the field of view *laterally*, MBIRJAX will issue a warning during reconstruction.
+In this case, the reconstruction can be improved by using :meth:`~mbirjax.TomographyModel.scale_recon_shape` with
+``scale_recon_shape(s, s)`` and ``s`` typically chosen as ``s >= 1.1``.
 
 .. _param-delta_det_channel:
 

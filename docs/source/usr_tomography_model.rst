@@ -12,7 +12,6 @@ Constructor
 -----------
 
 .. autoclass:: mbirjax.TomographyModel
-   :show-inheritance:
 
 
 Reconstruction and Projection
@@ -37,6 +36,8 @@ Parameter Handling
 .. automethod:: mbirjax.ParameterHandler.get_params
 
 .. automethod:: mbirjax.ParameterHandler.print_params
+
+.. automethod:: mbirjax.TomographyModel.get_all_params
 
 .. automethod:: mbirjax.TomographyModel.get_recon_dict
 

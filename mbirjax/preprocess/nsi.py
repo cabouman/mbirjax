@@ -3,24 +3,69 @@ import re
 from operator import itemgetter
 import numpy as np
 import warnings
+import mbirjax
 import mbirjax.preprocess as mjp
 import glob
 import pprint
 pp = pprint.PrettyPrinter(indent=4)
 
 
-def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_view_factor=1,
-                            crop_pixels_sides=None, crop_pixels_top=None, crop_pixels_bottom=None, verbose=1, offset_correction=True):
+def get_sino_and_model(dataset_dir, *, downsample_factor=(1, 1), subsample_view_factor=1,
+                       crop_pixels_sides=None, crop_pixels_top=None, crop_pixels_bottom=None,
+                       auto_crop=False, verbose=1, offset_correction=True):
     """
-    Load NSI sinogram data and prepare arrays and parameters for ConeBeamModel reconstruction.
+    Load an NSI scan dataset, compute its sinogram, and return a ready-to-reconstruct model.
 
-    This function computes the sinogram and geometry parameters from an NSI scan directory. It performs the following:
+    This is the one-call replacement for the ``compute_sino_and_params -> ConeBeamModel(...) ->
+    set_params -> auto_set_recon_geometry`` sequence: it constructs the ConeBeamModel, applies the
+    detector parameters, and computes the reconstruction geometry, so the returned model can never be
+    left with a stale (default-pitch) reconstruction grid.
 
-    1. Loads object, blank, and dark scans, and geometry parameters from the dataset.
-    2. Computes the sinogram from the scan images.
-    3. Replaces defective pixels with interpolated values.
-    4. Corrects for detector rotation.
-    5. Applies background offset correction.
+    Args:
+        dataset_dir (str): Path to the NSI scan directory (see :func:`load_scans_and_params` for the layout).
+        downsample_factor (Tuple[int, int], optional): Detector row/channel downsampling. Defaults to (1, 1).
+        subsample_view_factor (int, optional): Keep every n-th view. Defaults to 1.
+        crop_pixels_sides (int, optional): Pixels to crop from each lateral side before the sinogram is
+            computed. If None, uses the NSI config file. Defaults to None.
+        crop_pixels_top (int, optional): Pixels to crop from the top. If None, uses the NSI config. Defaults to None.
+        crop_pixels_bottom (int, optional): Pixels to crop from the bottom. If None, uses the NSI config. Defaults to None.
+        auto_crop (bool, optional): If True, detect and remove blank sinogram margins after the sinogram
+            is computed, shrinking the reconstruction. Defaults to False.
+        verbose (int, optional): Verbosity level. Defaults to 1.
+        offset_correction (bool, optional): Apply detector offset correction from the Geometry Report.
+            Defaults to True.
+
+    Returns:
+        tuple: ``(sino, model)`` where
+
+            - ``sino`` (jax array): the computed sinogram, shape (num_views, num_det_rows, num_det_channels).
+            - ``model`` (ConeBeamModel): a model with its reconstruction geometry already set.
+
+    Example:
+        .. code-block:: python
+
+            sino, model = mbirjax.preprocess.nsi.get_sino_and_model(dataset_dir)
+            weights = mbirjax.gen_weights(sino, weight_type='transmission_root')
+            recon, recon_dict = model.recon(sino, weights=weights)
+
+    Note:
+        Reconstruction weights are not returned; generate them with ``mbirjax.gen_weights``.
+    """
+    sino, required_params, optional_params = _compute_sino_and_params(
+        dataset_dir, downsample_factor=downsample_factor, subsample_view_factor=subsample_view_factor,
+        crop_pixels_sides=crop_pixels_sides, crop_pixels_top=crop_pixels_top,
+        crop_pixels_bottom=crop_pixels_bottom, verbose=verbose, offset_correction=offset_correction)
+    return mjp.finalize_model(sino, required_params, optional_params, auto_crop=auto_crop)
+
+
+def _compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_view_factor=1,
+                             crop_pixels_sides=None, crop_pixels_top=None, crop_pixels_bottom=None, verbose=1, offset_correction=True):
+    """
+    Load NSI scans and compute the sinogram plus build_model-ready geometry parameters.
+
+    Private helper for :func:`get_sino_and_model`.  It loads object/blank/dark scans and geometry,
+    computes the sinogram (defective-pixel interpolation, detector rotation, background offset), and
+    returns the parameters needed to build a ConeBeamModel.
 
     Args:
         dataset_dir (str): Path to the NSI scan directory. Expected structure:
@@ -39,26 +84,12 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
         offset_correction (bool): Whether to apply detector offset correction using values from the Geometry Report. Defaults to True.
 
     Returns:
-        tuple: (sino, cone_beam_params, optional_params)
-            - ``sino`` (jax.numpy.ndarray): Sinogram of shape (num_views, num_det_rows, num_det_channels).
-            - ``cone_beam_params`` (dict): Parameters for initializing ConeBeamModel.
-            - ``optional_params`` (dict): Parameters to be passed via ``set_params()``.
+        tuple: ``(sino, required_params, optional_params)`` where
 
-    Example:
-        .. code-block:: python
-
-            # Get data and reconstruction parameters
-            sino, cone_beam_params, optional_params = mbirjax.preprocess.NSI.compute_sino_and_params(
-                dataset_dir, downsample_factor=downsample_factor, subsample_view_factor=subsample_view_factor)
-
-            # Create the model and set parameters
-            ct_model = mbirjax.ConeBeamModel(**cone_beam_params)
-            ct_model.set_params(**optional_params)
-            ct_model.set_params(sharpness=sharpness, verbose=1)
-
-            # Generate weights and run reconstruction
-            weights = mj.gen_weights(sino, weight_type='transmission_root')
-            recon, recon_dict = ct_model.recon(sino, weights=weights)
+            - ``sino`` (jax array): Sinogram of shape (num_views, num_det_rows, num_det_channels).
+            - ``required_params`` (dict): ConeBeamModel constructor arguments plus a ``geometry_type``
+              entry, so ``build_model`` can resolve the model class.
+            - ``optional_params`` (dict): Parameters to be applied via ``set_params()``.
     """
     if verbose > 0:
         print("\n\n########## Loading object, blank, dark scans, and geometry parameters from NSI dataset directory")
@@ -114,6 +145,8 @@ def compute_sino_and_params(dataset_dir, downsample_factor=(1, 1), subsample_vie
         print('cropped obj_scan shape = ', obj_scan_shape)
         print('sinogram shape = ', sino.shape)
 
+    # Normalize for build_model: tag the constructor dict with the geometry class identity.
+    cone_beam_params['geometry_type'] = str(mbirjax.ConeBeamModel)
     return sino, cone_beam_params, optional_params
 
 
@@ -389,9 +422,13 @@ def convert_nsi_to_mbirjax_params(nsi_params, downsample_factor=(1, 1), crop_pix
     det_channel_offset, det_row_offset = calc_row_channel_params(r_a, r_n, r_h, r_s, r_r, delta_det_channel, delta_det_row, num_det_channels, num_det_rows, magnification)
     recon_slice_offset = - det_row_offset / magnification
 
-    # Adjust detector size params w.r.t. cropping arguments
-    num_det_rows = num_det_rows - (crop_pixels_top + crop_pixels_bottom)
-    num_det_channels = num_det_channels - 2 * crop_pixels_sides
+    # Apply the configuration crop through the shared primitive: it reduces the shape and, for an
+    # asymmetric top/bottom crop, shifts det_row_offset (NSI forces a symmetric crop upstream, so this is
+    # byte-identical for NSI).  The crop is in raw detector pixels (matched by the raw pitch);
+    # downsampling is applied afterward.
+    num_det_rows, num_det_channels, det_row_offset, det_channel_offset = mjp.apply_config_crop(
+        num_det_rows, num_det_channels, det_row_offset, det_channel_offset, delta_det_row, delta_det_channel,
+        crop_pixels_top=crop_pixels_top, crop_pixels_bottom=crop_pixels_bottom, crop_pixels_sides=crop_pixels_sides)
 
     # Adjust detector size and pixel pitch params w.r.t. downsampling arguments
     num_det_rows = num_det_rows // downsample_factor[0]

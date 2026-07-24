@@ -27,13 +27,11 @@ if __name__ == "__main__":
     verbose = 2
 
     print("\n************** NSI dataset preprocessing without offset correction **************")
-    sino, cone_beam_params, optional_params = \
-        mjp.nsi.compute_sino_and_params(dataset_dir, downsample_factor=downsample_rate,
-                                        subsample_view_factor=subsample_view_factor, offset_correction=True)
+    sino, ct_model = \
+        mjp.nsi.get_sino_and_model(dataset_dir, downsample_factor=downsample_rate,
+                                   subsample_view_factor=subsample_view_factor, offset_correction=True)
 
     print("\n***************** Set up MBIRJAX model ****************")
-    ct_model = mj.ConeBeamModel(**cone_beam_params)
-    ct_model.set_params(**optional_params)
     ct_model.set_params(sharpness=sharpness, verbose=verbose, positivity_flag=True)
     weights_trans = ct_model.gen_weights(sino, weight_type='transmission_root')
     ct_model.print_params()
@@ -41,13 +39,11 @@ if __name__ == "__main__":
     recon_with_correction, _ = ct_model.recon(sinogram=sino, weights=weights_trans)
 
     print("\n************** NSI dataset preprocessing with data correction **************")
-    sino, cone_beam_params, optional_params = \
-        mjp.nsi.compute_sino_and_params(dataset_dir, downsample_factor=downsample_rate,
-                                        subsample_view_factor=subsample_view_factor, offset_correction=False)
+    sino, ct_model = \
+        mjp.nsi.get_sino_and_model(dataset_dir, downsample_factor=downsample_rate,
+                                   subsample_view_factor=subsample_view_factor, offset_correction=False)
 
     print("\n***************** Set up MBIRJAX model ****************")
-    ct_model = mj.ConeBeamModel(**cone_beam_params)
-    ct_model.set_params(**optional_params)
     ct_model.set_params(sharpness=sharpness, verbose=verbose, positivity_flag=True)
     weights_trans = ct_model.gen_weights(sino, weight_type='transmission_root')
     ct_model.print_params()

@@ -103,7 +103,9 @@ devices were used.  If you have no GPU, all processing is done on the CPU.  See 
 
 If your reconstruction is still too large, then for a parallel beam system you can select a subset of rows of your
 sinogram, reconstruct them separately, and then concatenate them at the end.  If you have a cone beam system, you can
-reconstruct a subset of the central slices or use :meth:`~mbirjax.ConeBeamModel.split_sino_recon`.  In either case, you can do
+reconstruct a subset of the central slices or use :meth:`~mbirjax.ConeBeamModel.split_sino_recon`.  For cone beam you can
+also make sure axial padding is disabled (``axial_pad_fraction=0``, the default -- see
+:ref:`ConeBeamModelDocs`) if that padding is what pushes you over the memory limit.  In either case, you can do
 a center cropped reconstruction as in Demo 3: Cropped Center, although as seen in that demo, this can introduce an
 intensity shift and other artifacts.
 
@@ -151,6 +153,25 @@ Detector nonuniformity results from the variation in detector sensitivity from p
 This variation is taken out to some degree by air scan normalization, but some variation may remain.
 These variations will lead to concentric rings in the reconstruction.
 We are working on preprocessing utilities for reducing these ring artifacts.
+
+A bright ring at the outer *boundary* of the reconstruction -- typically accompanied by the
+"Lateral FoV truncation detected" warning -- means the object extends past the field of view; see the next FAQ.
+
+
+Q: What does the "Lateral FoV truncation detected" warning mean?
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+A: The object extends beyond the detector's lateral field of view: at every view angle, material outside
+the field of view contributes to the measurements, but no reconstruction voxel is available to explain it.
+The result is a bright ring at the reconstruction boundary, a bias across the whole interior, and slowed
+convergence.
+
+Image quality can often be improved in this case by padding the region of reconstruction using the
+``model.scale_recon_shape(s, s)`` method with ``s >= 1.1``.
+
+For the *axial* (slice) direction in cone beam, the automatic geometry can pad the slice
+axis via the ``axial_pad_fraction`` parameter (default 0 = no padding, 1 = full padding --
+see :ref:`ConeBeamModelDocs`).
 
 
 Q: How can I shift region-of-reconstruction up or down for a conebeam reconstruction?

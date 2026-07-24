@@ -91,7 +91,7 @@ short jax/perf tips in `claude_prompt.md`.
   yields one identical shard per device), partials combined on the host
   (`segmentation._sharded_histogram`).  `shard_map` also achieved 0 all-gathers in HLO but its SPMD
   partitioner has produced pathological lowerings here (3–5× slower fbp filter; see
-  `experiments/sharding/parallel_performance/fbp_parallel_options.md`) — prefer the per-device
+  `plans/sharding/parallel_performance/fbp_parallel_options.md`) — prefer the per-device
   dispatch pattern (dispatch all work before reading any result and the devices overlap without
   threads).
 - **The device form (padded arrays) is the INTERNAL contract; crop at user boundaries.**  Internal
@@ -123,6 +123,16 @@ short jax/perf tips in `claude_prompt.md`.
 - **cuSolver-family calls (`jnp.linalg.solve/svd/eig/...`) on small systems → host `np.linalg`.**
   Their workspaces allocate outside XLA's pool (see §7) and the async failure surfaces only at first
   read.  (`jnp.linalg.norm` is pure XLA — fine, but jit it; see §7.)
+- **Keep per-call wrappers free of EAGER array ops.**  One eager gather/slice of a device array
+  costs ~1 ms of HOST time (jax's eager dispatch path), invisible to device profiles and to
+  micro-benches that hit a different argument path.  (Phase D's VCD +35%: ONE eager
+  view-params gather per projector call, 547×/recon — the micro-bench used the empty-default
+  `owned_view_indices` and measured flat.)  Restrict view/pixel subsets INSIDE the jitted
+  program (traced gather); wrappers on hot paths carry an explicit no-eager-ops contract
+  (`projectors.py` create_projectors).  Attribution playbook when a loop is HOST-bound
+  (device trace shows device-time ≪ wall, e.g. VCD at 200³ is ~95% host): cProfile the warm
+  run and diff old-vs-new by cumtime/ncalls — kernel benches and dispatch-count probes
+  cannot see it.
 - **`lax.map(batch_size=…)` is unsafe for large batches (jax#27591)** — use `vmap` for parallelism
   and scan without `batch_size`.
 - **A heterogeneous (CPU+GPU) mesh is fragile** — the hybrid mode is two separate single-device
@@ -143,6 +153,11 @@ as suspect — and note small phantoms can never reproduce these (size-dependent
 2. **A Python int > 2^31 as a traced operand raises OverflowError at the jit boundary** (weak int →
    int32).  Counts enter traced arithmetic as FLOATS (`float(n)`; same ~1e-7 rounding `jnp.mean` had
    internally); per-run int counts passed to jitted functions are STATIC args, float()ed in the body.
+   RECURRED 2026-07-10 (`mar.py`'s padding-aware mean divided by `num_real_pixels` = 3.7e9 on a
+   student's full-size run): new count-dividing code must carry the idiom, and the flat-index greps
+   (item 1's `argsort`/`searchsorted`/...) do NOT catch this face — grep `/ num_`-style count
+   divisions too.  Regression tests need no big arrays: the overflow is in the scalar's VALUE, so a
+   tiny array divided by `2**31 + k` pins it (`test_mar.TestCorrectPlasticSinogramBigCounts`).
 3. **`np.prod` of a shape accumulates in the platform default int** — int64 on Linux/macOS, int32 on
    Windows/numpy<2 (silent wrap).  Use `math.prod` for element counts.
 4. **Integer counting: int32 wraps above 2^31, and f32 scatter-adds of unit counts SATURATE at 2^24**
@@ -189,11 +204,30 @@ as suspect — and note small phantoms can never reproduce these (size-dependent
   pays.  Tell: the isolated probe and the full-path A/B disagree in SIGN.  Corollary from the
   same episode: XLA lowers scan-over-reshaped-input and scan-of-dynamic-slice to the SAME GPU
   program (byte-identical temps/outputs) — don't hand-optimize between forms XLA canonicalizes;
-  full record in `experiments/projector_batching/batching_refactor_design.md`.
+  full record in `plans/projector_batching/batching_refactor_design.md`.
 - **When GPU behavior contradicts local tests, verify the BUILD first.**  Editable installs can serve
   stale compiled state (a "33 GB leak" was a stale binary); and a modern `pip install -e` registers a
   `sys.meta_path` finder that beats `PYTHONPATH` — to select code under test, install it into a
   dedicated env (`mbirjax_metrics/tooling/regression/lib_env.sh`), never point `PYTHONPATH` at it.
+- **A bench that constructs a `jax.jit` inside the measured call measures HOST TRACING, not the
+  operation.**  A fresh `jax.jit(...)` object retraces on every invocation (the persistent cache
+  skips only XLA compilation, not tracing) — in the E4 composed-back preview this inflated a ~1 ms
+  weight builder to 1,828 ms (61% of the "composed" time) and earlier masqueraded as an "H100
+  precompute oddity" (host tracing is why a Mac M3 looked FASTER than the H100 node).  Tells: a
+  warm cost far above the arithmetic/traffic floor; near-identical work at wildly different costs
+  (a module-level jit at 6 ms next to a per-call jit at 1,828 ms); cold ≈ warm.  Rule: hoist jits
+  to module level (or cache the jitted callable) before timing anything; suspect any "expensive
+  precompute" measured through a locally-constructed jit.  Full record:
+  `plans/projector_kernels/gpu_headroom_findings.md` (the composed-preview sections).
+- **A kernel spike's speedup is NOT the driver's; the two driver killers are host syncs and
+  data-dependent launch shapes.**  E4 increment 2: a kernel that spiked 2.13× gated 0.68× in the
+  library because the driver (a) pulled a device array to host per view chunk (`np.asarray` — a
+  pipeline stall, strictly worse than an eager dispatch) and (b) sized a pallas grid from DATA, so
+  every distinct VCD subset changed a cache key → Triton recompile inside the loop (invisible to
+  a warm same-input bench; the tell was the JOB wall, 18 vs 6 min).  Rule: derive kernel/launch
+  shapes from array SHAPES only (static bounds, padded slots made no-ops), keep the whole per-call
+  chain in one cached jit, and gate the LIBRARY path at production shapes — the spike harness's
+  glue is not the driver's glue.  Fixed form gated 2.57×; same file, sections above.
 
 ## 6. Performance expectations
 

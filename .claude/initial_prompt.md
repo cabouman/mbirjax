@@ -1,32 +1,45 @@
-We're continuing improvements to `mbirjax`, working branch `greg/performance_improvements`.
+We're continuing work on `mbirjax` (branches `prelease` and `greg/gpu_headroom`), with a focus on
+cleaning and robustifying in preparation for a release.
 
-State: the core sharding, the MAR/preprocessing sharding, and the large-problem memory/robustness work
-shipped on `greg/shard_profiling` (PR to `prerelease` and soon to `main`).  This branch is the next phase — performance — and will 
-sync with `main` once that PR merges.
+**IMPORTANT — workflow reminder:** discussion first for code AND doc changes; propose and
+wait for approval (read `.claude/claude_prompt.md` closely for more).  Stage only, never
+commit.  Terminology: "variants" (not arms/cells/grid for variant sets); "ground truth
+phantom" (not truth grid).
 
-Read for orientation (these are not the source of truth — verify any code claim against the actual code;
-docs/memory may lag):
-1. `.claude/claude_prompt.md` — collaboration style + workflow.
-2. `experiments/sharding/plans/post_shard_plans.md` — **Main priorities.**
-3. `.claude/lessons.md` — the consolidated engineering playbook (float gates, sharded/jitted-code rules,
-   the 2^31 boundary, honest measurement, performance expectations).  Short and organized by task.
+Read for orientation (verify claims against code; the first three carry the full state):
+1. `plans/current_plans.md` — THE evolving forward plan.  §1 lists the implementation
+   order; the full design is in the remedies page (next item).
+2. `.claude/lessons.md` — engineering playbook.
 
-There are companion repos parallel to mbirjax:
- * `mbirjax_metrics`: performance tracking and profiling.
- * `mbirjax_applications`: production-scale examples and workflows.
+Also skim for context:
+6. `plans/README.md` — the index of all internal plans/findings docs (docs at
+   `plans/<area>/`, supporting scripts at `plans/experiments/<area>/`).
 
-Working reminders:
-- Stage only / draft commit messages — Greg commits from PyCharm; do git surgery via CLI, not PyCharm.
-- Flag GPU/cluster items — Greg runs those on the cluster.
-- Exact equality is never the gate for computed floats — use the scale-invariant
-  `tests/sharding/conftest.assert_sharded_allclose` for sharded-vs-single comparisons.
-- The sharded VCD loop is geometry-independent, so a new geometry needs no per-geometry sharded
-  VCD-recon test.
-- The GPU memory fraction is `os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.94')` —
-  overridable per-run via the environment; out-of-pool allocations (NCCL, cuSolver) live in the
-  remainder (lessons.md §7).
-- jax/jaxlib version discipline is handled by the metrics regression workflow (0.10.2 excluded; new
-  releases are built against the previous commit first to isolate toolchain effects) — check the
-  `toolchain` field in regression YAMLs rather than re-deriving it.
-- Any new script must set env vars / `import mbirjax` before anything touches jax — the memory-fraction
-  and log-level env vars bind at jax backend initialization.
+Current task:  First, make a plan to merge prerelease into greg/gpu_headroom.  
+gpu_headroom has all the work on pallas kernels, padding, and some other misc items.
+prerelease has refactored preprocessing and was merged into gpu_headroom just before 
+the work on preprocessing.  Please identify any conflicts to a merge, and also create 
+a high-level draft PR message from the resulting merge back to prerelease.
+
+## Standing context
+
+- Cluster: gautschi (ssh BatchMode); sbatch on partition `ai`, account `bouman`,
+  **--cpus-per-task=14 required per GPU**; P2 job/staging dir `~/flash_p2b` (results in
+  `results/`); Lilly data + recon volumes + analysis scripts at
+  `/scratch/gautschi/buzzard/flash_lilly`.  Nested ssh via the login node; coordinate
+  before heavy use.
+- Metrics/dashboard interplay for the padding change: the nightly memory gate is
+  vs-prior (it alerts ONCE, then the new numbers become the baseline), and the engine's
+  new `policy` block records partition_sequence/max_iterations but NOT recon-shape
+  defaults — so when the axial padding lands, either add a note to
+  `mbirjax_metrics/results/annotations.yaml` (rendered as purple bottom-band chart
+  markers with tooltips) or extend the policy block to record a padding flag, in the
+  same change.
+- Verification habits: pgrep -f self-matches its own ssh command (check log files, not
+  process greps); VCD prints "Error sino RMSE" every iteration (don't grep bare "Error"
+  for failure detection); the jax persistent compile cache makes warm cluster runs much
+  faster than first runs.
+- Preview: `.claude/launch.json` entry `flash-remediation-page` serves
+  `plans/flash_remediation/` on port 8932 (`index.html` is the overview);
+  `plans/flash_remediation/publish_pages.sh` rsyncs the self-contained pages to the
+  public depot www (HTML only — the destination is publicly served).

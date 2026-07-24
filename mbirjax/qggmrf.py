@@ -262,33 +262,31 @@ def qggmrf_grad_and_hessian_per_slice(flat_recon_slice, recon_shape, pixel_indic
 @partial(jax.jit, static_argnames='qggmrf_params')
 def get_2_b_tilde(delta, b_for_delta, qggmrf_params):
     """
-    Compute rho'(delta) / delta using a slightly modified form on page 117 of FCI for the qGGMRF prior model.
+    Compute ``b_for_delta * rho'(delta) / delta`` (i.e. ``b_for_delta * 2 * b_tilde``) for the
+    qGGMRF prior model -- the coefficient of the symmetric-bound surrogate (FCI Eq. 8.16-8.17).
+
+    This delegates to :func:`b_tilde_by_definition` (the FCI Table 8.1 middle column,
+    ``rho'(delta) / (2 delta)``) and multiplies by 2, so ``b_tilde`` has ONE implementation:
+    the production gradient/Hessian and the reference/loss-surrogate paths can no longer diverge.
+    (They previously used two separately-coded forms that disagreed by up to ~3e-3 near
+    ``delta -> 0``, because they floored the removable ``0/0`` singularity differently -- this
+    form added an epsilon to the scaled delta, which biased b_tilde for ALL delta.)  The floor now
+    lives only in :func:`b_tilde_by_definition` as a clip of ``|delta|`` at ``T*sigma_x*eps_f32``:
+    exact above the floor, and for ``p = 2`` equal to the analytic ``rho''(0)/2`` to ~1e-6; below
+    the floor the surrogate weight ``b_tilde * delta^2`` is ~1e-14, so the choice is numerically
+    inert in a reconstruction.
 
     Args:
         delta (float or jax array): (batch_size, P) array of pixel differences between center and each of P neighboring
-        pixels.
+            pixels.
         b_for_delta (float): The value of b associated with this delta.
         qggmrf_params (tuple): Parameters in the form (b, sigma_x, p, q, T)
 
     Returns:
-        float or jax array: rho'(delta) / (2 delta)
+        float or jax array: ``b_for_delta * rho'(delta) / delta``
     """
     b, sigma_x, p, q, T = qggmrf_params
-
-    # Scale by T * sigma_x and get powers
-    # Note that |delta|^r = T^r sigma_x^r |delta / (T sigma_x)|^r for any r, so we use a scaled version of delta_prime
-    eps_float32 = jnp.finfo(jnp.float32).eps  # Smallest single precision float
-    scaled_delta = abs(delta) / (T * sigma_x) + eps_float32  # Avoid delta=0 in delta**(q-p) since q < p
-    delta_q_minus_2 = scaled_delta ** (q - 2.0)
-    delta_q_minus_p = scaled_delta ** (q - p)
-
-    numerator = delta_q_minus_2 * ((q / p) + delta_q_minus_p)
-    denominator = (1 + delta_q_minus_p) ** 2
-    scale = (T ** (p - 2)) / (sigma_x * sigma_x)
-
-    rho_prime_over_delta = scale * numerator / denominator
-    b_tilde_times_2 = b_for_delta * rho_prime_over_delta
-    return b_tilde_times_2
+    return b_for_delta * 2.0 * b_tilde_by_definition(delta, sigma_x, p, q, T)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

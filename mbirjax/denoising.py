@@ -22,7 +22,7 @@ class QGGMRFDenoiser(TomographyModel):
     paths: on a single device it runs the whole sweep in one JIT (the fast path, no qGGMRF halos --
     a single shard uses the reflected boundary condition); across multiple devices it slice-shards
     the image and runs a Python loop that stages the qGGMRF halos once per pass (host-side, so it
-    cannot live in a JIT), mirroring :meth:`TomographyModel.vcd_recon`.
+    cannot live in a JIT), mirroring ``TomographyModel.vcd_recon``.
     """
 
     def __init__(self, image_shape):
@@ -85,6 +85,12 @@ class QGGMRFDenoiser(TomographyModel):
     def auto_set_sigma_y(self, sinogram, sino_indicator, weights=1):
         sigma_y = self.get_params('sigma_noise')
         self.set_params(no_warning=True, sigma_y=sigma_y, auto_regularize_flag=True)
+
+    def _check_lateral_truncation(self, sino_indicator):
+        """No-op override: the denoiser's 'sinogram' is an ordinary image, and image content
+        reaching the frame edge is normal -- not the lateral FoV truncation the base check
+        warns about (see TomographyModel._check_lateral_truncation)."""
+        return
 
     def estimate_image_noise_std(self, image):
         """
@@ -191,7 +197,7 @@ class QGGMRFDenoiser(TomographyModel):
         Returns:
             tuple: (denoised_image, denoiser_dict)
                 - denoised_image (numpy or jax array): A denoised image of the same shape as image
-                - denoiser_dict (dict): A dict obtained from :meth:`get_recon_dict` with entries
+                - denoiser_dict (dict): A dict obtained from :meth:`~mbirjax.TomographyModel.get_recon_dict` with entries
                     * 'recon_params'
                     * 'notes'
                     * 'recon_logs'
@@ -274,8 +280,12 @@ class QGGMRFDenoiser(TomographyModel):
         alpha_values = [float(val) for val in recon_params[2]]
 
         prior_loss = None
+        # delta_norm_per_slice is None like prior_loss: the denoiser's own subset loop does not
+        # compute the per-slice update-norm diagnostic (see update_recon_with_slice_sumsq).
+        delta_norm_per_slice = None
         recon_param_values = [int(num_iters), granularity, partition_sequence, fm_rmse, prior_loss,
-                              regularization_params, stop_threshold_change_pct, alpha_values]
+                              regularization_params, stop_threshold_change_pct, alpha_values,
+                              delta_norm_per_slice]
         recon_params = mj.ReconParams(*tuple(recon_param_values))._asdict()
 
         notes = 'Reconstruction completed: {}\n\n'.format(datetime.datetime.now())
@@ -573,7 +583,7 @@ def median_filter3d(x, max_block_gb=4.0, return_min_max=False) -> Union[jnp.ndar
       to apply jnp.swapaxes(x, 0, long_dim) before applying median_filter3d, although swapaxes will make a copy of x.
     * Within each block the filter is computed by rolling the data in all 26
       neighbour directions, stacking the 27 volumes, and taking
-      :func:`jnp.median` along the new axis.
+      ``jnp.median`` along the new axis.
     * This is a whole-volume operation and is **not** sharding-aware.  The built-in d0-blocking
       already bounds single-device memory, so a large volume can be filtered on one device.  If ``x``
       is distributed across multiple devices (e.g. a recon returned with ``output_sharded=True``),

@@ -6,24 +6,31 @@ import copy
 
 FILE_FORMAT_NUMBER = 1.0  # The format number should be changed if the file format changes.
 
-# Substrings (matched case-insensitively) that mark a caught error as an out-of-memory (OOM)
-# failure.  Beyond the clean allocator tokens, GPU FBP hits cuFFT OOM, which XLA surfaces as
-# "Failed to create cuFFT batched plan with scratch allocator" / "Failed to allocate work area" --
-# none of the usual OOM tokens (confirmed on H100 at 1624^3 / 1 device).
+# Tokens (matched case-insensitively, on word boundaries) that mark a caught error as an
+# out-of-memory (OOM) failure.  Beyond the clean allocator tokens, GPU FBP hits cuFFT OOM, which
+# XLA surfaces as "Failed to create cuFFT batched plan with scratch allocator" / "Failed to
+# allocate work area" -- none of the usual OOM tokens (confirmed on H100 at 1624^3 / 1 device).
 OOM_MARKERS = ("RESOURCE_EXHAUSTED", "OUT OF MEMORY", "OOM", "BAD_ALLOC",
                "FAILED TO ALLOCATE", "WORK AREA", "SCRATCH ALLOCATOR",
                "FAILED TO CREATE CUFFT")
 
+# Word boundaries are required, not decoration: the classified text is a full traceback whose
+# file paths can embed a marker as a substring (a checkout named "mbirjax_headroom" put "oom"
+# in every traceback and turned every error into an OOM).
+_OOM_MARKER_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(marker) for marker in OOM_MARKERS) + r")\b",
+    re.IGNORECASE,
+)
+
 
 def is_oom(text):
-    """Return True if ``text`` contains a known out-of-memory marker.
+    """Return True if ``text`` contains a known out-of-memory marker as a whole word.
 
     Prefer passing the full traceback rather than ``str(e)``: an OOM often surfaces as an
     unrelated-looking error (e.g. a numpy "setting an array element with a sequence") with the
     real RESOURCE_EXHAUSTED only visible deeper in the stack.
     """
-    up = text.upper()
-    return any(marker in up for marker in OOM_MARKERS)
+    return _OOM_MARKER_RE.search(text) is not None
 
 
 def log_oom_guidance(logger, on_gpu):
@@ -113,13 +120,15 @@ _reconstruction_defaults_dict = {
     'positivity_flag': Param(False, False),
     'snr_db': Param(30.0, False),
     'sharpness': Param(1.0, False),
-    'granularity': Param([1, 2, 4, 8, 16, 32, 64, 128, 256], False),
-    'partition_sequence': Param([0, 2, 4, 6, 7], False),
+    # 4 independent 128-subset partitions, cycled after warmup (covers 103
+    # iterations; last entry repeats after that).
+    'granularity': Param([1, 2, 4, 8, 16, 32, 64, 128, 128, 128, 128], False),
+    'partition_sequence': Param([2, 4, 6] + [7, 8, 9, 10] * 25, False),
     'verbose': Param(1, False),
     'use_gpu': Param('automatic', True),  # DEPRECATED: use configure_devices ('cpu' forces CPU-only).
                                           # Kept (with set_params forwarding) for one deprecation
                                           # cycle so existing scripts and saved params still work.
-    'max_overrelaxation': Param(1.5, False),  # This is used in vcd_subset_updater() to limit the maximum step size
+    'max_alpha': Param(1.5, False),       # Used in vcd_subset_updater() to limit the maximum step size
     'use_ror_mask': Param(True, False),
 }
 

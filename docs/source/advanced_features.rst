@@ -32,6 +32,24 @@ Below are tips on important and useful features:
 
   **Important Note:** If you change parameters such as ``delta_det_channel``, then you should run ``model.auto_set_recon_geometry()`` to update the corresponding reconstruction parameters such as voxel pitch.
 
+- **Reconstruct Objects Larger than the Field of View:**
+
+  When part of the object projects outside the detector at some views (field-of-view truncation),
+  the unexplained measurements fold into the edges of the reconstruction as a bright boundary ring
+  or end-slice "flash", along with an interior bias and slowed convergence.  MBIRJAX handles the
+  two directions differently:
+
+  - *Axial (slices, cone beam):* controlled by the cone-specific ``axial_pad_fraction``
+    parameter (a float or a ``(top, bottom)`` pair; default 0 = no padding, 1 pads each
+    end of the slice axis to the deepest z reached by any measured ray).  The number of
+    slices added per end is printed at ``verbose >= 1``.
+  - *Lateral (rows and columns):* MBIRJAX detects the case when the object appears to go
+    outside the detector field of view and generates a warning.
+    In this case, consider using ``model.scale_recon_shape(s, s)`` with ``s >= 1.1`` to improve image quality.
+  - For tall volumes that do not fit in memory even after tuning the padding, see
+    :meth:`~mbirjax.ConeBeamModel.split_sino_recon`, which reconstructs the volume in two
+    overlapping halves.
+
 - **Set Sinogram Weights:**
 
   As you become more experienced, you may want to set the sinogram weights to improve image quality.
