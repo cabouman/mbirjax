@@ -34,7 +34,8 @@ def view_case(name, tag):
         return
     fdk_recon, _ = mj.import_recon_hdf5(fdk_path)
     mbir_recon, _ = mj.import_recon_hdf5(mbir_path)
-    mj.slice_viewer(orient(fdk_recon), orient(mbir_recon), slice_axis=1,
+    vmin, vmax = DATASETS[name].get('view_window', (0.0, 1.0))
+    mj.slice_viewer(orient(fdk_recon), orient(mbir_recon), slice_axis=1, vmin=vmin, vmax=vmax,
                     slice_label=['FDK', 'MBIR'], title=f'{name} / {tag}: FDK vs MBIR')
 
 

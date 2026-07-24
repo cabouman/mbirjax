@@ -12,6 +12,8 @@ LOADER_KEYS in run_recons.py) may be added per case.
 full_res_subsample_view_factor is the view subsampling used by --full-res runs,
 chosen per case so num_views is roughly 1/4 to 1/2 of num_det_channels;
 --full-views overrides it to 1.
+
+view_window is the [vmin, vmax] display range used by view_recons.py.
 """
 
 # Shared recon defaults; individual cases may override.
@@ -30,6 +32,7 @@ DATASETS = {
         full_res_subsample_view_factor=4,   # 2401 views -> 601, 1532 channels
         snr_db=35.0,
         sharpness=1.5,
+        view_window=[0.0, 1.0],   # [vmin, vmax] for view_recons.py
     ),
 
     # Purdue BGA (solder drops), Zeiss 360-degree HART scan of the same object.
@@ -41,6 +44,7 @@ DATASETS = {
         full_res_subsample_view_factor=4,   # 2401 views -> 601, 1532 channels
         snr_db=35.0,
         sharpness=1.5,
+        view_window=[0.0, 1.0],   # [vmin, vmax] for view_recons.py
     ),
 
     # ORNL HFN scan, pymbir hdf5 file (same data as hfn_scan.tgz used in mbirjax_applications/vcls).
@@ -51,6 +55,7 @@ DATASETS = {
         full_res_subsample_view_factor=2,   # 1050 views -> 525, 1024 channels
         snr_db=35.0,
         sharpness=1.0,
+        view_window=[0.0, 1.0],   # [vmin, vmax] for view_recons.py
     ),
 
     # AFRL Nano CT Sample C, Zeiss scan. Settings from mbirjax_applications demo_zeiss.py.
@@ -62,6 +67,7 @@ DATASETS = {
         full_res_subsample_view_factor=2,   # 901 views -> 451, 1024 channels
         snr_db=35.0,
         sharpness=2.0,
+        view_window=[0.0, 1.0],   # [vmin, vmax] for view_recons.py
     ),
 
     # Lilly autoinjector, NSI scan.
@@ -73,5 +79,6 @@ DATASETS = {
         full_res_subsample_view_factor=2,   # 1800 views -> 900, 1880 channels
         snr_db=35.0,
         sharpness=1.0,
+        view_window=[0.0, 1.0],   # [vmin, vmax] for view_recons.py
     ),
 }

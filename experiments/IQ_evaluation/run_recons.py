@@ -96,6 +96,7 @@ def run_case(name, tag, overrides, full_res=False, full_views=False, view=False,
     path = settings.pop('path')
     # Per-case view subsampling for --full-res (default 1); --full-views forces 1.
     full_res_view_factor = settings.pop('full_res_subsample_view_factor', 1)
+    settings.pop('view_window', None)   # viewer-only setting (view_recons.py)
     if full_res:
         for key in ('downsample_factor', 'subsample_view_factor'):
             if key in LOADER_KEYS[case_type]:
