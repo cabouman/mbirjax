@@ -1,13 +1,13 @@
-"""Registry of IQ evaluation test cases.
+"""Registry of IQ evaluation datasets.
 
 Each case documents the baseline settings for one dataset so that comparisons
-across mbirjax versions and settings are stable. Run cases with run_recon.py.
+across mbirjax versions and settings are stable. Run cases with run_recons.py.
 All dataset paths assume /depot is mounted.
 
 snr_db and sharpness are set explicitly in every case (they are deliberately NOT
 in DEFAULTS, so adding a case without them fails loudly). Settings not listed in
 a case fall back to DEFAULTS. Any loader kwarg for the case's type (see
-LOADER_KEYS in run_recon.py) may be added per case.
+LOADER_KEYS in run_recons.py) may be added per case.
 
 full_res_subsample_view_factor is the view subsampling used by --full-res runs,
 chosen per case so num_views is roughly 1/4 to 1/2 of num_det_channels;
@@ -20,7 +20,7 @@ DEFAULTS = dict(
     max_iterations=15,
 )
 
-TEST_CASES = {
+DATASETS = {
     # Purdue BGA (solder drops), Zeiss equiangle scan.
     'bga_no_hart': dict(
         type='zeiss',
@@ -28,6 +28,16 @@ TEST_CASES = {
         downsample_factor=3,
         subsample_view_factor=5,
         full_res_subsample_view_factor=4,   # 2401 views -> 601, 1532 channels
+        snr_db=35.0,
+        sharpness=1.5,
+    ),
+
+    # Purdue BGA (solder drops), Zeiss 360-degree HART scan of the same object.
+    'bga_hart': dict(
+        type='zeiss',
+        path='/depot/bouman/data/Zeiss/purdue_BGA/17U1-250TC-Normal_Tomo_HART_360_HART.txrm',
+        downsample_factor=3,
+        subsample_view_factor=5,
         snr_db=35.0,
         sharpness=1.5,
     ),

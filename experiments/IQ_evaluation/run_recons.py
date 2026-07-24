@@ -1,6 +1,6 @@
-### Run baseline or variation reconstructions for the IQ evaluation test cases.
+### Run baseline or variation reconstructions for the IQ evaluation datasets.
 #
-# Cases are defined in test_cases.py; per-case downsampling there is the low-res
+# Cases are defined in dataset_registry.py; per-case downsampling there is the low-res
 # setting. --full-res sets detector downsampling to 1 and uses the case's
 # full_res_subsample_view_factor for views; --full-views forces view factor 1.
 # Each run writes FDK + MBIR recons and a params.json snapshot to
@@ -8,12 +8,12 @@
 # the 'low_res' and 'full_res' tags; use --tag/--set for other comparison runs.
 #
 # Examples:
-#   python run_recon.py --list
-#   python run_recon.py --case bga_no_hart
-#   python run_recon.py --case bga_no_hart --full-res
-#   python run_recon.py --case bga_no_hart --full-res --full-views --tag full_res_all_views
-#   python run_recon.py --case bga_no_hart --tag sharp2.0 --set sharpness=2.0
-#   python run_recon.py --all
+#   python run_recons.py --list
+#   python run_recons.py --case bga_no_hart
+#   python run_recons.py --case bga_no_hart --full-res
+#   python run_recons.py --case bga_no_hart --full-res --full-views --tag full_res_all_views
+#   python run_recons.py --case bga_no_hart --tag sharp2.0 --set sharpness=2.0
+#   python run_recons.py --all
 
 import argparse
 import ast
@@ -26,7 +26,7 @@ import mbirjax as mj  # mbirjax must be imported before jax (sets XLA env vars)
 import jax.numpy as jnp
 import mbirjax.preprocess as mjp
 
-from test_cases import TEST_CASES, DEFAULTS
+from dataset_registry import DATASETS, DEFAULTS
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, 'output')
@@ -91,7 +91,7 @@ def parse_overrides(pairs):
 
 def run_case(name, tag, overrides, full_res=False, full_views=False, view=False, overwrite=False):
     settings = dict(DEFAULTS)
-    settings.update(TEST_CASES[name])
+    settings.update(DATASETS[name])
     case_type = settings.pop('type')
     path = settings.pop('path')
     # Per-case view subsampling for --full-res (default 1); --full-views forces 1.
@@ -171,9 +171,9 @@ def run_case(name, tag, overrides, full_res=False, full_views=False, view=False,
 
 def main():
     parser = argparse.ArgumentParser(description='Run IQ evaluation reconstructions.')
-    parser.add_argument('--case', choices=sorted(TEST_CASES), help='Test case to run')
-    parser.add_argument('--all', action='store_true', help='Run all test cases')
-    parser.add_argument('--list', action='store_true', help='List test cases and exit')
+    parser.add_argument('--case', choices=sorted(DATASETS), help='Test case to run')
+    parser.add_argument('--all', action='store_true', help='Run all datasets')
+    parser.add_argument('--list', action='store_true', help='List datasets and exit')
     parser.add_argument('--tag', default='baseline', help='Output subdirectory name (default: baseline)')
     parser.add_argument('--set', dest='overrides', action='append', metavar='KEY=VALUE',
                         help='Override a setting, e.g. --set sharpness=2.0 (repeatable)')
@@ -186,7 +186,7 @@ def main():
     args = parser.parse_args()
 
     if args.list:
-        for name, case in TEST_CASES.items():
+        for name, case in DATASETS.items():
             settings = {**DEFAULTS, **{k: v for k, v in case.items() if k not in ('type', 'path')}}
             print(f"{name}  [{case['type']}]  {case['path']}")
             print(f'    {settings}')
@@ -196,7 +196,7 @@ def main():
     if not args.case and not args.all:
         parser.error('Specify --case NAME, --all, or --list.')
 
-    names = sorted(TEST_CASES) if args.all else [args.case]
+    names = sorted(DATASETS) if args.all else [args.case]
     for name in names:
         run_case(name, args.tag, parse_overrides(args.overrides),
                  full_res=args.full_res, full_views=args.full_views,
