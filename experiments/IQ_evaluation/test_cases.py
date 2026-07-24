@@ -48,6 +48,7 @@ TEST_CASES = {
         path='/depot/bouman/data/AFRL/lipp/Black_Sheep_tomo-C_CS0.txrm',
         downsample_factor=2,
         subsample_view_factor=2,
+        full_res_subsample_view_factor=2,   # 901 views -> 451, 1024 channels
         snr_db=35.0,
         sharpness=2.0,
     ),
