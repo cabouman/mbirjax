@@ -36,7 +36,7 @@ CONE_FORWARD_DET_ROW_BATCH = 128
 # (a, b, p, c) for the slice damping s_k = (c t^p + a b^p)/(t^p + b^p),
 # t_k = L |z_k| / (R dz) -- the "C4" preconditioner (dj-space-domain doc).
 # Not a public parameter; for sweeps set ct_model._dc_damping = (a,b,p,c) or None.
-_DC_DAMPING_DEFAULT = (0.3, 100.0, 0.7, 0.5)
+_DC_DAMPING_DEFAULT = (0.25, 100.0, 0.7, 0.5)
 
 
 @partial(jax.jit, donate_argnames='forward_grad')
