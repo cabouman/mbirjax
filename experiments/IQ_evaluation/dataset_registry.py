@@ -38,6 +38,7 @@ DATASETS = {
         path='/depot/bouman/data/Zeiss/purdue_BGA/17U1-250TC-Normal_Tomo_HART_360_HART.txrm',
         downsample_factor=3,
         subsample_view_factor=5,
+        full_res_subsample_view_factor=4,   # 2401 views -> 601, 1532 channels
         snr_db=35.0,
         sharpness=1.5,
     ),
