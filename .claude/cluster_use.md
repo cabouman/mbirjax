@@ -207,6 +207,19 @@ works.
 
 - GPUs: **H100 80GB HBM3**, `gpu:h100:8` per node.  Partition `ai`, account `bouman`,
   QoS `normal`.  **`--cpus-per-task=14` per GPU is required.**
+- **The `ai` partition REFUSES `--mem`** — do not pass it.  Host memory is strictly
+  proportional to CPUs, and CPUs to GPUs:
+
+  | slurm setting (`scontrol show partition ai`) | value |
+  |---|---|
+  | `DefCpuPerGPU` | 14 |
+  | `DefMemPerCPU` = `MaxMemPerCPU` | 9200 MB |
+
+  Def == Max is exactly why a `--mem` request has nowhere to land.  So **host RAM per GPU is
+  fixed at 9200 MB x 14 ≈ 126 GB**, and the only way to get more host memory is to **request
+  more GPUs** (`--gpus-per-node=2` → ~252 GB, and so on).  The node is provisioned to match:
+  h-nodes have 112 CPUs / 8 GPUs / 1,031,500 MB, and 9200 x 112 = 1,030,400 MB.
+  (gilbreth is different — its `sinteractive` line below does take `--mem`.)
 - Repos: `~/PycharmProjects/{mbirjax, mbirjax_applications, mbirjax_metrics}`.
 - Conda envs: `mbirjax` (interactive) and `mbirjax_regression` (the nightly).
 - Node preamble (sourced first — puts conda on PATH, loads cuda, sets the squid proxy so
@@ -411,6 +424,7 @@ did not think you were running.
 | symptom | cause / fix |
 |---|---|
 | `ls: Cannot send after transport endpoint shutdown`, or an intermittent `ModuleNotFoundError` for numpy/stdlib internals that **differs run to run and hits every env** | the LOGIN NODE's home mount is flapping.  The files are fine and compute nodes are unaffected — retry, or move the work to a node.  Do not go hunting for a broken install.  (Bit three times on 2026-07-25.) |
+| sbatch/srun on gautschi `ai` rejected for a memory request | that partition refuses `--mem` (`DefMemPerCPU == MaxMemPerCPU == 9200`).  Drop `--mem`; ask for more GPUs if you need more host RAM. |
 | job exits 1, log looks empty or truncated mid-write | **home quota full** (25 GB, fails SILENTLY).  `myquota`; write to scratch instead. |
 | `Access denied by pam_slurm_adopt: you have no active jobs on this node` | ssh to a compute node is only allowed while you hold a job there.  Get an allocation first, or `srun --overlap --jobid=<id>` instead. |
 | `Host key verification failed` on `loginNN.gautschi…` | the per-node name is not in known_hosts.  Hop through the round-robin address: `ssh gautschi 'ssh login01 "…"'`. |
