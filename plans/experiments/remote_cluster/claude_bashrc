@@ -1,0 +1,43 @@
+# Sourced as the --rcfile for terminals Claude opens on the cluster.
+#
+# Goal: a shell indistinguishable from one Greg gets by logging in.
+#
+# THE TRAP: `bash --rcfile ... -i` is a NON-LOGIN shell, so it never reads /etc/profile
+# and therefore none of /etc/profile.d/*.sh.  On this cluster that directory supplies
+#   * the `module` command          (modules.sh, 00-modulepath.sh, z01_default_module.sh)
+#   * the prompt `user@host:[dir] $` (000_rcac_prompt.sh)
+#   * scratch/cluster env vars, PATH, completion, ...
+# Cherry-picking one of those files (an earlier version of this file took only the prompt)
+# fixes the symptom you noticed and leaves the rest broken -- `module` was missing, so
+# conda/cuda could not be loaded.  Source /etc/profile and let it run the whole directory,
+# which is exactly what a login shell does.
+#
+# ORDER IS LOAD-BEARING: conda prepends "(env) " to whatever PS1 holds AT ACTIVATE TIME,
+# so the profile (which sets PS1) must come BEFORE `conda activate`.
+#
+# Sourced, not exec'd -- must not `exit`.
+
+# 1. the full login-shell system setup: module, PS1, cluster vars, PATH
+[ -r /etc/profile ] && . /etc/profile
+
+# 2. the user's own rc (installs the conda shell hook; no PS1 of his own)
+[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"
+
+# 3. then the env, so conda prepends to the prompt set in step 1
+conda activate mbirjax 2>/dev/null || true
+
+# ── session banner: what allocation is this, and how long do I have? ───────────
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    _jid=$SLURM_JOB_ID
+    _node=$(squeue -h -j "$_jid" -o "%N" 2>/dev/null)
+    _limit=$(squeue -h -j "$_jid" -o "%l" 2>/dev/null | tr -d ' ')
+    _left=$(squeue -h -j "$_jid" -o "%L" 2>/dev/null | tr -d ' ')
+    _end=$(scontrol show job "$_jid" 2>/dev/null | tr ' ' '\n' | sed -n 's/^EndTime=//p')
+    printf '\n\033[1;33m─── Slurm interactive session ───\033[0m\n'
+    printf '  job %s on %s   gpus=%s\n' "$_jid" "${_node:-?}" "${SLURM_GPUS_ON_NODE:-?}"
+    printf '  walltime %s   \033[1mremaining %s\033[0m   ends %s\n' \
+           "${_limit:-?}" "${_left:-?}" "${_end:-?}"
+    printf '  type \033[1mexit\033[0m to release the allocation\n'
+    printf '  time left later:  squeue -h -j %s -o %%L\n\n' "$_jid"
+    unset _jid _node _limit _left _end
+fi

@@ -1,0 +1,5 @@
+#!/bin/bash
+# A $SHELL stand-in for `sinteractive`, which runs `$SHELL -l`.  A LOGIN shell reads
+# .bash_profile and ignores --rcfile, so we drop the -l and start an interactive shell
+# with our own rcfile instead (which sources ~/.bashrc itself, so nothing is lost).
+exec /bin/bash --rcfile /scratch/gautschi/buzzard/h100_tuning/scripts/claude_bashrc -i

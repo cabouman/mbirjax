@@ -1,25 +1,23 @@
-We're continuing work on `mbirjax` (branches `prelease` and `greg/gpu_headroom`), with a focus on
-cleaning and robustifying in preparation for a release.
+We're continuing work on `mbirjax` (branch `sharpness_schedule`), with a focus on
+designing and implementing a simple per-iteration schedule for sharpness and snr_db.
 
 **IMPORTANT — workflow reminder:** discussion first for code AND doc changes; propose and
 wait for approval (read `.claude/claude_prompt.md` closely for more).  Stage only, never
 commit.  Terminology: "variants" (not arms/cells/grid for variant sets); "ground truth
 phantom" (not truth grid).
 
-Read for orientation (verify claims against code; the first three carry the full state):
+Read for orientation (rely on code and results over memory and .md files):
 1. `plans/current_plans.md` — THE evolving forward plan.  §1 lists the implementation
    order; the full design is in the remedies page (next item).
 2. `.claude/lessons.md` — engineering playbook.
+3. `.claude/cluster_use.md` — info about interacting with our GPU cluster and some other 
+   miscellaneous info.
 
 Also skim for context:
-6. `plans/README.md` — the index of all internal plans/findings docs (docs at
+4. `plans/README.md` — the index of all internal plans/findings docs (docs at
    `plans/<area>/`, supporting scripts at `plans/experiments/<area>/`).
 
-Current task:  First, make a plan to merge prerelease into greg/gpu_headroom.  
-gpu_headroom has all the work on pallas kernels, padding, and some other misc items.
-prerelease has refactored preprocessing and was merged into gpu_headroom just before 
-the work on preprocessing.  Please identify any conflicts to a merge, and also create 
-a high-level draft PR message from the resulting merge back to prerelease.
+Current task:  Item #1 from `plans/current_plans.md`.
 
 ## Standing context
 

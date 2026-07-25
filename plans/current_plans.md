@@ -1,104 +1,74 @@
 # Current forward plan — goals for the next release
 
 (The EVOLVING running list of open work, at `plans/current_plans.md`.  Rewritten
-2026-07-10 to read forward-looking; condensed 2026-07-13 (the Pallas projector-kernel
-campaign and the padding/partition-sequence work completed — summarized here with
-pointers to their findings docs).  Completed campaigns live in their own findings docs,
+2026-07-25.  Completed campaigns live in their own findings docs,
 cited where their results guide the work below.  Roughly ordered by likely value.
 This file should be cleaned periodically to avoid build-up of historical detail.)
 
 ## Goals for the next release
 
-* **New padding** (§1) — DONE + real-data validated (per-end axial extension, the
-  `split_sino_recon` h_recon formula, lateral detect-and-warn); open tail = dashboard
-  re-baseline + release note, and the translation/multiaxis per-end bounds.
-* **New default partition sequence** (§2) — DONE: the default is now `[2, 4, 6, 7]`
-  (skips the 1-subset case), committed `42c0e23` per the study; open = the
-  `max_iterations` raise.
-* **Possible further performance improvements** (§3) — the GPU-kernel pool is DONE (the
-  Pallas projector-kernel campaign shipped); the VCD host-dispatch pool remains open.
-* **MAR: cache H** (§4).
-* **Projector kernels in the dev docs** — DONE: `docs/source/dev_projector_kernels.rst`
-  (the XLA + Pallas kernel design on one page); measured record in
-  `plans/projector_kernels/gpu_headroom_findings.md`.
-* **Cleanup** (§6).
+* **Simple per-iteration schedule for large sharpness and/or snr_db** (§1).
+* **Wrapper or utility to provide interfaces that mimic LEAP (https://github.com/LLNL/leap) 
+and SVMBIR (https://github.com/cabouman/svmbir) to operate MBIRJAX** (§2).
+* **MAR: cache H** (§3).
+* **Cleanup** (§4).
 
 ---
 
-## 1. Flash remediation: padding and the split seam
+## 1. Remediation of streaks associated with large sharpness and/or snr_db.
 
-**State:** the padding remedies are DONE + real-data validated (2026-07-11/12); open
-tail = dashboard re-baseline and the translation/multiaxis extension.  Full record with
-rationale, equations, and the per-step validation is
-`plans/flash_remediation/flash_remediation_plan.md` (synthesis + pros/cons:
-`plans/flash_remediation/phase_2d_remedies.html`, published at
-`/depot/bouman/www/mbirjax/flash_remediation/`).
+**State:** Not started.
 
-**Done + validated** (commits `a872695` / `fcc0e9e` / `41ecbc2` / `dbc9c3b`): cone-beam
-per-end axial extension in `auto_set_recon_geometry` (+ `get_support_radius`, helical-FDK
-zero-coverage fix); the `split_sino_recon` h_recon formula with the `align_split_grid`
-opt-in and taper retirement; lateral-truncation detect-and-warn (deliberately no
-auto-padding); and the NSI auto-geometry cleanup matching the zeiss convention.  Phase-3
-validation on real scans is complete — SiC/BGA (axial), Lilly (split), and the lateral
-warning (BGA fires, SiC silent, **z62 reattributed as genuinely contained**, Lilly a true
-one-sided-truncation positive).
+**Overview:** In early VCD iterations with large sharpness and/or snr_db, the 
+recon can develop streaks associated with voxel cylinders (1D sets of voxels
+parallel to the rotation axis, updated as a group in MBIRJAX).  We hypothesize
+that this arises from large early steps with a random subset.  The steps are large 
+because they are underregularized, and these large steps introduce large differences 
+with neighboring voxels in some directions but small differences in other directions.
+As a result, the prior essentially treats this streak as some kind of edge to be 
+preserved rather than an artifact to be removed.  This is only a hypothesis at this time.  
+This effect is most prominent in cone beam.  
 
-**Remaining:**
-- Re-baseline the regression dashboards (default shapes grow and values shift, for the
-  better) + a release note; record the regime change as an `annotations.yaml` marker and
-  a policy-block padding flag.
-- Later: the analogous per-end bounds for translation and multiaxis-parallel.
+**Goals:** 
+1. A consistent reproduction of this effect in real and synthetic data and
+an investigation of the role of sharpness and snr_db in modulating it.  
+2. Evaluation of methods to reduce/eliminate this effect, including the use of
+a simple per-iteration schedule to increase from low values to target high values.  The
+methods should be simple and apply to multiple geometries.  
+3. Implementation and validation of the chosen method.  
 
-## 2. Partition sequence and iteration defaults
+**Notes:** Roughly, for small Delta (the difference between adjacent voxels), 
+the influence function in the QGGMRF prior is  `(1/2) abs(Delta / sigma_x)`, where
+sigma_x is proportional to `2**sharpness` and is defined in tomography_model.py -> 
+auto_set_sigma_x.  So, increasing sharpness widens this curve and reduces the penalty
+between voxels at a fixed difference.  I.e., this changes the prior function. 
+In contrast, snr_db is used to determine sigma_y, which is proportional to 
+`10**(-snr_db/20)` and is defined in auto_set_sigma_y.  sigma_y is then used in 
+vcd_recon to define fm_constant proportional to `1 / sigma_y^2`, and fm_constant is 
+used to multiply the forward gradient and Hessian in the calculation of
+delta_recon_at_indices.  I.e., increasing snr_db puts more weight on the forward 
+but leaves the form of the prior model unchanged.  
 
-**State:** DONE — the default partition sequence is now **`[2, 4, 6, 7]`** (a
-monotone-non-decreasing ramp that skips the granularity-1 subset, so the old
-granularity-1 memory spike disappears with no size-adaptive starting policy), committed
-`42c0e23` per the 2026-07 image-quality study.  Candidates, the metric caveats, and the
-monotone-granularity theory are in
-`plans/partition_sequence/partition_sequence_plan.md`; the drafted real-data convergence
-study is `plans/experiments/partition_sequence/`.
+A possibly incomplete list of things that would have to be changed to support a
+sharpness/snr_db schedule:  auto_set_sigma_x, auto_set_sigma_y, qggmrf_params,
+fm_constant, vcd_recon, vcd_subset_updater (possibly changed to accept qggmrf_params,
+fm_constant as inputs), prox_map.  
 
-**Remaining:** raise **`max_iterations` from 15 into the ~25–50 range** (the 15-cap
-strangles the 0.2% stop on hard objects; threshold stays 0.2).  Metric caveat for any
-follow-up experiments: FoV-truncation flash inflates NRMSE and the change-% stop (§1) —
-compare on cropped/remediated metrics or visually.
+## 2. Wrapper or utility to provide interfaces to LEAP and SVMBIR
 
-## 3. Performance
+**State:** Not started.
 
-Two quantified headroom pools guide any future performance work (both from the
-2026-07 profiling/kernel campaigns; details in
-`plans/projector_kernels/gpu_headroom_findings.md`, `fwd_back_findings.md`, and the
-`plans/` profiling docs):
+**Overview:** Some of our collaborators are using LEAP (https://github.com/LLNL/leap)
+or SVMBIR (https://github.com/cabouman/svmbir - parallel beam only).  We'd like to 
+lower the barriers to entry for them to transition to using MBIRJAX.  So, 
+we'd like to develop an easy way to replace LEAP/SVMBIR with MBIRJAX.  
 
-- **VCD is host-dispatch-bound at interactive sizes**: a 200³ VCD recon is ~95% host
-  time (~0.1 s of device kernels in a ~2 s recon).  The large-headroom item is reducing
-  per-subset dispatches / host syncs — e.g. jit a whole subset update or iteration (the
-  concrete-centers plumbing supports precomputed-per-partition centers if that jit
-  lands).  cProfile is the instrument, not kernel benches (`lessons.md` §3/§5).
-- **GPU kernel headroom — DONE (the Pallas projector-kernel campaign)**: a custom-kernel
-  (Pallas/Triton) path now serves the parallel and cone projectors on allowlisted GPUs at
-  2–9× the XLA kernels, shipped across single-device and multi-device band paths for both
-  back and forward, and soak-validated end-to-end.  It hit the recalibrated prize (2–3×
-  custom-kernel) and ended cone's multi-GPU anti-scaling.  Design + measured record:
-  `docs/source/dev_projector_kernels.rst` and
-  `plans/projector_kernels/gpu_headroom_findings.md`.
+**Goals:** 
+1. Download and run some examples using each of these packages.
+2. Determine the scope of a possible translation from these to MBIRJAX.
+3. Design, implement, and validate interfaces.  
 
-Small optional refinements (do only if a measured case wants them): cached
-per-(view, pixel-batch) sort permutations for the sorted reduce (now approach A1 in the
-headroom plan, with its memory cost quantified there); extend the
-collision-ratio guard to parallel/cone if very wide detectors with modest pixel batches
-become real; true size-adaptive `view_batch` scaling / divisor-of-shard sizing to avoid
-ragged tail batches.
-
-Deferred unless a driving workload appears:
-
-- **Sinogram-by-row sharding** (aligns the sino's sharded axis with recon slices → back
-  projection becomes mostly-local): prototyped and parked; benefit is
-  GPU-communication-only (`plans/sharding/sinogram_sharding.md`).
-- **Prox-map (PnP) prior under sharding.**
-
-## 4. MAR: cache H
+## 3. MAR: cache H
 
 Reframed 2026-07-10 (from `mar_refactor_plan.md` Phase 3, which is SPEED-only — the
 fit's memory was solved in Phase 2):
@@ -113,20 +83,7 @@ fit's memory was solved in Phase 2):
   recon, full vs subsample) and gate on the corrected recon within a documented
   tolerance — not byte-identical by design.
 
-## 5. Device-count policy — simple and robust
-
-Preference (2026-07-10): a simple, robust rule — even if suboptimal — over a tuned
-choose-N-vs-communication model; this area is potentially finicky for a modest payoff.
-
-- **Concrete first step:** fix the auto-device-count basis.  `_auto_device_count` trims
-  on the recon-SLICE axis, but projection compute lives on the VIEW-owners, so the slice
-  axis is the wrong proxy for "does this device do real work" — switch the basis to
-  views (or both).  Small, clearly right, and independent of any cost model.
-- The full choose-N policy (when does adding a device pay vs its comms cost, incl. the
-  CPU-cluster topology rule) stays deferred unless a real workload demands it
-  (`sharding_implementation_plan_v3.md` §5/§6).
-
-## 6. Miscellaneous / cleanup
+## 4. Miscellaneous / cleanup
 
 - **Compile-free memory preflight in `recon()`** (parked 2026-07-10; design agreed with
   Greg after a student's 2-GPU full recon at 1600×1617×1422 spent 32 min in XLA's BFC
@@ -162,20 +119,23 @@ choose-N-vs-communication model; this area is potentially finicky for a modest p
   any device enters a collective).  Related UX notes from the same incident: stdout
   block-buffering makes sweep logs non-chronological (`python -u`); `TF_CPP_MIN_LOG_LEVEL=2`
   can silence a residual BFC warning wall (document in the OOM hint, don't default).
-- **Suite tidiness**: seed the remaining unseeded-`np.random` tests; a pre-merge
-  `import mbirjax`-before-`jax` sweep; public `shard_*` / `gather_*` wrappers.
-- **Suite efficiency**: simplify tests and reduce time on tests.
-- **>2^31 audit — CLASS CLOSED 2026-07-10** (both faces swept package-wide: flat-index
-  ops on full-size arrays, and Python-int element counts crossing into jnp arithmetic;
-  the live `mar.py` `num_real_pixels` overflow was fixed with the `float()` idiom + a
-  value-pinned regression test, and no other instances were found).  The `lessons.md` §4
-  grep recipe is the re-check on new code; residual known edges (np.histogram on
-  Windows/numpy<2, the caller-enforced float contract) are documented + accepted there.
-- **Minor API opens**: `configure_devices`/`use_gpu` unification; the forward
+- **Device-count policy:** a simple, robust rule — even if suboptimal — over a tuned
+ choose-N-vs-communication model; this area is potentially finicky for a modest payoff.
+  1. **Concrete first step:** fix the auto-device-count basis.  `_auto_device_count` trims
+  on the recon-SLICE axis, but projection compute lives on the VIEW-owners, so the slice
+  axis is the wrong proxy for "does this device do real work" — switch the basis to
+  views (or both).  Small, clearly right, and independent of any cost model.
+  2. The full choose-N policy (when does adding a device pay vs its comms cost, incl. the
+  CPU-cluster topology rule) stays deferred unless a real workload demands it
+  (`sharding_implementation_plan_v3.md` §5/§6).
+- **Suite efficiency:** simplify tests and reduce time on tests.
+- **Minor API opens:** `configure_devices`/`use_gpu` unification; the forward
   pixel-batch default.
 - **Residual rounding-bug risk (monitor only)**: the six vertical-fan per-slice round
   sites keep the in-jit precondition — accepted + monitored
   (`plans/bugs_and_artifacts/jax rounding bug/phase_d_design.md` §7).
+- **Archive plans:** Many plan docs and scripts could be moved out of the repo and into 
+ archived storage - e.g., another repo or data depot.  
 
 ## 7. Possible future direction: multi-resolution reconstruction (post-next-main)
 
