@@ -58,8 +58,8 @@ import mbirjax as mj
 import mbirjax.preprocess as mjp
 
 # ----------------------------- user choice --------------------------------------
-regime = ('beam_hardening_streaks', 'medium')  # tags: see the docstring above
-custom = {}          # optional overrides, e.g. {'recon': {'sharpness': 2.0}}
+regime = ('cylinder_streaks', 'medium')  # tags: see the docstring above
+custom = {}         # optional overrides, e.g. {'recon': {'sharpness': 2.0}}
 # --------------------------------------------------------------------------------
 
 
@@ -211,10 +211,11 @@ def main():
     ct_model.set_params(sharpness=r['sharpness'], snr_db=r['snr_db'])
     print(f"Reconstruction grid {ct_model.get_params('recon_shape')}; "
           "standard reconstruction (linear model)...")
-    recon_std, _ = ct_model.recon(sino, weights=weights,
+    recon_direct, _ = ct_model.recon(sino, weights=weights, max_iterations=0)
+    recon_std, _ = ct_model.recon(sino, weights=weights, init_recon=recon_direct,
                                   max_iterations=r['max_iterations'])
-    recons = [ground_truth, np.asarray(recon_std)]
-    labels = ['ground truth', 'standard recon']
+    recons = [ground_truth, np.asarray(recon_direct), np.asarray(recon_std)]
+    labels = ['ground truth', 'direct recon', 'standard recon']
 
     m = p['mar']
     if m['use_mar']:
