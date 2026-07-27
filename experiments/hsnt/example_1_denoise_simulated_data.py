@@ -20,14 +20,14 @@ from mbirjax.hsnt import dehydrate, generate_hyper_data, nnal_factorization, com
 def main():
     # Simulation parameters
     num_angles = 1  # Number of projection angles
-    detector_rows = 640  # Number of rows in the detector
+    detector_rows = 64  # Number of rows in the detector
     detector_columns = 64  # Number of columns in the detector
-    dosage_rate = 300  # Neutron dosage rate
+    dosage_rate = 3  # Neutron dosage rate
     material_density = {"Ni": 0.25, "Cu": 0.25, "Al": 0.75}  # Define material density (vol. fraction)
     dataset_type = 'attenuation'  # Choose between 'attenuation' or 'transmission'
 
     # Denoiser parameters
-    num_materials = 3  # Number of materials
+    num_materials_fit = 3  # Number of materials in reconstructed subspace
     verbose = 0  # Verbosity level
 
     # Fix seed for random number generation
@@ -37,6 +37,7 @@ def main():
     material_basis_path = './binaries/'
     filename = os.path.join(material_basis_path, 'material_basis.npy')
     material_basis = np.load(filename)
+    num_materials_true = material_basis.shape[0]
 
     # Generate simulated noisy hyperspectral data and ground truth
     [noisy_hyper_projection, _, gt_hyper_projection] = generate_hyper_data(material_basis,
@@ -53,20 +54,20 @@ def main():
     height = detector_rows // 3
     width = detector_columns // 2
     thickness = 20 * np.sqrt((width//2)**2 - np.linspace(-width // 2, width // 2, width)**2)/ width
-    material_projection = np.zeros((num_angles, detector_rows, detector_columns, num_materials)).astype(np.float32)
+    material_projection = np.zeros((num_angles, detector_rows, detector_columns, num_materials_true)).astype(np.float32)
     material_projection[:, :height, width // 2:width + width // 2, 0] = material_density["Ni"] * thickness
     material_projection[:, 2 * height:, width // 2:width + width // 2, 1] = material_density["Cu"] * thickness
     material_projection[:, height:2 * height, width // 2:width + width // 2, 2] = material_density["Al"] * thickness
-    material_projection = material_projection.reshape(-1, num_materials)
+    material_projection = material_projection.reshape(-1, num_materials_true)
 
     # Perform hyperspectral denoising (dehydrate + rehydrate)
     W, H, _ = dehydrate(noisy_hyper_projection,
                         dataset_type=dataset_type,
-                        num_materials=num_materials,
+                        num_materials=num_materials_fit,
                         safety_factor=1,
                         verbose=verbose)
-    W = W.reshape(np.prod(gt_hyper_projection.shape[:-1]), num_materials)
-    H = H.reshape(num_materials, gt_hyper_projection.shape[-1])
+    W = W.reshape(np.prod(gt_hyper_projection.shape[:-1]), -1)
+    H = H.reshape(-1, gt_hyper_projection.shape[-1])
 
     ### Refine using nonnegative attenuation loss
 
@@ -74,10 +75,9 @@ def main():
     T_jax = jnp.asarray(T, dtype=jnp.float32)
 
     kwargs = {
-        'num_materials': num_materials,
-        'max_steps': 1000,
-        'rel_tol': 1e-8,
-        'batch_size': 100,
+        'num_materials': num_materials_fit,
+        'max_steps': 5000,
+        'batch_size': None,
     }
 
     # Perform hyperspectral denoising
@@ -130,10 +130,10 @@ def main():
     )
 
     # Plot reconstructed material coefficient maps
-    plt.figure(figsize=(12, 16))
+    plt.figure(figsize=(12, 12))
     plt.suptitle('Material projection reconstructions')
-    row_max = np.max(material_projection, axis=0).reshape(1, 1, num_materials)
-    image_dims = (detector_rows, detector_columns, num_materials)
+    row_max = np.max(material_projection, axis=0).reshape(1, 1, num_materials_true)
+    image_dims = (detector_rows, detector_columns, num_materials_true)
     for i, (image, title) in enumerate([
             (material_projection.reshape(image_dims) / row_max, 'Ground Truth'),
             ((W @ np.linalg.pinv(theta_frob)).reshape(image_dims) / row_max, '$L^2$ Loss'),
