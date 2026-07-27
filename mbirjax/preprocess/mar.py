@@ -160,7 +160,8 @@ def _generate_metal_exponent_list(num_metal, max_order):
     return combinations
 
 
-def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model):
+def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model,
+                                        radial_margin=None, top_margin=None, bottom_margin=None):
     """
     Segment plastic and metal regions from a reconstruction, project them,
     and return the unnormalized sinogram p, m0, m1, ... for beam hardening modeling.
@@ -169,6 +170,8 @@ def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model):
         recon (jnp.ndarray): Reconstructed image.
         num_metal (int): Number of metal types to segment.
         ct_model: Forward projection model with a `.forward_project()` method.
+        radial_margin, top_margin, bottom_margin (int or None, optional): Segmentation mask
+            margins; None (default) = size-relative (see segment_plastic_metal).
 
     Returns:
         plastic_sino_est (jnp.ndarray): Unnormalized plastic sino estimation.
@@ -193,7 +196,8 @@ def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model):
     # plastic_scale: Scaling factor for the plastic region.
     # metal_scales: List of scaling factors for each metal region.
     plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(
-        recon, num_metal=num_metal, valid_mask=valid_mask, num_real_slices=pl.real_size)
+        recon, num_metal=num_metal, radial_margin=radial_margin, top_margin=top_margin,
+        bottom_margin=bottom_margin, valid_mask=valid_mask, num_real_slices=pl.real_size)
 
     # --- Forward project and scale plastic ---
     # The masks/recon are already sharded, so forward_project consumes them with no further movement.
@@ -612,7 +616,8 @@ def _estimate_plastic_scaling(plastic_sino_est, metal_sino_est, measured_sino, p
                                                     jnp.where(condition, plastic_sino_corrected, 0.0))
     return plastic_sino_scale
 
-def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, num_constraint_update_iter=10):
+def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, num_constraint_update_iter=10,
+                               radial_margin=None, top_margin=None, bottom_margin=None):
     """
     This function corrects the measured sinogram of an object with plastic and multiple metal components by fitting a
     beam hardening model to the sinogram and removing the metal contributions.
@@ -628,6 +633,8 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
         beta (float, optional): Regularization strength for ridge regression. Defaults to 0.002.
         gamma (float, optional): Stabilization factor. Defaults to 0.1.
         num_constraint_update_iter (int, optional): Number of iterations for updating constraints. Defaults to 10.
+        radial_margin, top_margin, bottom_margin (int or None, optional): Segmentation mask margins;
+            None (default) = size-relative (see segment_plastic_metal).
 
     Returns:
         jnp.ndarray: Beam-hardening corrected sinogram of the same shape as `measured_sino`.
@@ -666,7 +673,9 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
     num_real_pixels = pl.real_size * (measured_sino.size // measured_sino.shape[ax])
 
     # Get normalized sinogram p and [m_0, m_1, ...] (view-sharded; forward_project handles placement).
-    plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model)
+    plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos_from_recon(
+        recon, num_metal, ct_model, radial_margin=radial_margin, top_margin=top_margin,
+        bottom_margin=bottom_margin)
     plastic_sino_scale = jnp.max(jnp.abs(plastic_sino_est))   # max over padded 0s is unaffected
     metal_sino_scale = [jnp.max(jnp.abs(arr)) for arr in metal_sino_est]
     # JAX division does not raise on 0/0 -- an empty (all-zero) plastic or metal estimate would silently
@@ -705,7 +714,8 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
 
 def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constraint_update_iter=10, stop_threshold_change_pct=0.2,
                         num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, verbose=0, output_sharded=False,
-                        max_iterations=15, logfile_path='~/.mbirjax/logs/recon.log'):
+                        max_iterations=15, logfile_path='~/.mbirjax/logs/recon.log',
+                        radial_margin=None, top_margin=None, bottom_margin=None):
     """
     Perform iterative metal artifact reduction using plastic-metal beam hardening correction.  If num_metal is 0,
     then this performs a standard MBIR recon.
@@ -735,6 +745,9 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
         max_iterations (int, optional): Maximum MBIR iterations per reconstruction pass. Defaults to 15.
         logfile_path (str, optional): Same as in the TomographyModel.recon() method.  The BH passes'
             logs are merged into this single file, each under a section header.
+        radial_margin, top_margin, bottom_margin (int or None, optional): Segmentation mask margins
+            used when classifying plastic/metal; None (default) = size-relative
+            (see segment_plastic_metal).
 
     Returns:
          numpy or jax array: The final corrected reconstruction after iterative beam hardening
@@ -796,7 +809,8 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
             # Estimate Corrected Sinogram
             if verbose >= 1:
                 print(f"\n************ Correct sino plastic metal {i + 1}  **************")
-            corrected_sinogram = correct_sino_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma, num_constraint_update_iter=num_constraint_update_iter)
+            corrected_sinogram = correct_sino_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma, num_constraint_update_iter=num_constraint_update_iter,
+                                                            radial_margin=radial_margin, top_margin=top_margin, bottom_margin=bottom_margin)
 
             # Reconstruct Corrected Sinogram
             if verbose >= 1:
@@ -808,7 +822,9 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
 
             if verbose >= 2:
                 print(f"\n************ BH Iteration {i + 1}: Display plastic and metal mask **************")
-                plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal)
+                plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(
+                    recon, num_metal, radial_margin=radial_margin, top_margin=top_margin,
+                    bottom_margin=bottom_margin)
                 labels = ['Plastic Mask'] + [f'Metal {j + 1} Mask' for j in range(len(metal_masks))]
                 mj.slice_viewer(plastic_mask, *metal_masks, vmin=0, vmax=1.0,
                                 slice_label=labels,
