@@ -16,7 +16,9 @@ import mbirjax as mj
 import mbirjax.preprocess as mjp
 from mbirjax.preprocess.mar import (_argmin_3d, _correct_plastic_sinogram,
                                     _est_plastic_metal_sinos_from_recon,
-                                    _estimate_BH_model_params, _generate_metal_exponent_list)
+                                    _estimate_BH_model_params, _estimate_BH_model_params_using_OSQP,
+                                    _find_most_violated_constraints, _generate_metal_exponent_list,
+                                    _METAL_SUPPORT_FLOOR)
 from conftest import preferred_devices, assert_sharded_allclose
 
 # 31 views and 25 detector rows -> 25 recon slices: BOTH the view and slice axes pad at 3 devices,
@@ -160,6 +162,75 @@ class TestCorrectSinoPlasticMetal(unittest.TestCase):
         measured = np.array(model.forward_project(phantom))
         with self.assertRaisesRegex(ValueError, "plastic"):
             mjp.mar.correct_sino_plastic_metal(model, measured, phantom, num_metal=1)
+
+
+class TestConstraintSelectionRobustness(unittest.TestCase):
+    """Noisy measured sinograms have NEGATIVE pixels on air rays (log-domain noise).  Selecting one
+    as a residual-positivity constraint where the metal estimates are zero poses ``0 <= y < 0`` --
+    structurally infeasible -- and OSQP's infeasibility sentinel x (2143289344.0: the float32-NaN
+    bit pattern as a value, which IS finite) then silently replaced theta and collapsed the
+    corrected plastic to ~0 (the demo_10_artifacts 'beam_hardening_cupping' num_metal=1 collapse).
+    These tests pin the three fix layers: support-restricted constraint selection, the RHS clamp
+    at 0, and the OSQP solver-status guard."""
+
+    @staticmethod
+    def _fit_inputs():
+        """Tiny fit inputs (p, [m], y) with y = 2 p + 1.5 m exactly, metal support on two pixels,
+        one sub-floor metal pixel, and the most negative y pixel OFF the metal support."""
+        shape = (4, 5, 6)
+        rng = np.random.default_rng(3)
+        p = rng.uniform(0.1, 1.0, shape).astype(np.float32)
+        m = np.zeros(shape, np.float32)
+        m[2, 1, 1], m[2, 1, 2] = 1.0, 0.5
+        m[0, 0, 1] = 0.1 * _METAL_SUPPORT_FLOOR          # sub-floor: not eligible support
+        y = (2.0 * p + 1.5 * m).astype(np.float32)
+        y[0, 0, 0] = -0.5                                # air-ray noise pixel; m == 0 there
+        return p, m, y
+
+    def test_residual_argmin_restricted_to_metal_support(self):
+        """The residual-constraint argmin must land on a pixel with real metal support, even when
+        the globally most negative residual sits off support (the infeasible-constraint trap)."""
+        p, m, y = self._fit_inputs()
+        h_exponents, num_cross = _h_exponent_list(1, order=3)
+        theta = jnp.zeros(len(h_exponents), jnp.float32)     # Sm == 0, so y - Sm == y
+        _, _, idx_res, v_res = _find_most_violated_constraints(
+            jnp.asarray(y), jnp.asarray(p), [jnp.asarray(m)], theta, h_exponents, num_cross)
+        support = m > _METAL_SUPPORT_FLOOR
+        self.assertLess(y.min(), 0)                                              # the trap exists...
+        self.assertFalse(support[np.unravel_index(y.argmin(), y.shape)])         # ...and is off support
+        self.assertTrue(support[idx_res])
+        self.assertEqual(float(v_res), float(y[support].min()))
+
+    def test_osqp_infeasible_returns_none(self):
+        """An infeasible QP (0 * theta <= -1) must yield None, not OSQP's finite sentinel vector."""
+        theta = _estimate_BH_model_params_using_OSQP(
+            jnp.eye(2), jnp.zeros(2), jnp.zeros((1, 2)), jnp.array([-1.0]))
+        self.assertIsNone(theta)
+
+    def test_negative_off_support_pixel_does_not_poison_theta(self):
+        """End to end through _estimate_BH_model_params: with the most negative measured pixel off
+        the metal support, theta must come out finite and O(1).  Before the fix this exact setup
+        made OSQP declare the QP primal infeasible and theta became the 2.14e9 sentinel."""
+        p, m, y = self._fit_inputs()
+        h_exponents, num_cross = _h_exponent_list(1, order=3)
+        theta = np.asarray(_estimate_BH_model_params(
+            jnp.asarray(p), [jnp.asarray(m)], jnp.asarray(y), h_exponents, num_cross,
+            alpha=1, beta=0.002, num_constraint_update_iter=5))
+        self.assertTrue(np.isfinite(theta).all())
+        self.assertLess(np.max(np.abs(theta)), 100.0)
+
+    def test_negative_measurement_on_support_cannot_explode_theta(self):
+        """A negative measured pixel ON thin metal support (m = 0.02): unclamped, the constraint
+        H_m theta <= y < 0 demands theta_3 <= y/m ~ -25 and the metal polynomial explodes; with the
+        RHS clamped at 0 it only asks the polynomial to vanish there, so theta stays O(1)."""
+        p, m, y = self._fit_inputs()
+        m[0, 0, 0] = 0.02                                # thin but eligible support at y = -0.5
+        h_exponents, num_cross = _h_exponent_list(1, order=3)
+        theta = np.asarray(_estimate_BH_model_params(
+            jnp.asarray(p), [jnp.asarray(m)], jnp.asarray(y), h_exponents, num_cross,
+            alpha=1, beta=0.002, num_constraint_update_iter=5))
+        self.assertTrue(np.isfinite(theta).all())
+        self.assertLess(np.max(np.abs(theta)), 10.0)
 
 
 class TestReconPlasticMetalContract(unittest.TestCase):

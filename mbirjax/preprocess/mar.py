@@ -302,6 +302,12 @@ def _argmin_3d(x):
     return (view, row, col), per_view_min[view]
 
 
+# Minimum NORMALIZED metal-sinogram value for a pixel to be eligible for a residual-positivity
+# constraint (the metal estimates are normalized to max 1 before the fit, so this is relative).
+# See _find_most_violated_constraints for why near-zero-support pixels must be excluded.
+_METAL_SUPPORT_FLOOR = 1e-3
+
+
 def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms, view_mask=None):
     """
     Compute the most violated constraints for the beam hardening model.
@@ -314,6 +320,15 @@ def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_
     the constraints.  When the sinograms are device-form (view-sharded, possibly zero-padded on the view
     axis), ``view_mask`` (1 on real views, 0 on padded, broadcasting over the sinogram) excludes the
     padded views from the argmin so a padded entry is never selected as a constraint.
+
+    The residual argmin is further restricted to pixels where some metal estimate exceeds
+    ``_METAL_SUPPORT_FLOOR``: where every metal estimate is (near) zero the row H_m[i,:] is (near)
+    zero, so no θ can move that residual and the constraint is unactionable -- vacuous when
+    y[i] ≥ 0, and STRUCTURALLY INFEASIBLE when y[i] < 0 (which noisy measured sinograms routinely
+    contain on air rays from log-domain noise).  One such selected pixel makes OSQP declare the
+    whole QP primal infeasible, and its sentinel "solution" used to silently poison theta and
+    collapse the corrected plastic to ~0.  Near-zero rows are almost as bad: the constraint then
+    demands metal-polynomial coefficients of order y/m.
 
     Returns:
         idx_min_Sp (tuple of int): (view, row, col) of the smallest Sp entry (per-axis ints; see
@@ -342,7 +357,15 @@ def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_
     # value at a real position is the same in the masked and unmasked arrays (the mask only alters
     # padded entries), so no separate read is needed.
     Sp_masked = Sp if view_mask is None else jnp.where(view_mask, Sp, jnp.inf)
-    ymSm_masked = y_minus_Sm if view_mask is None else jnp.where(view_mask, y_minus_Sm, jnp.inf)
+
+    # Residual argmin restricted to the metal support (see the docstring): pixels where every metal
+    # estimate is <= the floor cannot be moved by theta, so they must never become constraints.
+    # Padded views have all-zero metal estimates, so this mask also excludes them -- no separate
+    # view_mask application is needed here.
+    metal_support = jnp.zeros_like(y_minus_Sm, dtype=bool)
+    for metal in metal_sino_est:
+        metal_support = metal_support | (metal > _METAL_SUPPORT_FLOOR)
+    ymSm_masked = jnp.where(metal_support, y_minus_Sm, jnp.inf)
     idx_min_Sp, v_min_Sp = _argmin_3d(Sp_masked)
     idx_min_residual, v_min_residual = _argmin_3d(ymSm_masked)
 
@@ -367,7 +390,8 @@ def _estimate_BH_model_params_using_OSQP(P, q, A, u):
         u (jnp.ndarray): Right-hand side vector for the inequality constraints.
 
     Returns:
-        jnp.ndarray: Solution vector θ.
+        jnp.ndarray or None: Solution vector θ, or ``None`` when the constrained solve fails
+        (a non-solved OSQP status, or a non-finite solution vector).
     """
     # Convert to numpy for linalg.solve and OSQP
     P_numpy = np.asarray(P)
@@ -392,9 +416,17 @@ def _estimate_BH_model_params_using_OSQP(P, q, A, u):
     solver = osqp.OSQP()
     solver.setup(P=P_sparse, q=q_numpy, A=A_sparse, l=None, u=u_numpy, alpha=1.0, verbose=0)
     result = solver.solve()
-    theta = jnp.asarray(result.x, dtype=jnp.float32)
 
-    return theta
+    # OSQP reports failure through the status field, NOT by raising: on an infeasible or unsolved
+    # QP it fills result.x with a no-solution sentinel (2143289344.0 -- the float32-NaN bit pattern
+    # as a value), which is FINITE and would silently poison every downstream use of theta.
+    # Accept only a solved status ('solved' / 'solved inaccurate') with finite values.
+    status = str(result.info.status).strip().lower()
+    theta = np.asarray(result.x, dtype=np.float64)
+    if not status.startswith('solved') or not np.all(np.isfinite(theta)):
+        return None
+
+    return jnp.asarray(theta, dtype=jnp.float32)
 
 def _compute_entry_for_OSQP(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta):
     """Compute entries for OSQP quadratic programming solver."""
@@ -509,7 +541,11 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
             row_m = _get_row_H(idx_min_residual, plastic_sino_est, metal_sino_est, H_exponent_list)
             # Positive row_m[dp:] to ensure y-Hmθm >= 0
             A_m = jnp.concatenate([jnp.zeros(dp), row_m[dp:]])
-            u_m = jnp.array([measured_sino[idx_min_residual]])
+            # RHS clamped at 0: the metal-only contribution H_m θ_m is a physical (nonnegative)
+            # attenuation, so its tightest meaningful upper bound is max(y, 0).  A raw negative
+            # measurement (log-domain noise) would force the metal polynomial NEGATIVE at this
+            # pixel's metal values -- for small values that means huge negative coefficients.
+            u_m = jnp.array([jnp.maximum(measured_sino[idx_min_residual], 0.0)])
             A = jnp.vstack([A, A_m[None, :]])
             u = jnp.concatenate([u, u_m])
             C_m.append(idx_min_residual)
@@ -517,7 +553,16 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
         # Early exit if both constraints are satisfied (within tolerances)
         if (v_min_Sp >= tolerance) and (v_min_residual >= tolerance):
             break
-        theta = _estimate_BH_model_params_using_OSQP(P, q, A, u)
+        theta_new = _estimate_BH_model_params_using_OSQP(P, q, A, u)
+        if theta_new is None:
+            # Defensive: with the support-restricted constraint selection the QP is feasible by
+            # construction (the two constraint families act on disjoint theta blocks, each
+            # satisfiable), so a solver failure signals numerical trouble.  Keep the last good
+            # theta rather than propagating OSQP's failure sentinel into the correction.
+            warnings.warn("OSQP failed to solve the constrained beam-hardening fit; keeping the "
+                          "parameters from the previous constraint iteration.", RuntimeWarning)
+            break
+        theta = theta_new
     return theta
 
 
