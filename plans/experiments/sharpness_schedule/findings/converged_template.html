@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The streaks are in the solution — the converged reconstruction under truncation</title>
+<style>
+  :root{color-scheme:light}
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:1180px;margin:auto;padding:0 1.1em 3em;line-height:1.5;color:#1b1f24;background:#fff}
+  h1{line-height:1.2;font-size:1.85em;margin:0.7em 0 0.15em}
+  h2{margin-top:2.1em;border-bottom:2px solid #e2e6ea;padding-bottom:0.22em;font-size:1.42em}
+  h3{margin-top:1.7em;font-size:1.13em}
+  .subtitle{color:#555;font-size:0.98em;margin:0.2em 0 1.2em}
+  .subtitle code{font-size:0.92em}
+  table{border-collapse:collapse;margin:0.7em 0;font-size:0.94em}
+  td,th{border:1px solid #c7ccd1;padding:4px 11px;text-align:right;vertical-align:top}
+  th{background:#f4f6f8}
+  th:first-child,td:first-child{text-align:left}
+  caption{caption-side:bottom;color:#555;font-size:0.85em;padding-top:0.35em;text-align:left}
+  .cap{color:#555;font-size:0.9em;margin:0.3em 0 0.4em}
+  .tldr{background:#eef4ff;border:1px solid #c7d9ff;border-left:5px solid #2563eb;border-radius:6px;padding:0.9em 1.15em;margin:1.3em 0}
+  .tldr b.h{display:block;font-size:1.05em;margin-bottom:0.3em;color:#1e3a8a}
+  .key{background:#f4f6f8;border-left:4px solid #2563eb;padding:0.6em 1em;margin:1em 0}
+  .warn{background:#fef6ec;border-left:4px solid #d97706;padding:0.6em 1em;margin:1em 0}
+  .note{background:#f6f7f8;border-left:4px solid #9aa3ad;padding:0.55em 1em;margin:1em 0;font-size:0.96em;color:#333}
+  .pending{background:#f6f7f8;border:1px dashed #9aa3ad;border-radius:6px;padding:0.6em 1em;margin:1em 0;color:#555}
+  .fig{margin:1.3em 0}
+  .fig img{max-width:100%;height:auto;display:block;border:1px solid #eceff2;border-radius:4px;background:#fff}
+  .figlabel{font-weight:bold;font-size:0.95em;margin-bottom:0.35em}
+  code{background:#f0f2f4;padding:0 3px;border-radius:3px;font-size:0.92em}
+  ul,ol{padding-left:1.35em}
+  li{margin:0.28em 0}
+  .prov{color:#555;font-size:0.85em}
+</style>
+</head>
+<body>
+
+<h1>The streaks are in the solution: the converged reconstruction under truncation</h1>
+<p class="subtitle">
+The sharpness/snr_db schedule study, mechanism follow-up (2026-07-26), branch
+<code>sharpness_schedule</code>.  Background: <code>findings.html</code> (the artifact and the
+instruments, Phase&nbsp;A) and <code>phase_b_results.html</code> (the schedule evaluation,
+Phase&nbsp;B) &middot; scripts: <code>plans/experiments/sharpness_schedule/mechanism/</code>.
+</p>
+
+<div class="tldr">
+<b class="h">TL;DR</b>
+<p style="margin-top:0">
+After the schedule search came back negative, the question turned to the artifact's late-iteration
+behavior: on the hardened synthetic testbed, the streak severity <i>grows</i> through the tail of
+the run.  Is that slow, wandering convergence &mdash; or is the optimizer heading exactly where the
+objective points?  A two-start experiment settles it: <b>a run started from the ground truth itself
+converges to the same streaked solution as the production run, while the objective descends cleanly
+in both.</b>  The streaks are not a convergence artifact here; they are the minimizer's own content.</p>
+<ul style="margin-top:0.3em">
+<li><b>Both starts merge onto one growing severity curve</b> (within 8% by iteration 5, identical
+from iteration 20), and their final volumes agree to 1.6% max / 2% rms &mdash; the convex
+objective's single limit point, reached from both sides.</li>
+<li><b>Started at the truth, the optimizer walks away from it on purpose:</b> error against the
+ground truth rises 0.39&nbsp;&rarr;&nbsp;0.57 while the data residual falls
+0.208&nbsp;&rarr;&nbsp;0.089 &mdash; the streaked solution fits the truncated data 2.3&times;
+better than the truth does.</li>
+<li><b>The seed-dependent part of the artifact is a transient</b> &mdash; it decays two decades
+over the long run &mdash; but at the practical 15-iteration budget it is still far from gone.</li>
+<li><b>Where the error lives supports a simple mechanism:</b> the reconstruction deposits
++32% of the ground truth's mass inside the domain &mdash; the out-of-view attenuation it must
+explain somehow &mdash; roughly half packed onto the boundary ring (the familiar flash) and half
+spread through the interior as fine-scale, z-organized texture: <i>an interior version of the
+flash</i>.</li>
+</ul>
+<p style="margin-bottom:0"><b>Consequence:</b> for the persistent (seed-independent) streak field,
+update-side remedies cannot help &mdash; the fix must change the objective or the model.  A
+same-day follow-up wave (&sect;6) tested the mechanism and the leading remedy: the deposit's
+<i>total</i> is conserved across a 16&times; severity sweep while its <i>expression scale</i>
+tracks the prior's strength; lateral padding removes the artifact entirely on the testbed
+(156&times;), and on the real scan removes the flash ring and <i>the entire late-iteration
+growth</i> (&times;10.5 &rarr; flat) while the seed-dependent transient decays faster &mdash;
+though at the 15-iteration budget the transient itself drops only 23&ndash;25%.  The streaks also form
+with no cone at all (parallel beam, truncated: 134&times; the contained level) &mdash; the
+mechanism is geometry-general, with the cone acting mainly as the transient's amplifier.
+Direct numbers for the iteration-count decision follow, with a condition: more iterations pair
+with padding, not without it.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="question">1. The question: slow convergence, or the destination itself?</h2>
+
+<p>
+Phase&nbsp;A established the artifact and the instruments; Phase&nbsp;B showed that scheduling the
+regularization by granularity makes the streaks worse, not better.  That negative result pushed
+attention to a fact both testbeds kept showing: <b>the low-frequency-in-z streak severity does not
+just persist through the late iterations &mdash; it grows</b>, slowly and steadily, while every
+global convergence measure (residual, objective) improves.  On the hardened synthetic testbed
+(the laterally truncated slab with the larger cone angle, Appendix&nbsp;B of the Phase&nbsp;A
+page), the severity climbs monotonically from around iteration 2 with no sign of turning over.</p>
+
+<p>
+Two very different explanations fit that observation, and they demand opposite remedies:</p>
+<ol>
+<li><b>Drift.</b>  The iteration dynamics keep injecting partition-shaped error into a subspace
+with almost no restoring force, so error accumulates <i>orthogonally</i> to the real descent.
+If so, shaping the updates (for example, damping the smooth-in-z component of each
+voxel-cylinder's update) could suppress the accumulation.</li>
+<li><b>Descent.</b>  The objective, given laterally truncated data at aggressive regularization
+settings, genuinely prefers a streaked solution &mdash; the run is converging <i>correctly</i> to a
+minimizer that contains the artifact.  If so, no amount of update shaping can remove the persistent
+field; only changing the objective or the model (padding, weights, prior structure) can.</li>
+</ol>
+
+<p class="key">
+<b>Why it matters beyond remedies:</b> the release plan contemplates raising the default iteration
+count from 15 to 25&ndash;50.  Under explanation (2), more iterations mean <i>more</i> streak, not
+less &mdash; the artifact deepens as the run converges.</p>
+
+<!-- ============================================================ -->
+<h2 id="design">2. The experiment: two starts, one convex objective</h2>
+
+<p>
+The objective is convex (p&nbsp;=&nbsp;2, q&nbsp;=&nbsp;1.2), so every start converges to the same
+limit point.  That turns the initialization into a probe: run the same reconstruction from two
+extreme starting points and watch which way each moves.</p>
+
+<ul>
+<li><b>Production start:</b> the standard initialization path &mdash; a direct (FDK)
+reconstruction, scaled by the optimal factor the code applies internally.  This is the
+configuration every earlier run used.</li>
+<li><b>Truth start:</b> the ground truth phantom itself (cropped to the reconstruction cylinder),
+given the <i>same</i> optimal scaling the FDK path receives:
+&alpha;&nbsp;=&nbsp;argmin<sub>a</sub>&nbsp;&Vert;y&nbsp;&minus;&nbsp;a&middot;Ax<sub>0</sub>&Vert;<sup>2</sup><sub>W</sub>,
+applied before the run (an explicitly supplied start deliberately skips the internal scaling).</li>
+</ul>
+
+<p>
+Both starts ran for 60 iterations &mdash; four times the practical budget &mdash; with two
+partition seeds each, identical seed-for-seed so any difference attributes to the start alone.
+Every iteration is scored against the ground truth: the axial power spectrum P(f<sub>z</sub>) of
+the in-plane high-passed error, its low band S<sub>low</sub>, the objective at the target
+regularization, the data residual, and the two-seed difference within each start
+(hardened geometry: truncated slab + 11.3&deg; cone, ball layer at 0.35 of the height,
+default damping, sharpness&nbsp;1.5 / snr_db&nbsp;35).</p>
+
+<p>
+The logic: if the truth-started run <i>stays</i> near the truth while the production run's streak
+field keeps growing, the field is drift.  If the truth-started run <i>develops</i> the same field
+the production run has &mdash; moving away from the truth while its objective falls &mdash; the
+field belongs to the minimizer.</p>
+
+<p class="note">
+One number from the setup is telling on its own.  The optimal scalar for the truth start came out
+&alpha;&nbsp;=&nbsp;1.267: the best data fit obtainable by scaling the <i>true object</i> inflates
+it by 27%.  The out-of-view part of the slab contributes attenuation that the in-view voxels must
+explain, and brightening everything is the first, crudest way the model can do that.</p>
+
+<!-- ============================================================ -->
+<h2 id="results">3. What happened: the two runs meet in the middle</h2>
+
+<div class="fig">
+<div class="figlabel">Convergence of the two starts, every ruler at once</div>
+{{FIG:converged_convergence}}
+<p class="cap">
+<b>How to read it:</b> blue is the production (FDK) start, red is the truth start; solid and
+dashed are the two partition seeds.  <b>Top row &mdash; the artifact:</b> streak severity
+S<sub>low</sub> against the ground truth (left), its exactly-z-constant component (middle), and
+the seed-dependent two-seed component (right), all log scale.  <b>Bottom row &mdash; global
+convergence:</b> data residual, objective at the target regularization, and interior error
+against the ground truth.  <b>What it shows:</b> the red curves <i>rise to meet</i> the blue ones
+&mdash; within 8% by iteration 5, indistinguishable from iteration 20 &mdash; while both
+objectives descend monotonically to values agreeing to five decimal places, and the two-seed
+component (top right) decays two full decades.  The truth-started run leaves the truth
+(bottom right, red rising) to buy data fit (bottom left); the final volumes agree to 1.6% max.
+The growing severity is not a pathology of the iteration &mdash; it is the shared destination.</p>
+</div>
+
+<p>Four observations pin the verdict:</p>
+<ol>
+<li><b>The merge.</b>  Severity, its z-constant core, the residual, and the objective all become
+start-independent within a handful of iterations, and the final volumes differ by 2% rms &mdash;
+residual start memory, still shrinking.  With a convex objective this is exactly what "one
+minimizer" looks like.</li>
+<li><b>Clean descent.</b>  The objective decreases monotonically in every run and agrees across
+starts at the end to five decimals.  Nothing is oscillating, stalling, or diverging; the artifact
+grows <i>along</i> the descent.</li>
+<li><b>The walk away from truth.</b>  Started at the (scaled) truth, the interior error vs the
+ground truth rises from 0.39 to 0.57 while the data residual falls from 0.208 to 0.089.  The
+streaked solution fits the truncated data 2.3&times; better than the truth does &mdash; the
+objective is being <i>improved</i> by the artifact.</li>
+<li><b>The transient dies; the field remains.</b>  Within each start, the two-seed (partition-seed-
+dependent) component decays from ~10<sup>&minus;4</sup> to ~5&times;10<sup>&minus;7</sup> over 60
+iterations.  What persists is seed-independent: the solution's own content.  At the practical
+budget (iteration 14) the transient is still two decades above its floor, though &mdash; seed
+effects are far from gone at realistic iteration counts.</li>
+</ol>
+
+<!-- ============================================================ -->
+<h2 id="mechanism">4. Where the error lives: an interior version of the flash</h2>
+
+<p>
+Why would the minimizer contain streaks at all?  The working mechanism (proposed by Greg on seeing
+these results, and consistent with every measurement so far): <b>the streak field is the interior
+counterpart of the truncation flash.</b>  The scan's rays pass through slab material outside the
+field of view; the measured attenuation must be explained by voxels inside it.  The familiar
+symptom is the bright boundary ring &mdash; unexplained mass piled at the support edge.  But the
+prior controls <i>where</i> such deposits can sit cheaply: a strong prior suppresses pixel-to-pixel
+variation and squeezes the deposit onto the ring; at aggressive settings (weak in-plane restoring
+force), depositing it <i>throughout the interior as fine-scale texture</i> costs little
+&mdash; and fine-scale, column-coherent texture is exactly what the streak metric measures.</p>
+
+<div class="fig">
+<div class="figlabel">The converged error field, and the deposited-mass ledger</div>
+{{FIG:converged_error_panels}}
+<p class="cap">
+<b>How to read it:</b> error of the converged production run against the ground truth, on a
+&plusmn;0.03 window (&asymp;&nbsp;3&times; the slab's value; the boundary flash saturates at this
+window; the never-updated corners outside the reconstruction cylinder are blanked).
+<b>Left:</b> axial mid-slice &mdash; fine-grained, spatially disorganized texture fills the
+interior, with the saturated flash ring at the support boundary.  <b>Middle:</b> the (x,z)
+mid-plane &mdash; the same texture organized as <i>vertical striping</i> across the slab band
+(the artifact's defining z-coherence), with the strongest deposits at the slab's top and bottom
+faces.  <b>Right:</b> the mass ledger: integrated over the reconstruction, the error adds
+<b>+32% of the ground truth's total mass</b> &mdash; +17% packed into the outer 5% ring at
+roughly slab density (the classic flash), and +15% spread through the interior at about a tenth
+of slab density.  The interior deposit is fine-scale dominated: at the mid slice, the pixel-scale
+component carries about twice the power of the smooth component.</p>
+</div>
+
+<p>
+Three details tie the ledger to the mechanism.  First, the deposit is <i>positive</i> on net in
+both zones &mdash; this is added attenuation, not symmetric noise.  Second, the interior deposit
+concentrates at slab heights in z (its per-slice mean peaks near the slab band), inheriting the
+missing mass's own z-envelope &mdash; a natural source for the field's z-organization.  Third, the
+27% over-brightening that the optimal scalar applies to the <i>true object</i> is the same
+phenomenon seen from the other end: the model wants more mass than the in-view truth contains.</p>
+
+<p class="warn">
+<b>Scope.</b>  These are synthetic-testbed results.  On the real scan the same fingerprints appear
+&mdash; the severity's late growth, its z-organization, the flash ring, the settings dependence
+&mdash; but the closing experiments (below) are what check the transfer.  One reinterpretation
+already firms up: the real-scan severity curves on the Phase&nbsp;A page are measured against a
+<i>conservative-settings</i> reference (sharpness&nbsp;0 / snr_db&nbsp;30), not against truth.
+Their late rise &mdash; error growing "away from the reference" &mdash; is precisely what a run
+converging to the aggressive-settings minimizer should do relative to a low-regularization
+solution, matching the truth-start curve here with the conservative solution standing in for
+the truth.</p>
+
+<!-- ============================================================ -->
+<h2 id="implications">5. Immediate implications</h2>
+
+<ul>
+<li><b>The remedy map splits by component.</b>  The <i>persistent, seed-independent</i> field is
+the minimizer's content: no update shaping, damping, or schedule can remove it &mdash; the fix
+must change what the objective asks for.  Candidates, in order of current promise: lateral
+support padding (give the mass a legitimate home; already the flash-remediation recommendation
+for this scan class), boundary/weight handling, prior structure.  The <i>seed-dependent
+transient</i> is real at practical budgets (still two decades above floor at iteration 14) and
+remains a legitimate target for update-side tools &mdash; per-cylinder smooth-in-z damping of
+the updates is the natural candidate, now aimed at the right component.</li>
+<li><b>Iteration-count policy inherits a warning.</b>  On this testbed, severity grows toward its
+plateau as the run converges &mdash; raising the default iteration count buys convergence <i>into</i>
+the artifact.  Whether the real scan shares this, and how steeply, is measured in &sect;6d: it
+does, and steeply.</li>
+<li><b>The metric's meaning sharpens.</b>  Severity against a converged reference mixes "how far
+from converged" with "how streaked is the destination."  With the destination itself now carrying
+the artifact, reference-free rulers (the two-seed difference) and truth-based rulers (synthetic)
+divide the labor cleanly.</li>
+</ul>
+
+<h2 id="wave">6. The follow-up wave: the mechanism tested, the remedies measured</h2>
+
+<p>
+Three experiments ran immediately on these results: a sharpness sweep of the deposit ledger (the
+mechanism's direct test), lateral padding on both testbeds (the causal test, and the leading
+remedy), and the real-scan long pair (the transfer test).  All three completed; each gets a
+verdict below.</p>
+
+<h3 id="sweep">6a. The deposit is conserved; regularization sets its expression scale</h3>
+
+<table>
+<caption>The deposit ledger vs sharpness (hardened synthetic, 60 iterations, seed 1; the
+sharpness-1.5 row is the two-start run's production start).  Added mass as % of the ground
+truth's; fine-scale fraction = pixel-scale share of the interior deposit's mid-slice power.</caption>
+<tr><th>sharpness</th><th>total deposit</th><th>ring share</th><th>interior share</th>
+<th>fine-scale fraction</th><th>S<sub>low</sub> vs truth</th></tr>
+<tr><td>0</td><td>+31.5%</td><td>+15.3%</td><td>+16.2%</td><td>0.52</td><td>1.1&times;10<sup>&minus;4</sup></td></tr>
+<tr><td>0.75</td><td>+31.8%</td><td>+16.2%</td><td>+15.6%</td><td>0.74</td><td>3.0&times;10<sup>&minus;4</sup></td></tr>
+<tr><td>1.5</td><td>+32.1%</td><td>+17.3%</td><td>+14.8%</td><td>0.86</td><td>6.2&times;10<sup>&minus;4</sup></td></tr>
+<tr><td>2.25</td><td>+32.4%</td><td>+18.3%</td><td>+14.1%</td><td>0.92</td><td>1.1&times;10<sup>&minus;3</sup></td></tr>
+<tr><td>3</td><td>+32.6%</td><td>+19.0%</td><td>+13.6%</td><td>0.95</td><td>1.8&times;10<sup>&minus;3</sup></td></tr>
+</table>
+
+<div class="fig">
+<div class="figlabel">The sweep, graphically</div>
+{{FIG:sweep_partition}}
+<p class="cap">
+<b>Left:</b> the total deposit (gray) is flat &mdash; 31.5% to 32.6% across a sweep that moves
+the streak severity 16&times; &mdash; and the ring/interior split (orange/blue) moves only
+mildly.  <b>Right:</b> what moves is the <i>expression scale</i>: the fine-scale fraction of the
+interior deposit climbs from 0.52 to 0.95 (green, left axis), and the streak severity (red
+dashed, log right axis) tracks it.</p>
+</div>
+
+<p>
+The hypothesis behind this sweep &mdash; the streaks as an interior version of the flash &mdash;
+made three predictions, and the sweep grades each one.  <b>Conservation: confirmed.</b>  The
+total deposit is set by the data mismatch, and the prior cannot change it.  <b>The ring/interior
+split: inverted.</b>  The prediction was that a stronger prior squeezes the deposit onto the
+ring; measured, the ring share <i>rises</i> with sharpness and the interior share falls.  A
+strong prior does not push the deposit outward &mdash; it spreads it inward as a <i>smooth</i>
+interior bias (the "whole-interior bias" the flash pages characterized), while a weak prior
+lets the deposit concentrate: a sharper ring spike and pixel-scale interior texture.
+<b>Texture: confirmed, and it is the part that matters.</b>  Severity tracks the fine-scale
+fraction, not the interior mass share.  The refined mechanism in one line: <b>the data fixes how
+much mass must be deposited; the prior sets the spatial scale at which it is expressed; and the
+fine-scale, z-organized expression is the streak artifact.</b></p>
+
+<h3 id="padsynth">6b. Padding cures the testbed &mdash; the causal chain closes</h3>
+
+<p>
+Reconstructing the hardened case on a laterally enlarged grid (1.5&times;, the object fully
+inside the support) collapses everything at once: the deposit falls from +32% to +6% of true
+mass; the streak severity vs truth lands at 4.0&times;10<sup>&minus;6</sup> at iteration 59
+&mdash; <b>156&times; below the unpadded solution</b> &mdash; and the z-coherence ratio drops
+from ~88 to 1.2, i.e. the artifact's defining axial organization is simply gone.  The severity
+now <i>decreases</i> with iteration, and the error against truth falls to 0.195 (from 0.57
+unpadded) and keeps improving.  Give the out-of-view mass a legitimate home and the interior
+flash &mdash; and with it the streaks &mdash; does not form.  (A detail worth remembering: the
+padded solution slightly <i>under</i>-fills the original region, &minus;8% of true mass &mdash;
+the exterior absorbs a little more than its true share.)</p>
+
+<h3 id="padbga">6c. Padding on the real scan: the ring goes; the streaks mostly stay</h3>
+
+<div class="fig">
+<div class="figlabel">Lateral padding 1.5&times; vs the baseline on the real scan</div>
+{{FIG:pad_vs_unpad_bga}}
+<p class="cap">
+<b>How to read it:</b> iteration-16 finals, same seed, same settings; left = unpadded baseline,
+middle = the padded run's central crop, right = their difference (dominated by a half-voxel
+grid-registration offset at the metal balls &mdash; 1.5&times; of 510 gives an odd padding delta
+&mdash; so read the side-by-side panels, not the difference).  <b>What it shows:</b> the padded
+run has <i>no boundary flash arcs</i> (bottom row: the bright partial ring of the baseline is
+gone) and reveals real board structure beyond the old field of view (right edge of the middle
+panels) &mdash; exactly the flash-remediation result.  But the fine vertical striping around the
+ball grid persists visibly, and the two-seed streak severity at iteration 14 drops only 23%
+(0.00116 vs the baseline's 0.00151) &mdash; far from the &ge;2&times; a remedy would need.</p>
+</div>
+
+<p>
+The two-sided outcome is informative rather than disappointing: on the synthetic, lateral
+truncation is the <i>only</i> pathology, and removing it removes everything.  On the real scan
+it is one contributor among several &mdash; the metal ball grid (beam hardening, detector
+effects) and possible axial truncation are all still present &mdash; so absorbing the lateral
+flash removes the ring but only a fraction of the streak field <i>at the practical budget</i>.
+The discriminating follow-up &mdash; the <b>padded long pair</b>, 60 iterations at an even-delta
+scale (1.502, so the crop is voxel-exact against the reference and the unpadded runs) &mdash;
+sharpens this considerably: <b>padding eliminates the late-time growth entirely.</b>  The
+unpadded severity-vs-reference curve grows &times;10.5 from its minimum; the padded curve is
+flat to &plusmn;5% from iteration ~14 on (its z-constant component likewise: unpadded &times;12,
+padded flat).  And the seed-dependent transient decays <i>faster</i> padded &mdash; 3&times;
+lower by iteration 59 (5.5&times;10<sup>&minus;5</sup> vs 1.7&times;10<sup>&minus;4</sup>)
+&mdash; consistent with the flash no longer feeding partition-shaped kicks.  The flat padded
+curve sits at a higher <i>level</i> than the unpadded minimum, but that level is measured
+against the <i>unpadded conservative reference</i>, which contains its own ring and deposit
+&mdash; the ruler cannot separate "the padded solution's residual streaks" from "the reference's
+own artifact content" (a padded conservative reference would split them, if ever needed).
+The growth verdict is ruler-robust either way: on the real scan, the converging-into-the-artifact
+dynamic is lateral-truncation-driven, and padding removes it.</p>
+
+<h3 id="longpair">6d. The real scan converges into the artifact too</h3>
+
+<div class="fig">
+<div class="figlabel">The real-scan long pairs: 60 iterations, two seeds, unpadded and padded</div>
+{{FIG:e1_longpair}}
+<p class="cap">
+<b>Left:</b> streak-band severity against the <i>conservative</i> reference (sharpness 0 /
+snr_db 30).  Unpadded (blue): it falls to a minimum near the default budget (iterations
+9&ndash;14), then grows &mdash; 0.012 at the minimum, 0.028 at iteration 24, 0.063 at 39, 0.116
+at 59, a factor &asymp;10 and still climbing &mdash; with the two seeds indistinguishable.
+Padded (green, &sect;6c): flat to &plusmn;5% &mdash; the growth is gone; the higher level is
+against the <i>unpadded</i> reference, which carries its own artifact content.  <b>Right:</b>
+the two-seed (seed-dependent) component falls monotonically in both, 42&times; unpadded and
+3&times; lower padded.  Meanwhile the objective at target settings decreases <i>strictly
+monotonically</i>, and the unpadded finals agree to 2.3% rms (padded: 1.7%): clean convergence
+to the aggressive-settings minimizer, with the growing streak-band field as seed-independent
+solution content &mdash; the synthetic's verdict, transferred &mdash; and the growth itself
+attributable to the lateral truncation.</p>
+</div>
+
+<p>
+One honest caveat on the ruler: on the real scan there is no ground truth, and the
+distance-from-the-conservative-solution band also contains <i>legitimate</i> sharp-vs-smooth
+solution differences (genuinely sharper edges are in-plane-fine and z-coherent too), so the
+&times;10 growth number overstates pure artifact growth by some amount.  The direct check is to
+look at what the late iterations actually add:</p>
+
+<div class="fig">
+<div class="figlabel">What iterations 14&nbsp;&rarr;&nbsp;59 add to the reconstruction</div>
+{{FIG:e1_increment}}
+<p class="cap">
+<b>How to read it:</b> the difference of two snapshots of the same run,
+recon(59)&nbsp;&minus;&nbsp;recon(14) &mdash; everything the late iterations changed.
+<b>What it shows:</b> in the axial slice (right), nearly all of the increment lives in the
+boundary flash ring's continued restructuring; the interior is almost blank at this window.
+In the (x,z) plane (left), beyond the ring frame, the interior fills with pale <i>vertical
+striping</i> &mdash; the streak field growing &mdash; not with edge sharpening at the balls.
+The late-iteration growth is deposit dynamics, not legitimate detail.</p>
+</div>
+
+<p class="warn">
+<b>The iteration-count decision now has real-data numbers &mdash; and a condition.</b>  On the
+default (unpadded) configuration, running past the practical budget moves the reconstruction
+monotonically <i>deeper</i> into the aggressive-settings solution: the streak-band distance from
+the conservative solution grows 2.3&times; by iteration 24 and &asymp;10&times; by iteration 59,
+while the data residual improves only from 0.1200 to 0.1133 &mdash; raising default
+max_iterations from 15 to 25&ndash;50 at these settings buys little data fit and a steadily
+stronger expression of the deposit field.  <b>With lateral padding the trade-off inverts:</b>
+the severity curve is flat while the seed-dependent transient keeps dying (20&times; further
+from iteration 14 to 59), so extra iterations are purely beneficial.  Padding and a higher
+iteration count belong together; a higher count without padding makes truncated scans worse.</p>
+
+<h3 id="parallel">6e. No cone required: the parallel-beam probe</h3>
+
+<table>
+<caption>Parallel-beam hardening probe (17-iteration protocol, shp=1.5, snr=35, ball layer
+0.35, seeds 1&ndash;2).  Parallel beam couples slices only through the prior and has no
+per-slice damping; the cone row is the earlier confirmation run for comparison.</caption>
+<tr><th>configuration</th><th>vs-truth S<sub>low</sub> @16</th><th>R<sub>z</sub></th>
+<th>interior error vs truth</th><th>two-seed S<sub>low</sub> @16</th></tr>
+<tr><td>parallel, contained</td><td>1.2&times;10<sup>&minus;6</sup></td><td>1.8</td><td>0.119</td><td>8.7&times;10<sup>&minus;9</sup></td></tr>
+<tr><td>parallel, truncated</td><td class="lose">1.6&times;10<sup>&minus;4</sup></td><td>152</td><td>0.575</td><td>9.4&times;10<sup>&minus;7</sup></td></tr>
+<tr><td>cone 11.3&deg;, truncated</td><td class="lose">5.4&times;10<sup>&minus;4</sup></td><td>~80</td><td>0.57</td><td>3.1&times;10<sup>&minus;5</sup></td></tr>
+</table>
+
+<p>
+Truncation alone, in a geometry where the projector couples nothing across z, produces the
+z-organized streak deposit at 134&times; the contained level &mdash; growing through the run,
+with the interior error vs truth (0.575) essentially equal to the cone case's, and the residual
+objective 240&times; the contained case's (the unexplainable-mass signature).  <b>The mechanism
+needs no cone:</b> it is in-plane deposit physics plus the prior's z-coupling.  The geometry
+split refines the cone's role: a moderate amplifier of the <i>systematic</i> field
+(~3&times; here) but a dramatic amplifier of the <i>seed-dependent transient</i> (33&times;)
+&mdash; in parallel beam a subset's kick cannot propagate across slices through the projector,
+so partition-shaped column-coherent injection is prior-mediated only.  The shipped damping
+being cone-specific is consistent with where the transient actually lives.</p>
+
+<h3 id="map">6f. Where this leaves the remedy map</h3>
+
+<ul>
+<li><b>Lateral padding is the remedy for the growth.</b>  It removes the flash ring, the
+late-iteration convergence-into-the-artifact dynamic (&times;10.5 &rarr; flat on the real scan),
+and speeds the transient's decay &mdash; and it unlocks higher iteration counts.  What it does
+not do is reach the &ge;2&times; two-seed bar at the 15-iteration budget (&minus;23&ndash;25%
+across the two padded runs), because at short budgets the transient is partition dynamics, only
+weakly flash-fed.</li>
+<li><b>The settings themselves are the other objective-side lever.</b>  Severity tracks the
+expression scale, so backing sharpness off (where a use case allows it) directly de-fines the
+deposit; the artifact studied here is, mechanically, the price of aggressive settings under
+truncation &mdash; in any geometry (&sect;6e).</li>
+<li><b>Update-side tools remain relevant only for the seed-dependent transient</b> at practical
+budgets (still two decades above its floor at iteration 14 on the real scan).  The transient is
+cone-fed (33&times; weaker in parallel), which both explains the shipped damping's cone scope
+and keeps the per-cylinder smooth-in-z damping idea coherently aimed: same component, transpose
+direction.  It stays parked pending a decision on whether the padded + more-iterations pairing
+already covers the practical need.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="provenance">Provenance</h2>
+<p class="prov">
+Branch <code>sharpness_schedule</code> (library under test = <code>origin/main</code> v0.7.1,
+venv <code>~/venvs/sharpness_main</code> on gautschi, jax 0.10.1).  Jobs (1&times;H100 each):
+the two-start long-tail run 14231760 (10.6 min; four 60-iteration runs, per-iteration scoring
+and snapshots); the follow-up wave &mdash; 14231880 (sharpness sweep 6.3 min + padded synthetic
+5.3 min), 14231881 (real-scan long pair, 21.1 min), 14231886 (padded real scan 1.5&times;,
+6.5 min), 14231957 (padded long pair, even-delta scale 1.502, 25.8 min), 14231958
+(parallel-beam probe, 2.2 min).  Raw outputs:
+<code>/scratch/gautschi/buzzard/sharpness_schedule/{e2_longtail, sweep_mass, e4_pad_synth,
+e1_longtail, e4_pad}/</code> (scratch is purge-eligible; the numbers that matter live in this page
+and the committed records).  Scripts: <code>plans/experiments/sharpness_schedule/mechanism/</code>
+(<code>e2_longtail.py</code>, <code>sweep_sharpness_mass.py</code>, <code>e4_pad_synth.py</code>)
+and <code>real_bga/</code> (<code>e1_longtail_bga.py</code>, <code>e4_pad_bga.py</code>); driver
+init-start support in <code>driver/segmented_driver.py</code> (<code>init_recon</code>).
+Figures regenerate via <code>findings/fig_converged.py</code> and
+<code>findings/fig_followups.py</code>.
+</p>
+
+</body>
+</html>

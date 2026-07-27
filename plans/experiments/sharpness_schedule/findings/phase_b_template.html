@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The per-granularity regularization schedule — Phase B evaluation</title>
+<style>
+  :root{color-scheme:light}
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:1180px;margin:auto;padding:0 1.1em 3em;line-height:1.5;color:#1b1f24;background:#fff}
+  h1{line-height:1.2;font-size:1.85em;margin:0.7em 0 0.15em}
+  h2{margin-top:2.1em;border-bottom:2px solid #e2e6ea;padding-bottom:0.22em;font-size:1.42em}
+  h3{margin-top:1.7em;font-size:1.13em}
+  .subtitle{color:#555;font-size:0.98em;margin:0.2em 0 1.2em}
+  .subtitle code{font-size:0.92em}
+  table{border-collapse:collapse;margin:0.7em 0;font-size:0.94em}
+  td,th{border:1px solid #c7ccd1;padding:4px 11px;text-align:right;vertical-align:top}
+  th{background:#f4f6f8}
+  th:first-child,td:first-child{text-align:left}
+  caption{caption-side:bottom;color:#555;font-size:0.85em;padding-top:0.35em;text-align:left}
+  .cap{color:#555;font-size:0.9em;margin:0.3em 0 0.4em}
+  .nav{font-size:0.95em;color:#333;background:#f7f9fb;border:1px solid #e2e6ea;border-radius:6px;padding:0.6em 0.9em}
+  .nav a{color:#1d4ed8;text-decoration:none}
+  .nav a:hover{text-decoration:underline}
+  .tldr{background:#eef4ff;border:1px solid #c7d9ff;border-left:5px solid #2563eb;border-radius:6px;padding:0.9em 1.15em;margin:1.3em 0}
+  .tldr b.h{display:block;font-size:1.05em;margin-bottom:0.3em;color:#1e3a8a}
+  .key{background:#f4f6f8;border-left:4px solid #2563eb;padding:0.6em 1em;margin:1em 0}
+  .warn{background:#fef6ec;border-left:4px solid #d97706;padding:0.6em 1em;margin:1em 0}
+  .note{background:#f6f7f8;border-left:4px solid #9aa3ad;padding:0.55em 1em;margin:1em 0;font-size:0.96em;color:#333}
+  .pending{background:#f6f7f8;border:1px dashed #9aa3ad;border-radius:6px;padding:0.6em 1em;margin:1em 0;color:#555}
+  .win{color:#166534;font-weight:bold}
+  .lose{color:#9a3412;font-weight:bold}
+  .neu{color:#1d4ed8;font-weight:bold}
+  .fig{margin:1.3em 0}
+  .fig img{max-width:100%;height:auto;display:block;border:1px solid #eceff2;border-radius:4px;background:#fff}
+  .figlabel{font-weight:bold;font-size:0.95em;margin-bottom:0.35em}
+  code{background:#f0f2f4;padding:0 3px;border-radius:3px;font-size:0.92em}
+  ul,ol{padding-left:1.35em}
+  li{margin:0.28em 0}
+  .prov{color:#555;font-size:0.85em}
+</style>
+</head>
+<body>
+
+<h1>Does the per-granularity schedule remove the streaks?  The Phase&nbsp;B evaluation</h1>
+<p class="subtitle">
+The sharpness/snr_db schedule study, Phase B (2026-07-25/26), branch
+<code>sharpness_schedule</code>.  Plan of record: <code>phase_b_plan.md</code> (pre-registered
+criteria) &middot; Phase A background: <code>findings.html</code> (the artifact, the metrics, and
+their validation) &middot; scripts: <code>plans/experiments/sharpness_schedule/schedule/</code>.
+</p>
+
+<div class="tldr">
+<b class="h">TL;DR</b>
+<p style="margin-top:0">
+Phase B asked: does the per-granularity schedule &mdash; conservative regularization on the coarse
+early subsets, target values on the fine ones &mdash; reduce the partition-driven streak severity
+without harming convergence?  <b>The pre-registered answer is no.</b></p>
+<ul style="margin-top:0.3em">
+<li><b>All six variants failed the streak criterion &mdash; in the harmful direction.</b>  At the
+gate iteration the two-seed S<sub>low</sub> is <span class="lose">4&ndash;22% worse</span> than
+baseline (the criterion required &le;50% <i>of</i> baseline), and the injection peaks are
+11&ndash;57% worse &mdash; real effects against a measured 1% pair noise, and visible from
+iteration 0 onward.</li>
+<li><b>The no-harm criterion passed everywhere</b> (target-objective gaps +0.02&ndash;0.04%
+against a 0.5% allowance): the schedules cost almost nothing &mdash; they simply make the
+artifact worse rather than better.</li>
+<li><b>The mechanism reading is clean:</b> prior-side schedules are consistently worse than
+data-side schedules at matched depth &mdash; the pre-registered signature of freshly injected
+differences being pushed into the prior's saturated regime during formation.</li>
+</ul>
+<p style="margin-bottom:0"><b>Decision (per the pre-registered rules):</b> no winner; the
+deeper-schedule extension was not run (it was reserved for a flat response, and the measured
+response is clearly directional); no full-resolution confirmation; the search stopped for
+discussion.  &sect;6 lays out what the result redirects.</p>
+</div>
+
+<div class="nav"><b>Contents:</b>
+<a href="#tested">1. What was tested, and how it is judged</a> &middot;
+<a href="#search">2. The search (downsampled scan)</a> &middot;
+<a href="#confirm">3. Why no full-res confirmation</a> &middot;
+<a href="#guards">4. The guards that did not fire</a> &middot;
+<a href="#mechanism">5. The mechanism reading</a> &middot;
+<a href="#recommend">6. Where this leaves the remedy</a> &middot;
+<a href="#provenance">Provenance</a></p>
+
+<!-- ============================================================ -->
+<h2 id="tested">1. What was tested, and how it is judged</h2>
+
+<p>
+Phase A established that the streak artifact is planted by the coarse early subsets and measured
+it with the two-seed S<sub>low</sub> (the low-axial-frequency energy of the fine-scale error in
+the difference of two reconstructions differing only in their partition seed &mdash; definitions
+and validation on the Phase A page).  Phase B evaluates the remedy: <b>one (&sigma;<sub>x</sub>,
+&sigma;<sub>y</sub>) pair per granularity</b> &mdash; the coarse early iterations run at
+conservative regularization, the fine iterations at the target values, so the converged answer is
+untouched (the objective is convex) and only the path changes.</p>
+
+<p>
+A schedule variant is a <b>family</b> and a <b>depth</b>.  The depth b is the amount of
+regularization added per granularity level, measured in decibels of the data-to-prior balance
+&sigma;<sub>x</sub>&sup2;/&sigma;<sub>y</sub>&sup2; (sharpness +1 &asymp; +6.02&nbsp;dB); the
+level d counts granularities below the finest (d = 3, 2, 1 for the default sequence's 4-, 16- and
+64-subset iterations).  The three families apply the same balance decrement through different
+knobs:</p>
+
+<table>
+<caption>The schedule families.  At equal b the coarse-phase (&sigma;<sub>x</sub>,
+&sigma;<sub>y</sub>) pairs of D and S differ by an exact common multiplier, and every update
+term except the prior's saturation-threshold factors is invariant under that scaling &mdash; so
+any systematic D&ndash;S difference isolates the threshold's role (&sect;5).</caption>
+<tr><th>family</th><th>knob</th><th>per-level offsets</th><th>coarsest iteration at b = 4</th></tr>
+<tr><td><b>D</b> (data-side)</td><td>snr_db</td><td>&Delta;db = &minus;b&middot;d</td><td>snr_db &minus;12</td></tr>
+<tr><td><b>S</b> (prior-side)</td><td>sharpness</td><td>&Delta;s = &minus;(b/6.02)&middot;d</td><td>sharpness &minus;2.0</td></tr>
+<tr><td><b>J</b> (joint)</td><td>both</td><td>half of each</td><td>sharpness &minus;1.0, snr_db &minus;6</td></tr>
+</table>
+
+<p>
+Each family was run at two depths, b&nbsp;=&nbsp;2 and b&nbsp;=&nbsp;4 dB per level.  A variant is
+named by its family letter and depth &mdash; <b>D2, D4, S2, S4, J2, J4</b> &mdash; six variants in
+all, judged against the unscheduled <b>baseline</b>.</p>
+
+<p>
+The judgment is pre-registered (<code>phase_b_plan.md</code>), with thresholds frozen after a
+noise-calibration step (B0) on the existing Phase A runs &mdash; the seed-pair spread of the final
+S<sub>low</sub> is 1% (downsampled) and 4% (full resolution), and the es_rmse seed spread is
+&le;1.5&times;10<sup>&minus;4</sup>, so both margins below dwarf the measurement noise:</p>
+
+<ul>
+<li><b>C1 (streak benefit):</b> two-seed S<sub>low</sub> at iteration 14 &le; &frac12; of
+baseline on BOTH scales, every seed pair; and the peak over the snapshot grid &le; 0.7&times;
+baseline's (reduce injection, not merely speed the heal).</li>
+<li><b>C2 (no harm):</b> the objective evaluated at the TARGET parameters within +0.5% of
+baseline at iteration 14 (downsampled arbiter; at full resolution, es_rmse &mdash; the
+root-mean-square sinogram residual, independent of the sigma parameters &mdash; and the data
+term), with a bounded fallback at iteration 16 against baseline's iteration 14.  All runs are 17
+iterations (numbered 0&ndash;16) with early stopping disabled.</li>
+<li><b>C3 (no harm where nothing is wrong):</b> the same &le;+0.5% on the synthetic control,
+which has no artifact.</li>
+</ul>
+
+<p class="note">
+Metrics are not the whole judgment: every run keeps permanent image panels (final
+reconstruction + error, and per-iteration error views), and the selection below awaits a visual
+review of the winner's panels.</p>
+
+<!-- ============================================================ -->
+<h2 id="search">2. The search: six variants on the downsampled scan</h2>
+
+<p>
+The search ran the six variants and the baseline on the downsampled BGA scan &mdash; seeds
+{1,&nbsp;2}, 17 iterations, snapshots on the same iteration grid as Phase A
+({0&ndash;5, 9, 14, 16}) &mdash; through the same segmented driver as every Phase A run, after
+the driver's equivalence gate passed on the GPU, including a new identity check that a schedule
+with all offsets zero reproduces the unscheduled baseline.  Two further identity checks
+confirmed the design intent: the automatically derived target (&sigma;<sub>x</sub>,
+&sigma;<sub>y</sub>) values are bitwise-identical across all runs, and every scheduled run uses
+exactly those values on its finest-granularity iterations.  The figure below is the primary
+result.</p>
+
+<div class="fig">
+<div class="figlabel">Two-seed severity across iterations, all variants</div>
+{{FIG:b1_trajectories}}
+<p class="cap">
+<b>How to read it:</b> the primary severity number (two-seed S<sub>low</sub>, pair mean, log
+scale) per iteration; baseline in black; the dotted line marks the gate iteration 14.
+<b>What it shows:</b> the baseline runs along the <i>bottom</i> of the entire bundle.  Every
+schedule variant rides above it from iteration 0 to iteration 16, peaks at the same iteration 2
+(the peaks are amplified in place, not relocated), and never crosses below the baseline.  The
+excess does shrink as the runs heal &mdash; S4 goes from +76% at iteration 0 and +57% at the peak
+to +22% at iteration 14 and +19% at 16; D2 from +34% at the peak to +10% at 16 &mdash; but the
+relative decay is slow (a few percent per iteration), so the elevation persists at every
+practical iteration count.  The ordering within the bundle is S4 (worst) &gt; S2 &gt; J2 &asymp;
+J4 &gt; D2 &gt; D4 (least harmful, still above baseline).</p>
+</div>
+
+<table>
+<caption>The pre-registered scorecard at iteration 14 (pair values for C1; seed means for C2;
+baseline pair noise from B0 is 1%).  C1 required S<sub>low</sub> &le; 0.5&times; baseline and
+peak &le; 0.7&times; baseline: every variant fails both, in the wrong direction.  C2 (target
+objective and es_rmse within +0.5%) passes everywhere.  E(0) is the footprint enrichment of the
+first-updated subset (1 = no association with the update order; defined on the Phase A page,
+&sect;2d).</caption>
+<tr><th>variant</th><th>S<sub>low</sub>@14</th><th>vs baseline</th><th>peak</th><th>vs baseline</th><th>objective gap</th><th>es_rmse gap</th><th>C1</th><th>C2</th><th>E(0)</th></tr>
+<tr><td>baseline</td><td>0.00151</td><td>&mdash;</td><td>0.0136</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>1.41</td></tr>
+<tr><td>D2</td><td>0.00168</td><td class="lose">+12%</td><td>0.0183</td><td class="lose">+34%</td><td>+0.033%</td><td>+0.021%</td><td class="lose">fail</td><td class="win">pass</td><td>1.37</td></tr>
+<tr><td>D4</td><td>0.00158</td><td class="lose">+4%</td><td>0.0151</td><td class="lose">+11%</td><td>+0.040%</td><td>+0.029%</td><td class="lose">fail</td><td class="win">pass</td><td>1.35</td></tr>
+<tr><td>S2</td><td>0.00176</td><td class="lose">+17%</td><td>0.0202</td><td class="lose">+49%</td><td>+0.025%</td><td>+0.016%</td><td class="lose">fail</td><td class="win">pass</td><td>1.36</td></tr>
+<tr><td>S4</td><td>0.00184</td><td class="lose">+22%</td><td>0.0213</td><td class="lose">+57%</td><td>+0.023%</td><td>+0.017%</td><td class="lose">fail</td><td class="win">pass</td><td>1.33</td></tr>
+<tr><td>J2</td><td>0.00173</td><td class="lose">+14%</td><td>0.0193</td><td class="lose">+42%</td><td>+0.030%</td><td>+0.019%</td><td class="lose">fail</td><td class="win">pass</td><td>1.37</td></tr>
+<tr><td>J4</td><td>0.00171</td><td class="lose">+13%</td><td>0.0184</td><td class="lose">+35%</td><td>+0.033%</td><td>+0.023%</td><td class="lose">fail</td><td class="win">pass</td><td>1.34</td></tr>
+</table>
+
+<p>
+Before interpreting, one rival reading must be closed: could the elevated S<sub>low</sub> at a
+fixed iteration simply be a <i>convergence-lag</i> artifact &mdash; any slower variant scoring
+worse at equal iteration count?  The recorded diagnostics refute this decisively.  On both
+global progress rulers, the variants are barely behind at all: their objective and es_rmse gaps
+(+0.02&ndash;0.04%) correspond to <b>0.04&ndash;0.09 iterations</b> of baseline progress.  On
+the severity trajectory, their elevation corresponds to <b>0.4&ndash;1.8 iterations</b> &mdash;
+a 5&ndash;40&times; mismatch.  Sharper still: at iteration 0 the D variants are actually
+<i>ahead</i> of baseline on the residual (es_rmse &minus;0.15% and &minus;0.27%) while
++37% and +20% on severity.  The excess is specific to the partition-driven artifact, not a
+by-product of slower convergence.</p>
+
+<p>
+The most informative detail is then <i>where</i> the harm appears: <b>immediately</b>.  At
+iteration 0 the variants already sit 20&ndash;76% above baseline (D4 +20%, D2 +37%, S4 +76%),
+before any fine iteration has run.  That refutes the deferral story this study half-expected
+(injection pushed into the fine phase).  What remains is a family of closely related readings
+that the present data do not separate: the coarse phase's strong steps <i>erase</i>
+seed-dependent error by homogenizing the residual across subsets, so throttling them slows the
+erasure; and each conservative early subset leaves a larger residual for the <i>later coarse
+subsets</i>, which then plant more (the Phase A footprint mechanism run in reverse).  On either
+reading, the marginal effect of stronger coarse steps is net erasure at this scale &mdash; and
+one caveat is recorded against both: the harm is <i>not monotone in depth</i> in the D family
+(&sect;5), so the story is incomplete.</p>
+
+<p>
+One diagnostic did move as the hypothesis predicted &mdash; with a catch.  The footprint
+enrichment E(0) softened in every variant (1.41 &rarr; 1.33&ndash;1.37): the first-updated
+subset's <i>share</i> of the streak energy fell.  But the map's total energy rose by a similar
+factor, so the <i>absolute</i> streak energy on the first-updated subset's cylinders was
+essentially unchanged (&minus;3% to +1%): the schedule redistributed the association without
+reducing the injection it was aimed at.</p>
+
+<p>
+The matched-window images below show the least- and most-harmful variants against baseline.</p>
+
+<div class="fig">
+<div class="figlabel">Baseline vs D4 (least harmful), matched windows</div>
+{{FIG:b1_D4_compare}}
+<p class="cap">
+The least-harmful variant against baseline ((x,&nbsp;z) mid-planes; top row: error vs the
+converged reference on one window; bottom row: the two-seed fields on one window).  The
+total-error views are indistinguishable, and the two-seed fields nearly so &mdash; D4's +4% at
+iteration 14 is real against the 1% pair noise but at the edge of what the eye can call.
+Included to bound the best case: even here, nothing improved.</p>
+</div>
+
+<div class="fig">
+<div class="figlabel">Baseline vs S4 (most harmful), matched windows</div>
+{{FIG:b1_S4_compare}}
+<p class="cap">
+The most-harmful variant, same layout.  The total-error views (top) remain nearly
+indistinguishable &mdash; that comparison is dominated by the error the two runs share &mdash;
+while the two-seed fields (bottom) show S4's visibly denser, stronger striping around the ball
+grid: the +22% worsening the scorecard measured, seen directly in the field the criterion
+integrates.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="confirm">3. Why there is no full-resolution confirmation</h2>
+
+<p>
+The plan's decision rules promote a variant to full-resolution confirmation only after it passes
+C1 + C2 on the downsampled search.  No variant did, so the confirmation was not run &mdash; a
+decision made by rule, not by judgment, and worth stating precisely: <b>the full-resolution
+question is closed by pre-registration, not by direct measurement.</b>  The downsampled result
+still argues a full-resolution benefit is unlikely, on observational grounds: every variant's
+injection <i>peak</i> worsened (+11&ndash;57%), and Phase A measured full resolution as the
+regime where peaks are recovered from far more slowly (a factor 3.6 from the peak, against 9
+downsampled) &mdash; so elevated peaks should persist harder there, not resolve.  A deliberate
+exploratory run of the least-harmful variant at full resolution remains an option for
+discussion, clearly labeled as outside the pre-registered protocol.</p>
+
+<!-- ============================================================ -->
+<h2 id="guards">4. The guards that did not fire</h2>
+
+<p>
+The remaining protocol elements were conditioned on outcomes that did not occur, and correctly
+never ran: the third seeds (reserved for near-threshold calls &mdash; nothing was near
+threshold; the failures exceed the 1% pair noise by factors of 4&ndash;22), the 40-iteration
+merge demonstration and the synthetic no-harm runs (C3, both conditioned on a winner), and the
+b&nbsp;=&nbsp;8 depth extension (reserved for a flat C1 response; the response was directional).
+The registered run-health diagnostics were recorded and are clean: no line-search clips at
+either bound, and the preconditioner prior-share behaved as designed (rising with schedule
+depth in the coarse phase &mdash; used in &sect;5).  The B0 noise calibration stands as this
+page's measurement-noise reference: final-S<sub>low</sub> pair spread 1% (downsampled) and 4%
+(full resolution); es_rmse seed spread &le;1.5&times;10<sup>&minus;4</sup>.</p>
+
+<!-- ============================================================ -->
+<h2 id="mechanism">5. The mechanism reading: which knob mattered?</h2>
+
+<p>
+The families were built so that, at equal depth b, the D and S coarse-phase sigma pairs differ by
+an exact common multiplier &mdash; and every update term except the prior's saturation-threshold
+factors is invariant under that scaling.  Any systematic D&ndash;S gap is therefore a threshold
+effect.  (The plan registered readings for both possible directions; the direction below is the
+one in which the prior-side family <i>performs worse</i>.)  The data give a clear sign:
+<b>S is consistently worse than D at equal depth</b> (at iteration 14, 0.00176 vs 0.00168 at
+b = 2 and 0.00184 vs 0.00158 at b = 4; at iteration 0 the b = 4 gap is 0.0128 vs 0.0087).
+Per the registered interpretation, this is the signature of <b>saturation during formation</b>:
+the S-family's lowered early edge threshold T&middot;&sigma;<sub>x</sub> &mdash; the difference
+scale beyond which the qGGMRF prior treats a voxel-neighbor difference as an edge and its
+restoring force saturates &mdash; pushes freshly injected differences into that saturated
+regime, where the prior is weakest.  The ramp freezes the very structure it was meant to
+prevent.</p>
+
+<p>
+Two quantitative checks corroborate the threshold reading.  The S&ndash;D gap grows with depth,
+as a threshold effect should when the threshold falls further (the S/D severity ratio at
+iteration 14 rises from 1.05 at b = 2 to 1.17 at b = 4).  And the J family, which carries half
+of each knob by construction, lands almost exactly halfway between D and S on a log scale
+(interpolation fraction 0.54 at both depths) &mdash; the response is smooth in the designed
+coordinates, not idiosyncratic per family.</p>
+
+<p>
+Two observations recorded without over-interpretation.  The D family is <i>non-monotonic in
+depth</i>: D4 is less harmful than D2 at every iteration, including iteration 0 (+20% vs +37%)
+&mdash; a formation-phase property that the simple slowed-erasure story does not predict; the
+natural variable for a future resolution is the recorded preconditioner prior-share, which
+shifts regime across depth (at iteration 0: baseline 0.35, D2 0.69, D4 0.90 &mdash;
+prior-dominated).  And the E(0) result (&sect;2) is a redistribution, not a reduction: the
+first-updated subset's share fell while its absolute streak energy stayed flat &mdash; the
+first-subset bias is real but is not the controlling term in total severity at this scale.</p>
+
+<!-- ============================================================ -->
+<h2 id="recommend">6. Where this leaves the remedy question</h2>
+
+<p>
+The per-granularity regularization schedule, as constructed, is <b>not the remedy</b>: on the
+downsampled scan it fails its primary criterion in the harmful direction at every family and
+depth, while costing essentially nothing in convergence.  This is a clean, pre-registered
+negative, and it earns two redirections:</p>
+
+<ul>
+<li><b>The target moves from &ldquo;early oversteps&rdquo; to &ldquo;subset
+homogenization&rdquo;.</b>  The artifact's severity tracks how quickly the iteration erases
+subset-patterned error, and the <i>marginal</i> effect of stronger coarse steps is net erasure
+at this scale (&sect;2 &mdash; the coarse phase still plants the artifact; weakening it just
+removes more erasing than planting).  Remedies that act on the seed-dependent field directly
+&mdash; the per-slice damping family already in the library, which demonstrably suppresses the
+z-varying component on the real scan, and mode-selective extensions of it &mdash; look better
+aimed than schedules that throttle the early iterations.</li>
+<li><b>The saturation finding gives a second lever:</b> the S-family's failure mode says the
+prior's threshold should stay HIGH while streaks form &mdash; any future schedule attempt should
+not lower T&middot;&sigma;<sub>x</sub> early.  On the opposite direction: an aggressive-early
+schedule was <i>not tested</i> (only conservative decrements were), so the data neither support
+nor rule it out; the baseline was best <i>among everything tested</i>.  Caution rather than
+data argues against it &mdash; Phase A showed globally aggressive settings worsen severity, and
+the D-family's depth non-monotonicity warns against extrapolating smooth trends through
+b&nbsp;=&nbsp;0.</li>
+</ul>
+
+<p>
+Discussion items for the technical lead: whether to run a deliberate exploratory
+full-resolution check of D4 (outside the protocol, cheaply bounding the &ldquo;maybe it helps
+where the artifact persists&rdquo; question); and whether Phase C pivots to the damping-family
+direction.  One caution on test vehicles for that pivot: the hardened synthetic (Phase A page,
+Appendix&nbsp;B) is a fast testbed for <i>truncation-driven</i> streaking, but it is
+damping-insensitive as built &mdash; a damping-family remedy iterated there would read as a null
+regardless of its real-scan value &mdash; so damping-family work should be evaluated on the
+downsampled real scan (or the testbed first extended until it shows real-scan-like damping
+sensitivity).  A visual pass over the per-run image panels (kept for every run; locations in
+Provenance) supports both questions.</p>
+
+<!-- ============================================================ -->
+<h2 id="provenance">Provenance</h2>
+<p class="prov">
+Branch <code>sharpness_schedule</code>; library under test = <code>origin/main</code> v0.7.1
+(editable worktree <code>~/mbirjax_main_wt</code>, venv <code>~/venvs/sharpness_main</code>,
+jax 0.10.1); all runs through the segmented driver with the equivalence gate (including the
+zero-offset-schedule identity) passing on GPU in the same job.  Thresholds frozen from B0
+(job 14225077) BEFORE any schedule run; b1 sweep job 14227961 (34.1 min, 14 runs, identity
+gates passed); analyses 14230153 / 14230177.  Protocol: 17 iterations, early stop disabled,
+snapshot grid {0,1,2,3,4,5,9,14,16}, seeds {1,2}; per-iteration metrics in-stream
+(v1 + P(f<sub>z</sub>) + target-objective terms + preconditioner share); permanent per-run image
+panels.  Raw outputs: <code>/scratch/gautschi/buzzard/sharpness_schedule/b1/</code>
+(records + finals + images kept; snapshot volumes retained pending discussion).  Decision rules
+applied as pre-registered in <code>phase_b_plan.md</code>; no threshold or rule was adjusted
+after B0.
+</p>
+
+</body>
+</html>

@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sharpness/snr_db schedule study — project overview</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #555; --card: #f6f7f9;
+    --accent: #0a5c8a; --border: #d8dde3; --good: #0a7a3d; --bad: #a4232e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --fg: #e6e6e6; --muted: #a5adb5; --card: #1d2126;
+      --accent: #6fb8dd; --border: #333a42; --good: #57c785; --bad: #e57373;
+    }
+  }
+  html { background: var(--bg); }
+  body {
+    margin: 0 auto; padding: 2rem 1.5rem 4rem; max-width: 900px;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 0.25rem; }
+  .subtitle { color: var(--muted); margin-bottom: 1.5rem; }
+  a { color: var(--accent); }
+  .page {
+    display: block; background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.9rem 1.1rem; margin: 0.9rem 0;
+    text-decoration: none; color: var(--fg);
+  }
+  .page:hover { border-color: var(--accent); }
+  .page h2 { margin: 0 0 0.3rem; font-size: 1.08rem; color: var(--accent); }
+  .page p { margin: 0; font-size: 0.92rem; color: var(--muted); line-height: 1.5; }
+  .pending { opacity: 0.65; }
+  .pending h2 { color: var(--muted); }
+  code { background: var(--card); padding: 0.08rem 0.35rem; border-radius: 4px; font-size: 0.88em; }
+  .note { font-size: 0.9rem; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<h1>The sharpness/snr_db schedule study</h1>
+<p class="subtitle">Voxel-cylinder streaks under aggressive regularization: reproduction,
+mechanism, and remediation &middot; started 2026-07-25 &middot; plan of record:
+<code>sharpness_schedule_plan.md</code> and <code>phase_b_plan.md</code> (this directory)</p>
+
+<p>Large sharpness / snr_db settings produce fine vertical streaks &mdash; voxel-cylinder-organized
+error, coherent along z &mdash; in MBIR reconstructions of laterally truncated scans, strongest
+when the VCD iteration starts at coarse subsets.  This project reproduced the artifact on a real
+BGA scan and a matched synthetic testbed, built and validated a spectral severity metric for it,
+evaluated the per-granularity regularization schedule as a remedy, and traced the artifact to its
+mechanism.  The pages below are self-contained (figures embedded) and read in order.</p>
+
+<a class="page" href="findings.html">
+  <h2>Phase A &mdash; The artifact, the instruments, and where it forms</h2>
+  <p>Reproduction on the real scan (severity 7.65&times; its control at the first iteration,
+  persisting at full resolution at 5&times; the downsampled level); the two-seed difference and
+  axial-spectrum P(f<sub>z</sub>) metrics with their validation; the subset-footprint attribution
+  (first-updated subsets carry ~40% extra streak energy); and the synthetic testbed &mdash; a null
+  at first, then hardened to reproduce the artifact by adding lateral truncation (the switch,
+  &times;20) and a larger cone angle (&times;13 more once truncation is present).
+  <strong>Complete.</strong></p>
+</a>
+
+<a class="page" href="phase_b_results.html">
+  <h2>Phase B &mdash; The per-granularity schedule, evaluated: negative</h2>
+  <p>The pre-registered test of conservative-early regularization schedules (data-side,
+  prior-side, and joint variants at two depths).  All six variants <em>add</em> streak energy
+  (+4&ndash;22% at the gate iteration, peaks +11&ndash;57%) at essentially zero convergence cost,
+  with a clean mechanism reading: prior-side schedules hurt most, the signature of saturation
+  during formation.  No winner under the pre-registered rules; no full-resolution confirmation
+  run.  <strong>Complete.</strong></p>
+</a>
+
+<a class="page" href="converged_streaks.html">
+  <h2>The converged reconstruction &mdash; the streaks are in the solution</h2>
+  <p>The mechanism story: a two-start experiment (production FDK start vs the ground truth
+  itself, optimally scaled) shows both converge to the same streaked solution while the objective
+  descends cleanly &mdash; on the truncated testbed the artifact is the minimizer's own content,
+  not convergence drift.  The error field is an <em>interior version of the truncation flash</em>:
+  +32% of the truth's mass deposited inside the domain, and a sharpness sweep shows the total is
+  conserved while the prior sets its <em>expression scale</em> &mdash; severity tracks the
+  fine-scale fraction.  Lateral padding removes the artifact entirely on the testbed (156&times;)
+  but only modestly on the real scan (&minus;23%: more unmodeled-mass sources than lateral
+  truncation); the real scan run long converges <em>into</em> the artifact, with direct numbers
+  for the iteration-count decision.  <strong>Complete.</strong></p>
+</a>
+
+<a class="page" href="hardening_streaks.html">
+  <h2>The second family &mdash; beam hardening, its instrument, and its testbed</h2>
+  <p>Padding unmasked a second, ray-aligned artifact family on the real scan.  Its instrument:
+  residual transfer curves in the MAR metal coordinate (the real padded scan shows the concave
+  metal-ray dip; unpadded shows none).  A two-metal polychromatic testbed with a severity dial
+  reproduces the family with hardening as the only pathology &mdash; object-anchored (rotated-view
+  control, correlation 0.982), mass-<em>removing</em> (&minus;17% at full severity, the signed
+  mirror of truncation's +32%), and invisible to the vertical-family metric (orthogonal rulers).
+  Ends with the calibrated case (s&nbsp;&asymp;&nbsp;0.2, dense lattice) beside the real scan and
+  the MAR bench + demo this enables.  <strong>Complete.</strong></p>
+</a>
+
+<p class="note">Reproduction: scripts in <code>plans/experiments/sharpness_schedule/</code>
+(driver/, repro/, real_bga/, mechanism/, schedule/, findings/); pages rebuild via
+<code>findings/build_findings.py</code>, <code>build_phase_b.py</code>, and
+<code>build_converged.py</code>.</p>
+
+</body>
+</html>

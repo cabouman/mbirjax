@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voxel-cylinder streaks under aggressive regularization — Phase A findings</title>
+<style>
+  :root{color-scheme:light}
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:1180px;margin:auto;padding:0 1.1em 3em;line-height:1.5;color:#1b1f24;background:#fff}
+  h1{line-height:1.2;font-size:1.85em;margin:0.7em 0 0.15em}
+  h2{margin-top:2.1em;border-bottom:2px solid #e2e6ea;padding-bottom:0.22em;font-size:1.42em}
+  h3{margin-top:1.7em;font-size:1.13em}
+  .subtitle{color:#555;font-size:0.98em;margin:0.2em 0 1.2em}
+  .subtitle code{font-size:0.92em}
+  table{border-collapse:collapse;margin:0.7em 0;font-size:0.94em}
+  td,th{border:1px solid #c7ccd1;padding:4px 11px;text-align:right;vertical-align:top}
+  th{background:#f4f6f8}
+  th:first-child,td:first-child{text-align:left}
+  caption{caption-side:bottom;color:#555;font-size:0.85em;padding-top:0.35em;text-align:left}
+  .cap{color:#555;font-size:0.9em;margin:0.3em 0 0.4em}
+  .nav{font-size:0.95em;color:#333;background:#f7f9fb;border:1px solid #e2e6ea;border-radius:6px;padding:0.6em 0.9em}
+  .nav a{color:#1d4ed8;text-decoration:none}
+  .nav a:hover{text-decoration:underline}
+  .tldr{background:#eef4ff;border:1px solid #c7d9ff;border-left:5px solid #2563eb;border-radius:6px;padding:0.9em 1.15em;margin:1.3em 0}
+  .tldr b.h{display:block;font-size:1.05em;margin-bottom:0.3em;color:#1e3a8a}
+  .key{background:#f4f6f8;border-left:4px solid #2563eb;padding:0.6em 1em;margin:1em 0}
+  .warn{background:#fef6ec;border-left:4px solid #d97706;padding:0.6em 1em;margin:1em 0}
+  .note{background:#f6f7f8;border-left:4px solid #9aa3ad;padding:0.55em 1em;margin:1em 0;font-size:0.96em;color:#333}
+  .pending{background:#f6f7f8;border:1px dashed #9aa3ad;border-radius:6px;padding:0.6em 1em;margin:1em 0;color:#555}
+  .win{color:#166534;font-weight:bold}
+  .lose{color:#9a3412;font-weight:bold}
+  .neu{color:#1d4ed8;font-weight:bold}
+  .fig{margin:1.3em 0}
+  .fig img{max-width:100%;height:auto;display:block;border:1px solid #eceff2;border-radius:4px;background:#fff}
+  .figrow{display:flex;flex-wrap:wrap;gap:10px}
+  .figrow>div{flex:1 1 460px;min-width:0}
+  .figlabel{font-weight:bold;font-size:0.95em;margin-bottom:0.35em}
+  code{background:#f0f2f4;padding:0 3px;border-radius:3px;font-size:0.92em}
+  ul,ol{padding-left:1.35em}
+  li{margin:0.28em 0}
+  .prov{color:#555;font-size:0.85em}
+</style>
+</head>
+<body>
+
+<h1>Voxel-cylinder streaks under aggressive regularization: reproducing and measuring the artifact (Phase&nbsp;A)</h1>
+<p class="subtitle">
+The sharpness/snr_db schedule study, Phase A (2026-07-25, in progress), branch <code>sharpness_schedule</code>.
+Plan of record: <code>plans/sharpness_schedule/sharpness_schedule_plan.md</code> &middot;
+scripts: <code>plans/experiments/sharpness_schedule/</code> &middot;
+raw outputs: gautschi <code>/scratch/&hellip;/sharpness_schedule/</code>.
+</p>
+
+<div class="tldr">
+<b class="h">TL;DR (Phase A, first pass)</b>
+<p style="margin-top:0">
+At large <code>sharpness</code> and/or <code>snr_db</code>, cone-beam VCD reconstructions can develop
+streaks aligned with <b>voxel cylinders</b> &mdash; the vertical stacks of voxels that VCD updates as a
+unit.  The working hypothesis is that the very first, coarsest random subsets take large
+under-regularized steps that plant cylinder-aligned errors the edge-preserving prior then protects.
+The remedy under study is a <b>per-granularity regularization schedule</b>: run the coarse early
+subsets at conservative regularization, reach the target values on the fine subsets, and leave the
+converged answer untouched.</p>
+<p>Phase A asked: <b>can we reproduce the artifact and measure it?</b>  Yes:</p>
+<ul style="margin-top:0.3em">
+<li><b>Reproduction, on the real scan.</b>  The BGA case reproduces the artifact immediately: the
+cylinder-organized error excess appears <span class="lose">in the first iteration</span>, and at
+full resolution it ends <span class="lose">5&times; more severe</span> than at the downsampled
+scale, recovering only &times;3.6 from its peak where the downsampled run recovered &times;9
+&mdash; at the default iteration count it remains at ~30% of its peak.</li>
+<li><b>The first-subset effect.</b>  The streak footprint is
+<span class="lose">enriched in the first-updated subsets</span> (E(0) &asymp; 1.4, decaying with
+update rank, recurring in each early iteration) &mdash; the hypothesis' fingerprint.</li>
+<li><b>A validated measure.</b>  The severity metric &mdash; the axial power spectrum
+P(f<sub>z</sub>) of the fine-scale error, applied to a <b>two-seed difference</b> that needs no
+ground truth &mdash; ranks a known-worse configuration 8.8&times; worse,
+<span class="win">matching the eye</span>.</li>
+</ul>
+<p style="margin-bottom:0"><b>Status:</b> Phase A measurement is complete (downsampled + full
+resolution + metric validation).  Next: pre-registered success criteria, then Phase B &mdash; the
+schedule evaluation.</p>
+</div>
+
+<div class="nav"><b>Contents:</b>
+<a href="#problem">1. The problem and the plan</a> &middot;
+<a href="#instruments">2. Quantifying the artifact</a> &middot;
+<a href="#results">3. What the measurements show</a> &middot;
+<a href="#validation">4. Validating the measure</a> &middot;
+<a href="#next">5. Implications and next steps</a> &middot;
+<a href="#appendixA">Appendix A</a> &middot;
+<a href="#appendixB">Appendix B</a> &middot;
+<a href="#provenance">Provenance</a></p>
+
+<!-- ============================================================ -->
+<h2 id="problem">1. The problem and the plan</h2>
+
+<p>
+MBIRJAX's VCD algorithm updates the reconstruction one random <i>subset</i> of voxel cylinders at a
+time &mdash; a cylinder being all the slices at one in-plane (x,&nbsp;y) location, updated together in
+a single step.  The default schedule starts with coarse partitions (4 subsets, each holding a quarter
+of the cylinders) and refines toward 128-subset partitions.  Two user knobs set the regularization:
+<code>sharpness</code> widens the prior (weaker smoothing, higher edge threshold) and
+<code>snr_db</code> raises the data weight.  Both push toward <i>under-regularized</i> early steps.</p>
+
+<p>
+On demanding real scans run with aggressive settings (the Zeiss BGA scan at full resolution,
+sharpness&nbsp;1.5&nbsp;/ snr_db&nbsp;35 is the reference case), reconstructions develop persistent
+<b>streaks</b>: individual cylinders, or clusters of them, sit visibly above or below their
+neighbors.  The hypothesis, refined at the start of this study:</p>
+
+<div class="key">
+The coarse early subsets should make mostly low-frequency corrections.  When the problem is
+under-regularized and the preconditioner is imperfect, a random subset instead injects
+high-frequency content: <b>cylinders inside the first-updated subsets take large steps against the
+raw initial residual</b> that their out-of-subset neighbors never receive.  The edge-preserving
+qGGMRF prior then treats these introduced differences as edges and removes them only slowly.
+</div>
+
+<p>
+The remedy this study is heading toward is deliberately simple: <b>one (&sigma;<sub>x</sub>,
+&sigma;<sub>y</sub>) pair per granularity</b> &mdash; conservative regularization on the coarse
+early subsets, target values on the fine ones.  Because the objective is convex, the schedule cannot
+change the converged answer, only the path to it; and because each granularity keeps a single value,
+nothing about the public API or the compiled-kernel behavior changes.</p>
+
+<p>Before evaluating any remedy, Phase&nbsp;A has to establish three things:</p>
+<ul>
+<li>a <b>reproduction</b> of the artifact we can iterate on quickly;</li>
+<li>a <b>quantitative metric</b> that agrees with what the eye sees;</li>
+<li>an <b>attribution</b> &mdash; is the first-subset story actually true?</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="instruments">2. Quantifying the artifact</h2>
+
+<p>
+Streaks are hard to measure well: they form <i>inside</i> individual iterations, they sit on top of
+legitimate image content, and on real scans there is no ground truth to compare against.  Everything
+in this study therefore rests on a reproducible, accurate quantification with three components,
+built once and reused by every experiment:</p>
+<ul>
+<li>a way to <b>observe the reconstruction one iteration at a time</b> (&sect;2a);</li>
+<li>a way to <b>separate the artifact from the image</b> without a ground truth (&sect;2b);</li>
+<li><b>two numbers</b> that capture the artifact's defining properties: its organization along the
+cylinder axis, P(f<sub>z</sub>) (&sect;2c), and its association with the subset update order,
+E(r) (&sect;2d).</li>
+</ul>
+
+<h3 id="driver">2a. Seeing inside a reconstruction: the per-iteration driver</h3>
+
+<p>
+A segmented driver runs the production <code>vcd_recon</code> one iteration per call through the
+library's checkpoint interface, with no library changes: it can change regularization between
+iterations, snapshot the volume after any iteration, and record which subset was updated when.
+The essential property is that observing does not disturb: an automated equivalence gate confirms
+that a segmented run and a normal continuous run produce the same reconstruction (bit-for-bit on
+CPU; to float noise, 10<sup>-7</sup> relative, on GPU).  Every run in this study &mdash; including
+every baseline &mdash; goes through this driver.  Unless a figure says otherwise, runs are the
+library default of <b>15 iterations</b> with the early-stopping threshold set to 0, so every
+variant executes the identical iteration schedule.  (Iterations are numbered from 0 throughout,
+so a 15-iteration run spans iterations 0&ndash;14 and &ldquo;the final iteration&rdquo; is
+iteration 14.)</p>
+
+<h3 id="twoseed">2b. Separating artifact from image: the two-seed difference</h3>
+
+<div class="key">
+<b>Key idea:</b> VCD draws its subsets from a random seed.  Artifacts <i>caused by the subset
+draw</i> therefore land in different cylinders for different seeds &mdash; while the object, the
+measurement noise, and every systematic property of the reconstruction are seed-independent.  So
+reconstruct twice, changing <i>only</i> the seed, and subtract:
+<p style="text-align:center;margin:0.5em 0">
+$$ d = (x_A - x_B)\,/\,\sqrt{2}. $$
+</p>
+Everything seed-independent cancels.  What remains is the partition-driven, seed-dependent error
+field, on the scale of a single run (the &radic;2 accounts for the difference holding two
+independent copies of it).  No ground truth, no reference bias &mdash; it works identically on
+synthetic and real scans.
+</div>
+
+<div class="fig">
+<div class="figlabel">The two-seed difference on the real scan</div>
+{{FIG:two_seed_illustration}}
+<p class="cap">
+Two reconstructions of the BGA scan differing only in the partition seed ((x,&nbsp;z) mid-plane
+through the solder-ball grid; z is the cylinder axis; sharpness 1.5, snr_db 35, 15 iterations).
+They are visually identical &mdash; and in their difference (right, on a ~25&times; tighter color
+scale) the object as such cancels: what survives is seed-dependent error, organized vertically
+along the cylinders.  Note the field is not featureless &mdash; it is visibly <i>strongest around
+the solder-ball grid</i>: the artifact is modulated by the object, concentrating where the data are
+most demanding, but every pixel of this image is partition-driven error, not structure.</p>
+</div>
+
+<p>
+Where a ground truth phantom or a converged reference exists, the same measurements can be made on
+e&nbsp;=&nbsp;x&nbsp;&minus;&nbsp;x<sub>ref</sub> as a secondary check; the two-seed field d is the
+primary throughout, because a reference-based comparison also contains legitimately recovered
+detail that grows with sharpness &mdash; exactly the axis under study.</p>
+
+<h3 id="pfz">2c. P(f<sub>z</sub>): how is the error organized along the cylinder?</h3>
+
+<p>
+A streak is error organized <i>along</i> a voxel cylinder &mdash; but not necessarily
+<i>constant</i> along it: it may span part of the height or vary slowly.  The right question is not
+&ldquo;is the error the same on every slice?&rdquo; but &ldquo;<b>how fast does the error vary
+along z?</b>&rdquo;  P(f<sub>z</sub>) answers it in three steps, applied to an error field
+e(x,&nbsp;y,&nbsp;z) &mdash; in practice the two-seed difference d:</p>
+
+<ol>
+<li><b>Keep only fine in-plane structure:</b> \( h = e - G_\sigma * e \),
+a per-slice in-plane Gaussian high-pass (&sigma;&nbsp;=&nbsp;2 voxels).  Streaks are narrow
+in-plane; smooth quality differences are removed here.</li>
+<li><b>Transform along the cylinder:</b> for each (x,&nbsp;y), multiply
+h(x,&nbsp;y,&nbsp;&middot;) by a fixed Hann taper \( v(z) \) &mdash; an apodization over the
+central 70% of slices that fades to zero at the ends to limit end effects &mdash; and take the DFT
+along z, written \( F_z[h] \).</li>
+<li><b>Average over cylinders:</b>
+$$ P(f_z) \;=\; \Bigl\langle\, \lvert F_z[h] \rvert^2 \,\Bigr\rangle_{(x,y)} \Big/ \sum_z v(z)^2 . $$
+Dividing by the taper's sum of squares is the standard periodogram normalization; it sets the
+reference shape: for an error field with <i>no organization along z</i> (each slice's error
+independent of the next), the expected power is the same at every f<sub>z</sub> &mdash; a flat
+spectrum whose height is the per-voxel error variance.  Any organization along the cylinder
+appears as excess above that flat baseline, at the frequencies matching its extent.</li>
+</ol>
+
+<p>
+The spectrum P(f<sub>z</sub>) correlates with the type of error: a streak constant along the whole
+cylinder contributes at f<sub>z</sub>&nbsp;=&nbsp;0; a streak spanning part of the cylinder
+contributes at low f<sub>z</sub>; error <b>uncorrelated in z</b> (slice-to-slice
+&ldquo;speckle&rdquo;) is flat.  Two summaries are used throughout:</p>
+<ul>
+<li><b>severity</b>&nbsp;
+\( S_{\text{low}} = \langle P(f_z) \rangle_{f_z \le 0.05\ \text{cycles/slice}} \)
+(low frequency / long streaks: structure coherent over &gsim;20 slices) &mdash; the study's
+primary number;</li>
+<li><b>character</b>&nbsp;
+\( R_z = S_{\text{low}} \big/ \langle P(f_z) \rangle_{f_z \ge 0.25} \), where the high band
+(variation on &lsim;4-slice scales, well above any streak-like organization) estimates the
+z-uncorrelated floor.  For error uncorrelated in z the spectrum is flat, so the low and high bands
+have the same mean and R<sub>z</sub>&nbsp;&asymp;&nbsp;1; for cylinder-organized error the low
+band rides far above the floor and R<sub>z</sub>&nbsp;&Gt;&nbsp;1.  The band edges (0.05, 0.25)
+are reporting conventions rather than tuned thresholds &mdash; both summaries vary smoothly with
+them, and every comparison in this study uses the same edges.</li>
+</ul>
+
+<div class="fig">
+<div class="figlabel">What P(f<sub>z</sub>) captures</div>
+{{FIG:pfz_illustration}}
+<p class="cap">
+<b>Top:</b> three idealized cylinder error profiles &mdash; constant along z, partial-extent, and
+uncorrelated in z &mdash; and their axial spectra: the constant profile concentrates at
+f<sub>z</sub>&nbsp;=&nbsp;0, the partial-extent profile spreads over the low band (shaded), the
+uncorrelated profile is flat.  <b>Bottom:</b> the real measurement.  Left, the field the metric
+analyzes &mdash; the in-plane high-pass of the two-seed difference, whose vertical striping is
+error organized along cylinders; right, its measured P(f<sub>z</sub>): a large cylinder-coherent
+excess at low f<sub>z</sub> riding on the flat z-uncorrelated floor.  S<sub>low</sub> is the mean
+height of the curve in the shaded band.</p>
+</div>
+
+<p class="note">
+Validation: on a configuration known from field experience to streak <i>worse</i> (the cone-beam
+per-slice damping disabled, &sect;4a), two-seed S<sub>low</sub> ranks it 8.8&times; worse than the
+default &mdash; matching the eye.  A simpler precursor metric that scored only the z-<i>constant</i>
+component missed that case (it is retired to Appendix&nbsp;A); P(f<sub>z</sub>) subsumes it as the
+f<sub>z</sub>&nbsp;=&nbsp;0 limit.</p>
+
+<h3 id="footprint-metric">2d. E(r): is the streak footprint tied to the update order?</h3>
+
+<p>
+The driver knows which cylinders belong to which subset and the order the subsets were updated.
+That enables a direct test of the first-subset hypothesis.  The per-run <b>streak map</b> reuses
+&sect;2c's machinery at its f<sub>z</sub>&nbsp;=&nbsp;0 extreme: with
+\( \bar e(x,y) = \langle e(x,y,z) \rangle_z \) the error averaged along each cylinder (central 70%
+of slices), define</p>
+<p style="text-align:center;margin:0.5em 0">
+$$ m(x,y) \;=\; \bigl\lvert\, \bar e - G_\sigma * \bar e \,\bigr\rvert (x,y) , $$
+</p>
+<p>
+the magnitude of the same in-plane Gaussian high-pass (&sigma;&nbsp;=&nbsp;2 voxels) applied to
+the z-averaged error: m is large where a cylinder's average error differs from that of its
+in-plane neighbors.  Within one iteration of M subsets, let &Sigma;(r) denote the set of cylinders
+in the subset updated r-th.  The <b>enrichment</b></p>
+<p style="text-align:center;margin:0.5em 0">
+$$ E(r) \;=\; \langle m \rangle_{\Sigma(r)} \,\big/\, \langle m \rangle_{\text{all cylinders}} $$
+</p>
+<p>
+asks whether streak energy sits where the update order says it should.  E(r)&nbsp;=&nbsp;1 at every
+rank means no association; E(0)&nbsp;&gt;&nbsp;1 means the first-updated subset carries more than
+its share.  Because E compares regions <i>within one map</i>, it is insensitive to the map's
+overall scale &mdash; only the spatial association matters.  One refinement: E is evaluated over
+the eroded <i>interior</i> of the reconstruction circle, because the band near the support
+boundary carries a large share of m's energy (~60% on the real scan) that is independent of the
+update order and would dilute the association (see the figure note below).</p>
+
+<div class="fig">
+<div class="figlabel">The footprint probe, illustrated on the real scan</div>
+{{FIG:footprint_illustration}}
+<p class="cap">
+<b>Left:</b> iteration 0 updates four subsets; every cylinder is colored by its subset's update
+rank &mdash; the interleaved salt-and-pepper pattern is what a random partition looks like.
+<b>Middle:</b> the same run's streak map m(x,&nbsp;y) after iteration 0, on a log scale: the
+linear view is dominated by the bright arcs near the support boundary, and log reveals the
+interior structure (the ball row, the package outline).  Those boundary arcs carry ~60% of the
+map's energy at every iteration, roughly independently of update order; they are almost certainly
+the truncation <i>flash</i> &mdash; the pile-up of unexplained attenuation at the support boundary
+when the object extends outside the field of view (this scan triggers the lateral-truncation
+warning; see the flash-remediation pages) &mdash; and E is therefore computed over the eroded
+interior.  <b>Right:</b> the interior enrichment: rank-0
+cylinders carry ~40% more streak energy than average (E(0)&nbsp;&asymp;&nbsp;1.41, this seed),
+decaying with rank.  Even on
+the log scale the first-updated subset is not visually identifiable &mdash; membership is
+interleaved at pixel scale &mdash; which is exactly why E(r) exists.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="results">3. What the measurements show</h2>
+
+<p>
+With the instruments in place, three questions about the artifact on the real scan (the BGA case
+at its registry settings, sharpness&nbsp;1.5 / snr_db&nbsp;35; downsampled scale unless noted):
+<b>when does it form, whose footprint is it, and does it persist?</b></p>
+
+<h3>3a. It forms in the coarse phase</h3>
+
+<p>
+The first question is <i>when</i> the artifact appears and how it evolves.  The figure below
+tracks the primary severity number across iterations &mdash; recall from &sect;2c that
+S<sub>low</sub> is the low-axial-frequency energy of the fine-scale error in the two-seed
+difference: how much long-cylinder-organized, partition-driven error the reconstruction carries,
+on the scale of a single run.  Three variants of the downsampled scan are tracked: the registry
+defaults (sharpness&nbsp;1.5, snr_db&nbsp;35), the same settings with the per-slice damping
+disabled, and sharpness&nbsp;3.</p>
+
+<div class="fig">
+<div class="figlabel">Severity across iterations: two-seed S<sub>low</sub> (downsampled scan)</div>
+{{FIG:a2_v2_formation}}
+<p class="cap">
+<b>How to read it:</b> the primary severity number (two-seed S<sub>low</sub>, log scale) at the
+snapshot iterations, one curve per variant.  <b>What it shows:</b> the artifact is present after
+the very first iteration and grows through the coarse phase (iterations 0&ndash;2: the 4-, 16- and
+64-subset updates); the default and damping-off variants peak at iteration&nbsp;2, and
+sharpness&nbsp;3 crests slightly later.  What separates the variants is less the injection
+than the <b>healing rate</b>: the default heals &times;9 by iteration&nbsp;14 at this scale,
+sharpness&nbsp;3 barely heals (ending 2.4&times; higher), and damping-off both grows more and heals
+slowest (ending 8.8&times; higher).  Under-regularization's dominant effect here is a <i>slower
+recovery</i> from the coarse-phase injection.</p>
+</div>
+
+<p>
+The severity curves say when; the images below show <i>where and what</i>.  Unlike &sect;2b's
+two-seed difference &mdash; which isolates the seed-dependent artifact by cancelling everything
+else, at the price of showing it out of context &mdash; these panels compare one reconstruction
+against the <b>converged reference</b>: the view a user actually experiences, with the artifact
+sitting on the object, at the cost of the comparison also containing legitimate differences from
+the smooth reference.  This reference-based error volume is also what the footprint probe
+(&sect;3b) attributes, since subset membership is a per-run property and the two-seed difference
+mixes two runs.</p>
+
+<div class="fig">
+<div class="figlabel">What the artifact looks like (default settings, final iteration)</div>
+{{FIG:a2_panels_center}}
+<p class="cap">
+<b>Top row:</b> the middle axial slice &mdash; reconstruction (left) and its difference from the
+reference (right; red = too high, blue = too low).  <b>Bottom row:</b> the vertical (x,&nbsp;z)
+mid-plane cutting through the solder-ball grid; z, the cylinder axis, runs vertically.  <b>What to
+look for:</b> in the bottom-right panel, fine vertical striping around the ball grid &mdash; error
+organized along cylinders, the artifact under study.  The reference is a 60-iteration run at
+sharpness&nbsp;0, snr_db&nbsp;30 (verified streak-free visually); some of the difference near the
+balls is legitimately recovered detail relative to that smooth reference (&sect;2b's proxy bias),
+which is why the quantitative claims rest on the two-seed measure.</p>
+</div>
+
+<h3>3b. Its footprint follows the update order</h3>
+
+<p>
+The second question is <i>where</i> the streak energy lands: is it actually associated with the
+subsets that updated first, as the hypothesis requires?  The figure below applies the enrichment
+E(r) of &sect;2d &mdash; the streak energy of the r-th-updated subset's cylinders relative to the
+average cylinder, computed over the eroded interior &mdash; to the first three iterations of every
+variant.  Iteration&nbsp;0 has 4 subsets, iteration&nbsp;1 has 16, and iteration&nbsp;2 has 64,
+so the curves lengthen from panel to panel.</p>
+
+<div class="fig">
+<div class="figlabel">Footprint enrichment by update rank, iterations 0&ndash;2</div>
+{{FIG:a2_footprint}}
+<p class="cap">
+<b>How to read it:</b> E(r), averaged over seeds; the line at 1.0 is &ldquo;no
+association&rdquo;.  <b>What it shows:</b> at iteration&nbsp;0 the first-updated quarter of the
+cylinders carries ~40% more streak energy than average (E(0)&nbsp;&asymp;&nbsp;1.4), decaying
+monotonically with rank &mdash; and the same first-rank enrichment recurs <i>within</i>
+iterations 1 and 2 (early ranks 1.1&ndash;1.5, strongest with damping off).  This is the pattern
+the hypothesized mechanism predicts: at the start of an iteration the data residual is at its
+largest, so the first subset's update &mdash; computed against that raw residual &mdash; takes
+the largest steps and inherits the largest share of the injected error, while each later subset
+works against a residual the earlier updates have already reduced, and plants less.</p>
+</div>
+
+<p>
+How large is the effect?  E(0)&nbsp;&asymp;&nbsp;1.4 sits between two reference points: 1.0 would
+mean no association with the update order at all, while streak energy confined entirely to the
+first-updated quarter of the cylinders would give E(0)&nbsp;=&nbsp;4 (and &asymp;0 at the later
+ranks).  So the first-updated subset is preferentially loaded, but a substantial share of the
+streak energy lands in the later subsets of the coarse phase as well
+(E&nbsp;&asymp;&nbsp;0.7&ndash;1.0).  On this one scan and scale, that suggests a remedy aimed
+only at the literal first subset would address at best part of the injection; a remedy that
+treats the whole coarse phase conservatively &mdash; the per-granularity schedule's shape &mdash;
+is consistent with what the footprint shows.</p>
+
+<h3 id="fullres">3c. At full resolution it is larger and heals far slower</h3>
+
+<p>
+The last question is whether the artifact persists at the resolution where it is actually
+reported.  The same 15-iteration protocol was run on the full-resolution scan (601 views, 1532
+channels; volume 1532&times;1532&times;968) for the default settings (3 seeds) and the
+damping-off variant (2 seeds).  The answer is yes: at full resolution the artifact is both
+<b>larger</b> and <b>slower-healing</b>.  At the final iteration, the full-resolution severity is
+<span class="lose">5&times; the final severity of the downsampled version</span>.  The healing is
+also much slower: from its peak, the full-resolution severity recovers only a factor of 3.6 over
+the run, where the downsampled run recovered a factor of 9 in the same budget.  The gap opens
+just after the peak &mdash; over iterations 4 to 9 the downsampled severity falls 61% while the
+full-resolution severity falls only 44% &mdash; and the late-iteration decline rates are similar
+on this measure, so the gap persists.  The practical consequence is that at the default
+iteration count, a full-resolution user still sees the artifact at about 30% of its peak
+level.  The damping-off variant ends another 2.0&times; higher
+still, and its curve is nearly flat; as in &sect;4a, most of its extra seed-dependent error is
+uncorrelated in z (R<sub>z</sub>&nbsp;&asymp;&nbsp;5, versus &asymp;530 for the default).</p>
+
+<p>
+A separate observation comes from comparing the two panels below, now on the same vertical scale.
+The two-seed component (left) accounts for only about 44% of the total cylinder-organized error
+measured against the reference (right).  The remainder is <i>seed-independent</i>: systematic,
+data-driven error, entangled with the reference proxy bias.  No partition-side remedy can touch
+that part &mdash; the schedule's target is the seed-dependent share.</p>
+
+<div class="fig">
+<div class="figlabel">Full-resolution severity across iterations (601 views, 1532 channels;
+reconstruction 1532&times;1532&times;968)</div>
+{{FIG:a3_fullres_formation}}
+<p class="cap">
+<b>Left:</b> the partition-driven severity (two-seed S<sub>low</sub>) at full resolution, with
+the downsampled curve repeated for scale &mdash; peaks within ~2&times;, very different
+recoveries.
+<b>Right:</b> the total cylinder-organized error vs the converged reference (per iteration,
+seed-mean): both variants follow a nearly identical slow glide, reflecting the large
+seed-independent component discussed above.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="validation">4. Validating the measure</h2>
+
+<p>
+A metric is only as good as its agreement with the eye.  P(f<sub>z</sub>) passes two independent
+checks &mdash; one positive (it ranks a known-worse configuration worse) and one negative (it
+reports nothing where nothing is wrong).</p>
+
+<h3>4a. It ranks a known-worse configuration worse</h3>
+
+<p>
+The first check asks whether the number agrees with the eye on a case where the right answer is
+already known.  Cone-beam models ship with an empirical per-slice <b>DC damping</b> of the update
+direction, and field experience with it is unambiguous: disabling it makes streaking visibly
+worse.  That makes it an ideal blind test &mdash; a configuration whose ranking the metric must
+reproduce, and which played no role in the metric's design.  It passes: on the two-seed field,
+S<sub>low</sub> ranks damping-off <span class="lose">8.8&times;</span> worse than the default
+(0.0132 vs 0.0015).  The spectra below show the full picture behind that single number.</p>
+
+<div class="fig">
+<div class="figlabel">Axial power spectra at the final iteration: the ranking P(f<sub>z</sub>) sees</div>
+{{FIG:a2_v2_spectra}}
+<p class="cap">
+<b>How to read it:</b> each curve is P(f<sub>z</sub>) (&sect;2c) at the final iteration; the
+shaded band is S<sub>low</sub>.  <b>What it shows (left, the two-seed primary):</b> every
+variant's error is strongly cylinder-organized in character (steeply falling spectra), and
+<b>damping-off sits roughly a decade above the default across the entire spectrum</b>.  The right
+panel (vs the reference) shows why the two-seed form is the primary: sharpness-3 rides above the
+others at <i>high</i> f<sub>z</sub> purely from resolution/noise differences against the smooth
+reference &mdash; proxy bias, not streaks.  (The small periodic peaks share a ~12-slice period and
+likely track the package's layered structure &mdash; noted, not yet explained.)</p>
+</div>
+
+<p>
+The images below show what the damping does &mdash; and does not &mdash; change visually.  Both
+panels show the (x,&nbsp;z) mid-plane error against the same converged reference used in
+&sect;3a, on <b>one shared intensity window</b>, so brightness can be compared directly.</p>
+
+<div class="fig">
+<div class="figlabel">What the damping changes, and what it does not</div>
+{{FIG:damp_compare_illustration}}
+<p class="cap">
+The two errors share most of their structure: the vertical striping around the solder-ball grid
+&mdash; the streaking itself &mdash; is present in <i>both</i> panels, and remains clearly
+visible with the damping on.  The unmistakable difference is the strong horizontal band at the
+mid-plane on the right &mdash; the center-slice artifact this damping was originally designed to
+suppress &mdash; together with fine slice-to-slice texture.  Quantitatively the right panel
+carries about 2&times; the cylinder-organized error vs the reference (S<sub>low</sub> 0.024 vs
+0.012), but much of that sits in the band and in z-varying structure that reads as texture rather
+than extra brightness here.  The clean separation between the two configurations lives in the
+seed-dependent component, which is what the validation is scored on (the 8.8&times; two-seed
+ratio above).  Two readings follow.  Mechanism: the damping's main benefit is suppressing kicks
+that a subset's cylinders receive in common but that <i>vary from slice to slice</i> &mdash; the
+low-but-nonzero-f<sub>z</sub> regime P(f<sub>z</sub>) scores and a z-constant-only score misses
+(Appendix&nbsp;A).  And motivation: a substantial streak field survives with the damping at its
+default &mdash; the artifact the schedule targets is still there in the shipped
+configuration.</p>
+</div>
+
+<p>
+Finally, the view on which the 8.8&times; actually lives: the <b>two-seed difference fields</b>
+themselves (&sect;2b), for the two configurations on one shared window.  This is the
+seed-dependent component alone &mdash; everything the two configurations share, including the
+seed-independent error of &sect;3c, has cancelled.</p>
+
+<div class="fig">
+<div class="figlabel">The seed-dependent component alone: two-seed fields, same window</div>
+{{FIG:two_seed_damp_compare}}
+<p class="cap">
+Both fields are striped &mdash; the partition-driven streak field is present with the damping on
+(left) as well as off (right), consistent with the images above.  But the right panel is visibly
+stronger: intensified vertical striping around the ball-grid region, and, most dramatically, the
+violent band at the mid-plane &mdash; which this view reveals to be largely
+<i>seed-dependent</i>: the center-slice artifact is itself substantially partition-driven.  (The
+ball-grid pattern visible in both panels is the artifact's object-modulation from &sect;2b, not
+the object &mdash; the object has cancelled.)  This is the field S<sub>low</sub> integrates, and
+the 8.8&times; ratio is visible here in a way the total-error comparison above cannot show.
+One seed pair (1&minus;2); the window is shared across panels.</p>
+</div>
+
+<h3>4b. It reports nothing where nothing is wrong</h3>
+
+<p>
+A matched synthetic case &mdash; the same geometry class, a BGA-like ball-grid ground truth
+phantom, realistic transmission noise, production weights &mdash; shows <b>no artifact anywhere</b>
+on a 15-variant severity grid (sharpness 0&ndash;3, snr_db 25&ndash;45, damping on/off, noise
+on/off): every score sits at the z-uncorrelated floor, and over a 60-iteration tail the two-seed
+signal decays five and a half decades to effectively zero &mdash; the fingerprint of the convex
+objective's unique minimizer.  The
+instruments do not hallucinate streaks.  The null is also informative in its own right: whatever
+drives the real-scan artifact involves something the idealized case lacks.  A hardening follow-up
+(Appendix&nbsp;B) resolved most of this suspect list directly: adding <b>lateral field-of-view
+truncation</b> switches the artifact on (&times;20 in two-seed S<sub>low</sub> by itself), the
+larger cone angle amplifies it (&times;264 combined), and the streaking then persists at the
+standard protocol &mdash; while the remaining suspects (detector non-idealities, beam hardening)
+were not needed.  Details, the probe table, and a side-by-side comparison with the real scan are
+in Appendix&nbsp;B.</p>
+
+<!-- ============================================================ -->
+<h2 id="next">5. Implications for the schedule, and what is running</h2>
+
+<p>Each measured fact maps directly onto the remedy's design:</p>
+
+<ul>
+<li><b>Injection happens in the coarse phase</b> (iterations 0&ndash;2) &mdash; exactly the
+iterations a per-granularity schedule runs at conservative regularization.</li>
+<li><b>The footprint bias spans the whole coarse phase</b>, so the schedule's granularity-keyed
+form &mdash; rather than a first-subset special case &mdash; is the right shape.</li>
+<li><b>Under-regularization mainly slows healing</b> (&sect;3a), so reaching the target values
+only on the fine subsets attacks both ends: less is planted, and the fine phase inherits less to
+heal at full strength.</li>
+<li><b>Convexity guarantees the converged answer is untouched</b>: the schedule shapes the path,
+never the destination.</li>
+</ul>
+
+<p>One thing remains before Phase B (the schedule evaluation) starts:
+<b>pre-registered success criteria</b>, set from the full-res severity numbers of &sect;3c per the
+study's standard of proof &mdash; a simple, robust schedule that is at least as good as current
+behavior almost always.  The natural primary criterion is the two-seed S<sub>low</sub> trajectory
+(smaller peak, lower value at the default iteration count) at matched final image quality; exact
+thresholds to be agreed before the Phase B runs.</p>
+
+<!-- ============================================================ -->
+<h2 id="appendixA">Appendix A &mdash; retired: the z-constant streak score</h2>
+<p>
+The study's first metric scored only the z-<i>constant</i> component of cylinder error:
+S = in-plane high-pass energy of the z-average of e, reported against a per-slice control (the
+z-uncorrelated remainder).  It detected the artifact's birth on the real scan (S/control = 7.7
+after iteration 0) but failed its validation case: with the cone-beam per-slice damping disabled
+&mdash; a configuration known to streak worse &mdash; S barely moved while the control exploded,
+because the extra
+cylinder error <i>varies along z</i> and the z-average cancels it.  P(f<sub>z</sub>) (&sect;2c)
+resolves the full range of z-organization and subsumes S as its
+f<sub>z</sub>&nbsp;=&nbsp;0 limit.</p>
+
+<!-- ============================================================ -->
+<h2 id="appendixB">Appendix B &mdash; the synthetic null, in detail</h2>
+
+<p>
+The synthetic control was built at 256 scale: cone-beam at magnification 2, a ball-grid ground
+truth phantom (a plastic-like slab holding a lattice of small dense spheres, mimicking the BGA's
+solder balls), Poisson transmission noise at I<sub>0</sub>&nbsp;=&nbsp;10<sup>4</sup>, and the
+production transmission_root weights computed from the <i>noiseless</i> sinogram (so noise on/off
+comparisons hold the preconditioner fixed).  The severity grid swept sharpness 0&ndash;3, snr_db
+25&ndash;45, a balance-matched diagonal, damping on/off, noise on/off, and a 60-iteration long
+tail &mdash; fifteen variants in all, with 2&ndash;3 partition seeds each.</p>
+
+<p>
+The figure below places the synthetic case next to the real scan it imitates &mdash; the
+projection data on top, reconstructions below.  The likeness is deliberate: ball-grid contrast,
+transmission noise, the same geometry class.  The differences are the null's suspect list
+(&sect;4b): the synthetic detector is ideal, its cone angle and resolution are smaller, there is
+no beam hardening, the synthetic ball lattice is far sparser and coarser than the real package's
+(visible below) &mdash; and, notably, the synthetic object is fully contained in the field of
+view, while the real scan is laterally truncated (the source of the flash arcs in &sect;2d).</p>
+
+<div class="fig">
+<div class="figlabel">The synthetic control next to the real scan</div>
+{{FIG:synth_vs_real}}
+<p class="cap">
+<b>Top:</b> one projection view of each sinogram (log domain; gray windows are independent
+&mdash; the two datasets' units differ).  <b>Bottom:</b> a reconstruction slice of each, chosen to
+show the ball grid: the synthetic grid lies in an axial plane (left: axial mid-slice), while the
+real package stands vertically in the scanner (right: (x,&nbsp;z) mid-plane of the converged
+reference).  The visual ingredients of the real case &mdash; a lattice of small high-contrast
+spheres in a low-density package &mdash; are present in the synthetic one; the artifact is not.</p>
+</div>
+
+<p>
+The severity grid itself is summarized below: each variant's final-iteration streak scores plotted
+against their matched z-uncorrelated controls, as a function of the regularization knobs.</p>
+
+<div class="fig">
+<div class="figlabel">Synthetic severity vs regularization (final iteration, log scale)</div>
+{{FIG:a1_severity}}
+<p class="cap">
+<b>How to read it:</b> blue is the two-seed z-constant streak score with its z-uncorrelated
+control in orange dashed; green is the reference-based score with its control in red dashed (these
+predate
+P(f<sub>z</sub>); a later re-analysis with P(f<sub>z</sub>) reaches the same conclusion).  A
+streak signature would put a solid
+line <i>above</i> its dashed control.  <b>What it shows:</b> both knobs amplify seed-dependent
+noise enormously &mdash; four decades left to right &mdash; but the solid lines stay a factor ~10
+<i>below</i> their controls everywhere: the amplified error is never cylinder-shaped.  The same
+holds on the balance diagonal, with damping off, and with noise off.</p>
+</div>
+
+<p>
+The 60-iteration tail decays the two-seed signal five and a half decades to effectively zero
+&mdash; the seed-dependence washes out entirely as the run converges (the convex objective's
+unique minimizer).
+Two mechanism probes also ran here: a late 4-subset iteration launched from a settled state injects
+nothing measurable, and a q&nbsp;=&nbsp;2 (quadratic-tail, no edge-preservation) control behaves
+identically to the default &mdash; but both ran in a regime with no artifact to modulate, so they
+are only weakly informative and are parked for rerun on the real scan if the mechanism question
+stays live.  The balance-collapse prediction from the plan likewise needs the streak regime to be
+a meaningful test.</p>
+
+<h3>Hardening the synthetic: what turns the artifact on</h3>
+
+<p>
+A follow-up asked which missing ingredient the null actually hinged on, by adding the suspects
+one at a time and probing each configuration for six iterations (two seeds; scored on the
+two-seed S<sub>low</sub> and on a center-slice indicator).  Two levers were tested: a larger
+<b>cone angle</b> (source distances shortened at fixed magnification: half-angle 7.1&deg; &rarr;
+11.3&deg;) and genuine <b>lateral truncation</b> (a wider slab, 1.08&times; the field of view,
+forward-projected from an enlarged ground truth phantom onto the same 256-channel detector &mdash;
+the object really leaves the field of view, as in the real scan).</p>
+
+<table>
+<caption>Hardening probes: two-seed S<sub>low</sub> after 6 iterations (one seed pair, 1&minus;2).
+Truncation is the switch (~&times;20 on its own, damping off); once truncation is present, the
+larger cone multiplies severity a further ~&times;13; together they raise the partition-driven
+severity &times;264 over the contained case.  The cone-alone rows move only ~&times;2&ndash;3
+&mdash; small enough on a single seed pair that seed noise could contribute to those
+factors.</caption>
+<tr><th>configuration</th><th>half-angle</th><th>truncated</th><th>damping</th><th>two-seed S<sub>low</sub></th><th>R<sub>z</sub></th></tr>
+<tr><td>contained (Phase A geometry)</td><td>7.1&deg;</td><td>no</td><td>off</td><td>4.4&times;10<sup>&minus;7</sup></td><td>51</td></tr>
+<tr><td>larger cone</td><td>11.3&deg;</td><td>no</td><td>on</td><td>1.3&times;10<sup>&minus;6</sup></td><td>109</td></tr>
+<tr><td>larger cone</td><td>11.3&deg;</td><td>no</td><td>off</td><td>1.0&times;10<sup>&minus;6</sup></td><td>105</td></tr>
+<tr><td>truncated</td><td>7.1&deg;</td><td>yes</td><td>on</td><td>1.0&times;10<sup>&minus;5</sup></td><td>462</td></tr>
+<tr><td>truncated</td><td>7.1&deg;</td><td>yes</td><td>off</td><td>8.8&times;10<sup>&minus;6</sup></td><td>450</td></tr>
+<tr><td>truncated + larger cone</td><td>11.3&deg;</td><td>yes</td><td>off</td><td class="lose">1.2&times;10<sup>&minus;4</sup></td><td>1513</td></tr>
+</table>
+
+<p>
+A confirmation at the standard 17-iteration protocol (truncated + larger cone, with the ball
+layer moved off-center so the center-slice indicator is free of object structure) shows the
+streaking <b>persists</b>: two-seed S<sub>low</sub> &asymp; 3.1&times;10<sup>&minus;5</sup> at
+iteration 16 with R<sub>z</sub> &asymp; 900 &mdash; roughly 70&times; the contained null's final
+&mdash; and the error against the ground truth phantom <i>grows</i> through the run as the
+reconstruction keeps trying to explain truncated data.  One mechanistic difference from the real
+scan, reported as found: here the damping makes essentially no difference (3.08 vs
+3.12&times;10<sup>&minus;5</sup>), where the real scan showed 8.8&times; &mdash; the
+truncation-driven streak field is damping-insensitive.</p>
+
+<div class="fig">
+<div class="figlabel">The hardened synthetic at iteration 16 ((x,z) error vs ground truth phantom)</div>
+{{FIG:hardened_err_xz}}
+<p class="cap">
+Truncated + larger-cone configuration, default damping, registry settings (sharpness 1.5,
+snr_db 35), iteration 16 of 17.  The truncation flash stands at both lateral edges, and fine
+vertical striping &mdash; persistent streaks &mdash; crosses the slab band: the synthetic now
+shows the real scan's artifact character, where the contained case showed nothing.</p>
+</div>
+
+<p>
+<b>Center-slice noise was not reproduced.</b>  A modest center-band elevation develops (the
+per-slice error profile reaches ~1.7&times; its median at the volume center by iteration 16),
+but it is insensitive to the per-slice damping.  Either the center-slice mode is absent here, or
+it is present but the damping's leverage over it does not transfer to this configuration &mdash;
+the probe cannot tell the two apart, so producing that mode in this synthetic remains open (a
+still larger cone angle and taller volume are the obvious next levers).</p>
+
+<!-- ============================================================ -->
+<h2 id="provenance">Provenance</h2>
+<p class="prov">
+Branch <code>sharpness_schedule</code> (library under test = <code>origin/main</code> v0.7.1,
+editable worktree <code>~/mbirjax_main_wt</code> on gautschi, venv
+<code>~/venvs/sharpness_main</code>, jax 0.10.1).  Jobs (gautschi, 1&times;H100 each):
+equivalence gate + synthetic sweep 14201896 (11.7 min, 31 runs), downsampled BGA 14201908
+(10.5 min, incl. 60-iteration reference), mechanism probes 14201915 (1.4 min), analyses 14201933 /
+14202361 / 14203711, full-res BGA 14202362 (host-memory OOM at the 1-GPU share; superseded) and
+14203012 (2 GPUs, 110.9 min, complete).  Raw outputs + per-run records:
+<code>/scratch/gautschi/buzzard/sharpness_schedule/</code> (scratch is purge-eligible; the numbers
+and figures that matter live in this page and the committed digests).  Driver equivalence: segmented
+&equiv; continuous bitwise on CPU (same process), 1e-4 gate on GPU; every segment's
+subset-order recovery verified by RNG-state replay.  Metrics code:
+<code>plans/experiments/sharpness_schedule/driver/metrics.py</code>.
+</p>
+
+</body>
+</html>

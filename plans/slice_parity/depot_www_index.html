@@ -29,6 +29,18 @@ project &mdash; convergence, image-quality, and reconstruction-artifact studies 
 scan data.  Each entry is a self-contained report.</p>
 
 <div class="entry">
+<a href="center_slice/">Center-slice noise</a>
+<p>Why a few slices at the volume center go noisy in cone-beam MBIR and converge
+slowly: the coherent source-plane mode family, its ~70&times; gain mountain, the
+joint-step overshoot that pumps it, and the remedy the campaign converged on &mdash;
+rank-one mode-selective damping with a drive-based decide-once trigger, validated
+in-sample and on a held-out scan.  Includes the dead-end map (refuted hypotheses and
+measurement-artifact cautionary tales) and the full experiment index (cs1&ndash;cs26).</p>
+<p class="meta">Single self-contained report; the implementation spec and decision
+record live in the repo (<code>plans/bugs_and_artifacts/center slice noise/</code>).</p>
+</div>
+
+<div class="entry">
 <a href="flash_remediation/">Flash remediation</a>
 <p>Diagnosis and remedy of the bright "flash" artifacts that field-of-view truncation
 produces in cone-beam reconstructions.  A multi-phase study: characterizing the axial
@@ -37,6 +49,23 @@ support-padding remedies, and their validation on real scans.  Has its own overv
 page linking to each phase.</p>
 <p class="meta">Sub-pages: Phase 1 (characterization), Phase 2a&ndash;2d (axial /
 radial / split-seam / remedies), Phase 3 (implemented remedies on real scans).</p>
+</div>
+
+<div class="entry">
+<a href="sharpness_schedule/">Voxel-cylinder streaks under aggressive regularization</a>
+<p>Why large sharpness/snr_db settings produce fine vertical streaks in laterally
+truncated cone-beam scans, and what actually fixes them.  The arc: reproducing and
+instrumenting the artifact on a real BGA scan and a matched synthetic testbed; a
+pre-registered per-granularity regularization schedule evaluation (negative &mdash;
+every variant made the streaks worse); the mechanism &mdash; the streaks are the
+<em>converged solution's own content</em>, a deposit of the truncation's unexplained
+attenuation whose spatial expression scale tracks the prior's strength; lateral
+padding as the remedy that removes the late-iteration growth; and the second,
+ray-aligned artifact family (beam hardening), instrumented by residual transfer
+curves and reproduced with a calibrated polychromatic testbed.</p>
+<p class="meta">Sub-pages: Phase A (the artifact and the instruments), Phase B (the
+schedule evaluation), the converged-solution mechanism study, and the beam-hardening
+study; the area's own index links them in reading order.</p>
 </div>
 
 <div class="entry">
