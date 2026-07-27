@@ -12,14 +12,9 @@ import time
 import matplotlib.pyplot as plt
 plt.style.use('tableau-colorblind10')
 
-import jax
 import jax.numpy as jnp
-from jax import lax
 
-from scipy import optimize
-
-from mbirjax.hsnt import dehydrate, generate_hyper_data, nnal_factorization
-from plot_utils import plot_images
+from mbirjax.hsnt import dehydrate, generate_hyper_data, nnal_factorization, compare_spectra
 
 
 def main():
@@ -114,29 +109,25 @@ def main():
     theta_mu = np.linalg.lstsq(H_mu.T, material_basis.T)[0].T
 
     # Plot reconstructed spectra
-    plt.rcParams['figure.constrained_layout.use'] = True
-    plt.figure(figsize=(12, 16))
-    plt.suptitle('Material attenuation spectra reconstructions')
-    for i, (spectra, title) in enumerate([
-            (material_basis, 'Ground Truth'),
-            (theta_frob @ H, r'$L^2$ Loss'),
-            (theta_newt @ H_newt, 'Quasi-Newton'),
-            (theta_mu @ H_mu, 'Mann-Multiplicative'),
-        ]):
-        ax = plt.subplot(4, 1, i + 1)
-        ax.plot(spectra[0], label='Ni')
-        ax.plot(spectra[1], label='Cu')
-        ax.plot(spectra[2], label='Al')
-
-        ax.set_title(title)
-        ax.set_xlabel('wavelength index')
-        if i == 0:
-            ax.set_ylabel('attenuation')
-        else:
-            ax.set_yticklabels([])
-        ax.set_ylim(0, 1.1)
-        ax.legend(loc='upper left')
-    plt.savefig('example_1_nonnegative_attenuation_loss_spectra_reconstruction.png')
+    compare_spectra(
+        spectra_groups=[
+            theta_frob @ H,
+            theta_newt @ H_newt,
+            theta_mu @ H_mu,
+        ],
+        ground_truth=material_basis,
+        labels=['Ni', 'Cu', 'Al'],
+        subtitles=[
+            r'L$^2$ Loss',
+            'Quasi-Newton',
+            'Mann-Multiplicative'
+        ],
+        title=f'Material attenuation spectra reconstructions, Dosage: {dosage_rate}',
+        x_label='Wavelength index',
+        y_label='Attenuation',
+        y_lim=(0, 1.1),
+        filename='example_1_nonnegative_attenuation_loss_spectra_reconstruction.png'
+    )
 
     # Plot reconstructed material coefficient maps
     plt.figure(figsize=(12, 16))
