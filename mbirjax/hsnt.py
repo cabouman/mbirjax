@@ -157,13 +157,16 @@ def nnal_factorization(T, method='quasi_newton', num_materials=3, max_steps=1000
     num_pixels = T.shape[0]
     num_batches = int(np.ceil(num_pixels / batch_size))
 
+    # Randomly permute the pixel indices for batching
+    batch_idxs = np.random.permutation(num_pixels)
+
     # Factor a spectra for each batch
     H_list = []
     i_list = []
     for batch in range(num_batches):
         start_idx = batch * batch_size
         end_idx = min((batch + 1) * batch_size, num_pixels)
-        T_batch = T[start_idx:end_idx]
+        T_batch = T[batch_idxs[start_idx:end_idx]]
         _, H_batch, i = optimize(T_batch, **kwargs)
         H_list.append(H_batch)
         i_list.append(i)
@@ -171,7 +174,7 @@ def nnal_factorization(T, method='quasi_newton', num_materials=3, max_steps=1000
 
     # Factor the combined spectra to estimate a single spectra for all batches
     H_combined = jnp.vstack(H_list)
-    _, H, i = optimize(H_combined, **kwargs)
+    _, H, i = nmf(H_combined, n_components=num_materials, max_iter=10000)
     i_total += i
 
     # Compute material coefficients for each batch using the unified spectra
@@ -179,9 +182,9 @@ def nnal_factorization(T, method='quasi_newton', num_materials=3, max_steps=1000
     for batch in range(num_batches):
         start_idx = batch * batch_size
         end_idx = min((batch + 1) * batch_size, num_pixels)
-        T_batch = T[start_idx:end_idx]
+        T_batch = T[batch_idxs[start_idx:end_idx]]
         W_batch, _, i = optimize(T_batch, **kwargs, update_H=False, H_init=H)
-        W = W.at[start_idx:end_idx].set(W_batch)
+        W = W.at[batch_idxs[start_idx:end_idx]].set(W_batch)
         i_total += i
 
     return W, H, i_total
