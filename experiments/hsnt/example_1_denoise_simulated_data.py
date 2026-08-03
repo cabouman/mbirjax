@@ -40,13 +40,15 @@ def main():
     num_materials_true = material_basis.shape[0]
 
     # Generate simulated noisy hyperspectral data and ground truth
-    [noisy_hyper_projection, _, gt_hyper_projection] = generate_hyper_data(material_basis,
+    [noisy_hyper_projection, _, gt_hyper_projection] = generate_hyper_data(
+        material_basis,
                                                                            num_angles=num_angles,
                                                                            detector_rows=detector_rows,
                                                                            detector_columns=detector_columns,
                                                                            dosage_rate=dosage_rate,
                                                                            material_density=material_density,
-                                                                           verbose=verbose)
+        verbose=verbose
+    )
     noisy_hyper_projection = np.nan_to_num(noisy_hyper_projection, nan=0.0, posinf=0.0, neginf=0.0)  # Replace any NaNs or infs with zeros
     T = np.exp(-noisy_hyper_projection).reshape(-1, gt_hyper_projection.shape[-1])
 
@@ -61,6 +63,8 @@ def main():
     material_projection = material_projection.reshape(-1, num_materials_true)
 
     # Perform hyperspectral denoising (dehydrate + rehydrate)
+    print("Performing L2 factorization...")
+    start_time = time.time()
     W, H, _ = dehydrate(noisy_hyper_projection,
                         dataset_type=dataset_type,
                         num_materials=num_materials_fit,
@@ -68,6 +72,7 @@ def main():
                         verbose=verbose)
     W = W.reshape(np.prod(gt_hyper_projection.shape[:-1]), -1)
     H = H.reshape(-1, gt_hyper_projection.shape[-1])
+    print('L2 factorization completed in: ', time.time() - start_time, ' seconds')
 
     ### Refine using nonnegative attenuation loss
 
@@ -81,17 +86,21 @@ def main():
     }
 
     # Perform hyperspectral denoising
-    W_newt, H_newt, i_newt = nnal_factorization(
+    start_time = time.time()
+    W_newt1, H_newt1, i_newt = nnal_factorization(
         T_jax, method='quasi_newton', **kwargs
     )
+    print('Newton reconstruction completed in: ', time.time() - start_time, ' seconds after ', i_newt, ' iterations')
     start_time = time.time()
     W_newt, H_newt, i_newt = nnal_factorization(
         T_jax, method='quasi_newton', **kwargs
     )
     print('Newton reconstruction completed in: ', time.time() - start_time, ' seconds after ', i_newt, ' iterations')
-    W_mu, H_mu, i_mu = nnal_factorization(
+    start_time = time.time()
+    W_mu1, H_mu1, i_mu = nnal_factorization(
         T_jax, method='mann_multiplicative', **kwargs
     )
+    print('Multiplicative reconstruction completed in: ', time.time() - start_time, ' seconds after ', i_mu, ' iterations')
     start_time = time.time()
     W_mu, H_mu, i_mu = nnal_factorization(
         T_jax, method='mann_multiplicative', **kwargs
