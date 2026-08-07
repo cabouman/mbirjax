@@ -160,7 +160,8 @@ def _generate_metal_exponent_list(num_metal, max_order):
     return combinations
 
 
-def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model):
+def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model,
+                                        radial_margin=None, top_margin=None, bottom_margin=None):
     """
     Segment plastic and metal regions from a reconstruction, project them,
     and return the unnormalized sinogram p, m0, m1, ... for beam hardening modeling.
@@ -169,6 +170,8 @@ def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model):
         recon (jnp.ndarray): Reconstructed image.
         num_metal (int): Number of metal types to segment.
         ct_model: Forward projection model with a `.forward_project()` method.
+        radial_margin, top_margin, bottom_margin (int or None, optional): Segmentation mask
+            margins; None (default) = size-relative (see segment_plastic_metal).
 
     Returns:
         plastic_sino_est (jnp.ndarray): Unnormalized plastic sino estimation.
@@ -193,7 +196,8 @@ def _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model):
     # plastic_scale: Scaling factor for the plastic region.
     # metal_scales: List of scaling factors for each metal region.
     plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(
-        recon, num_metal=num_metal, valid_mask=valid_mask, num_real_slices=pl.real_size)
+        recon, num_metal=num_metal, radial_margin=radial_margin, top_margin=top_margin,
+        bottom_margin=bottom_margin, valid_mask=valid_mask, num_real_slices=pl.real_size)
 
     # --- Forward project and scale plastic ---
     # The masks/recon are already sharded, so forward_project consumes them with no further movement.
@@ -298,6 +302,12 @@ def _argmin_3d(x):
     return (view, row, col), per_view_min[view]
 
 
+# Minimum NORMALIZED metal-sinogram value for a pixel to be eligible for a residual-positivity
+# constraint (the metal estimates are normalized to max 1 before the fit, so this is relative).
+# See _find_most_violated_constraints for why near-zero-support pixels must be excluded.
+_METAL_SUPPORT_FLOOR = 1e-3
+
+
 def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_est, theta, H_exponent_list, num_cross_terms, view_mask=None):
     """
     Compute the most violated constraints for the beam hardening model.
@@ -310,6 +320,15 @@ def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_
     the constraints.  When the sinograms are device-form (view-sharded, possibly zero-padded on the view
     axis), ``view_mask`` (1 on real views, 0 on padded, broadcasting over the sinogram) excludes the
     padded views from the argmin so a padded entry is never selected as a constraint.
+
+    The residual argmin is further restricted to pixels where some metal estimate exceeds
+    ``_METAL_SUPPORT_FLOOR``: where every metal estimate is (near) zero the row H_m[i,:] is (near)
+    zero, so no θ can move that residual and the constraint is unactionable -- vacuous when
+    y[i] ≥ 0, and STRUCTURALLY INFEASIBLE when y[i] < 0 (which noisy measured sinograms routinely
+    contain on air rays from log-domain noise).  One such selected pixel makes OSQP declare the
+    whole QP primal infeasible, and its sentinel "solution" used to silently poison theta and
+    collapse the corrected plastic to ~0.  Near-zero rows are almost as bad: the constraint then
+    demands metal-polynomial coefficients of order y/m.
 
     Returns:
         idx_min_Sp (tuple of int): (view, row, col) of the smallest Sp entry (per-axis ints; see
@@ -338,7 +357,15 @@ def _find_most_violated_constraints(measured_sino, plastic_sino_est, metal_sino_
     # value at a real position is the same in the masked and unmasked arrays (the mask only alters
     # padded entries), so no separate read is needed.
     Sp_masked = Sp if view_mask is None else jnp.where(view_mask, Sp, jnp.inf)
-    ymSm_masked = y_minus_Sm if view_mask is None else jnp.where(view_mask, y_minus_Sm, jnp.inf)
+
+    # Residual argmin restricted to the metal support (see the docstring): pixels where every metal
+    # estimate is <= the floor cannot be moved by theta, so they must never become constraints.
+    # Padded views have all-zero metal estimates, so this mask also excludes them -- no separate
+    # view_mask application is needed here.
+    metal_support = jnp.zeros_like(y_minus_Sm, dtype=bool)
+    for metal in metal_sino_est:
+        metal_support = metal_support | (metal > _METAL_SUPPORT_FLOOR)
+    ymSm_masked = jnp.where(metal_support, y_minus_Sm, jnp.inf)
     idx_min_Sp, v_min_Sp = _argmin_3d(Sp_masked)
     idx_min_residual, v_min_residual = _argmin_3d(ymSm_masked)
 
@@ -363,7 +390,8 @@ def _estimate_BH_model_params_using_OSQP(P, q, A, u):
         u (jnp.ndarray): Right-hand side vector for the inequality constraints.
 
     Returns:
-        jnp.ndarray: Solution vector θ.
+        jnp.ndarray or None: Solution vector θ, or ``None`` when the constrained solve fails
+        (a non-solved OSQP status, or a non-finite solution vector).
     """
     # Convert to numpy for linalg.solve and OSQP
     P_numpy = np.asarray(P)
@@ -388,9 +416,17 @@ def _estimate_BH_model_params_using_OSQP(P, q, A, u):
     solver = osqp.OSQP()
     solver.setup(P=P_sparse, q=q_numpy, A=A_sparse, l=None, u=u_numpy, alpha=1.0, verbose=0)
     result = solver.solve()
-    theta = jnp.asarray(result.x, dtype=jnp.float32)
 
-    return theta
+    # OSQP reports failure through the status field, NOT by raising: on an infeasible or unsolved
+    # QP it fills result.x with a no-solution sentinel (2143289344.0 -- the float32-NaN bit pattern
+    # as a value), which is FINITE and would silently poison every downstream use of theta.
+    # Accept only a solved status ('solved' / 'solved inaccurate') with finite values.
+    status = str(result.info.status).strip().lower()
+    theta = np.asarray(result.x, dtype=np.float64)
+    if not status.startswith('solved') or not np.all(np.isfinite(theta)):
+        return None
+
+    return jnp.asarray(theta, dtype=jnp.float32)
 
 def _compute_entry_for_OSQP(plastic_sino_est, metal_sino_est, measured_sino, H_exponent_list, num_cross_terms, alpha, beta):
     """Compute entries for OSQP quadratic programming solver."""
@@ -505,7 +541,11 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
             row_m = _get_row_H(idx_min_residual, plastic_sino_est, metal_sino_est, H_exponent_list)
             # Positive row_m[dp:] to ensure y-Hmθm >= 0
             A_m = jnp.concatenate([jnp.zeros(dp), row_m[dp:]])
-            u_m = jnp.array([measured_sino[idx_min_residual]])
+            # RHS clamped at 0: the metal-only contribution H_m θ_m is a physical (nonnegative)
+            # attenuation, so its tightest meaningful upper bound is max(y, 0).  A raw negative
+            # measurement (log-domain noise) would force the metal polynomial NEGATIVE at this
+            # pixel's metal values -- for small values that means huge negative coefficients.
+            u_m = jnp.array([jnp.maximum(measured_sino[idx_min_residual], 0.0)])
             A = jnp.vstack([A, A_m[None, :]])
             u = jnp.concatenate([u, u_m])
             C_m.append(idx_min_residual)
@@ -513,7 +553,16 @@ def _estimate_BH_model_params(plastic_sino_est, metal_sino_est, measured_sino, H
         # Early exit if both constraints are satisfied (within tolerances)
         if (v_min_Sp >= tolerance) and (v_min_residual >= tolerance):
             break
-        theta = _estimate_BH_model_params_using_OSQP(P, q, A, u)
+        theta_new = _estimate_BH_model_params_using_OSQP(P, q, A, u)
+        if theta_new is None:
+            # Defensive: with the support-restricted constraint selection the QP is feasible by
+            # construction (the two constraint families act on disjoint theta blocks, each
+            # satisfiable), so a solver failure signals numerical trouble.  Keep the last good
+            # theta rather than propagating OSQP's failure sentinel into the correction.
+            warnings.warn("OSQP failed to solve the constrained beam-hardening fit; keeping the "
+                          "parameters from the previous constraint iteration.", RuntimeWarning)
+            break
+        theta = theta_new
     return theta
 
 
@@ -612,7 +661,8 @@ def _estimate_plastic_scaling(plastic_sino_est, metal_sino_est, measured_sino, p
                                                     jnp.where(condition, plastic_sino_corrected, 0.0))
     return plastic_sino_scale
 
-def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, num_constraint_update_iter=10):
+def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, num_constraint_update_iter=10,
+                               radial_margin=None, top_margin=None, bottom_margin=None):
     """
     This function corrects the measured sinogram of an object with plastic and multiple metal components by fitting a
     beam hardening model to the sinogram and removing the metal contributions.
@@ -628,6 +678,8 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
         beta (float, optional): Regularization strength for ridge regression. Defaults to 0.002.
         gamma (float, optional): Stabilization factor. Defaults to 0.1.
         num_constraint_update_iter (int, optional): Number of iterations for updating constraints. Defaults to 10.
+        radial_margin, top_margin, bottom_margin (int or None, optional): Segmentation mask margins;
+            None (default) = size-relative (see segment_plastic_metal).
 
     Returns:
         jnp.ndarray: Beam-hardening corrected sinogram of the same shape as `measured_sino`.
@@ -666,7 +718,9 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
     num_real_pixels = pl.real_size * (measured_sino.size // measured_sino.shape[ax])
 
     # Get normalized sinogram p and [m_0, m_1, ...] (view-sharded; forward_project handles placement).
-    plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos_from_recon(recon, num_metal, ct_model)
+    plastic_sino_est, metal_sino_est = _est_plastic_metal_sinos_from_recon(
+        recon, num_metal, ct_model, radial_margin=radial_margin, top_margin=top_margin,
+        bottom_margin=bottom_margin)
     plastic_sino_scale = jnp.max(jnp.abs(plastic_sino_est))   # max over padded 0s is unaffected
     metal_sino_scale = [jnp.max(jnp.abs(arr)) for arr in metal_sino_est]
     # JAX division does not raise on 0/0 -- an empty (all-zero) plastic or metal estimate would silently
@@ -705,7 +759,8 @@ def correct_sino_plastic_metal(ct_model, measured_sino, recon, num_metal=1, orde
 
 def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constraint_update_iter=10, stop_threshold_change_pct=0.2,
                         num_metal=1, order=3, alpha=1, beta=0.002, gamma=0.1, verbose=0, output_sharded=False,
-                        max_iterations=15, logfile_path='~/.mbirjax/logs/recon.log'):
+                        max_iterations=15, logfile_path='~/.mbirjax/logs/recon.log',
+                        radial_margin=None, top_margin=None, bottom_margin=None):
     """
     Perform iterative metal artifact reduction using plastic-metal beam hardening correction.  If num_metal is 0,
     then this performs a standard MBIR recon.
@@ -735,6 +790,9 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
         max_iterations (int, optional): Maximum MBIR iterations per reconstruction pass. Defaults to 15.
         logfile_path (str, optional): Same as in the TomographyModel.recon() method.  The BH passes'
             logs are merged into this single file, each under a section header.
+        radial_margin, top_margin, bottom_margin (int or None, optional): Segmentation mask margins
+            used when classifying plastic/metal; None (default) = size-relative
+            (see segment_plastic_metal).
 
     Returns:
          numpy or jax array: The final corrected reconstruction after iterative beam hardening
@@ -796,7 +854,8 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
             # Estimate Corrected Sinogram
             if verbose >= 1:
                 print(f"\n************ Correct sino plastic metal {i + 1}  **************")
-            corrected_sinogram = correct_sino_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma, num_constraint_update_iter=num_constraint_update_iter)
+            corrected_sinogram = correct_sino_plastic_metal(ct_model, sino, recon, num_metal=num_metal, order=order, alpha=alpha, beta=beta, gamma=gamma, num_constraint_update_iter=num_constraint_update_iter,
+                                                            radial_margin=radial_margin, top_margin=top_margin, bottom_margin=bottom_margin)
 
             # Reconstruct Corrected Sinogram
             if verbose >= 1:
@@ -808,7 +867,9 @@ def recon_plastic_metal(ct_model, sino, weights, num_BH_iterations=3, num_constr
 
             if verbose >= 2:
                 print(f"\n************ BH Iteration {i + 1}: Display plastic and metal mask **************")
-                plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(recon, num_metal)
+                plastic_mask, metal_masks, plastic_scale, metal_scales = mjp.segment_plastic_metal(
+                    recon, num_metal, radial_margin=radial_margin, top_margin=top_margin,
+                    bottom_margin=bottom_margin)
                 labels = ['Plastic Mask'] + [f'Metal {j + 1} Mask' for j in range(len(metal_masks))]
                 mj.slice_viewer(plastic_mask, *metal_masks, vmin=0, vmax=1.0,
                                 slice_label=labels,

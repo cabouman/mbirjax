@@ -92,7 +92,7 @@ class SliceViewer:
     """
 
     def __init__(self, *datasets, data_dicts=None, title='', vmin=None, vmax=None, slice_label=None,
-                 slice_axis=None, cmap='gray', show_instructions=True):
+                 slice_axis=None, cmap='gray', show_instructions=True, block=True):
         self.datasets = [np.asarray(dataset) for dataset in datasets]  # Convert to numpy arrays to avoid problems with sharded arrays
         self.n_volumes = len(datasets)
         self.title = title
@@ -136,7 +136,7 @@ class SliceViewer:
         self._clear_image_selection()
         self._difference_image_dicts = [None] * self.n_volumes  # Entries:  comparison_index, use_abs, prev_label
         easygui.boxes.global_state.prop_font_line_length = 80
-        self.show()
+        self.show(block=block)
 
     def _clear_image_selection(self):
         self._image_selection_dict = {'selecting_image': False, 'baseline_index': -1}
@@ -1028,18 +1028,27 @@ class SliceViewer:
             self._menu_texts.clear()
             self.fig.canvas.draw_idle()
 
-    def show(self):
-        """Display the viewer window and block execution until the window is closed.
+    def show(self, block=True):
+        """Display the viewer window; block until closed when ``block`` is True.
 
-        Close this figure BY OBJECT after the window closes, so its TkAgg widgets are torn down
-        deterministically.  (Closing by number re-created a blank phantom figure when the window-close
-        event had already removed the real one from matplotlib's registry, leaving the real figure's
-        toolbar widgets un-closed.)  slice_viewer then drops the viewer and runs gc on the main thread,
-        so the toolbar PhotoImages are finalized here rather than later by a background-thread GC --
-        the source of "main thread is not in main loop".
+        Blocking path: close this figure BY OBJECT after the window closes, so its TkAgg widgets
+        are torn down deterministically.  (Closing by number re-created a blank phantom figure when
+        the window-close event had already removed the real one from matplotlib's registry, leaving
+        the real figure's toolbar widgets un-closed.)  slice_viewer then drops the viewer and runs
+        gc on the main thread, so the toolbar PhotoImages are finalized here rather than later by a
+        background-thread GC -- the source of "main thread is not in main loop".
+
+        Nonblocking path (``block=False``): the window is drawn and left open; it becomes fully
+        interactive once a subsequent blocking viewer (or ``plt.show()``) runs the GUI event loop,
+        and that blocking call returns when the user closes ALL open windows.  The caller (see
+        ``slice_viewer``) must keep the viewer object alive, or its widgets stop responding.
         """
-        plt.show()
-        plt.close(self.fig)
+        if block:
+            plt.show()
+            plt.close(self.fig)
+        else:
+            self.fig.show()
+            self.fig.canvas.draw_idle()
 
 
 def _choose_array_name(array_names, shapes, file_path):
@@ -1057,8 +1066,11 @@ def _choose_array_name(array_names, shapes, file_path):
     return choice
 
 
+_NONBLOCKING_VIEWERS = []   # keeps block=False viewers (and their Tk widgets) alive
+
+
 def slice_viewer(*datasets, data_dicts=None, title='', vmin=None, vmax=None, slice_label=None,
-                 slice_axis=None, cmap='gray', show_instructions=True):
+                 slice_axis=None, cmap='gray', show_instructions=True, block=True):
     """
     Launch an interactive viewer for inspecting one or more 2D or 3D image arrays.
 
@@ -1084,9 +1096,13 @@ def slice_viewer(*datasets, data_dicts=None, title='', vmin=None, vmax=None, sli
         slice_axis (int or list of int, optional): Axis along which to slice (0, 1, or 2). Defaults to the last axis (2).
         cmap (str, optional): Colormap to use. Defaults to "gray".
         show_instructions (bool, optional): Whether to display usage instructions in the figure. Defaults to True.
+        block (bool, optional): If True (default), block until the window is closed.  If False, leave
+            the window open and return immediately -- useful for showing, e.g., a sinogram next to a
+            reconstruction.  A nonblocking window becomes fully interactive when the next blocking
+            slice_viewer runs, and that blocking call returns when ALL open windows are closed.
 
     Notes:
-        - This function blocks execution until the viewer window is closed.
+        - With ``block=True`` (default) this function blocks until the viewer window is closed.
         - Right-click an image to access a context menu with options such as axis transposition and file loading.
         - Right-click the intensity slider (if using TkAgg backend) to manually set display range bounds.
         - Press 'h' to show help overlay. Press 'Esc' to clear overlays or reset ROI selections.
@@ -1098,12 +1114,21 @@ def slice_viewer(*datasets, data_dicts=None, title='', vmin=None, vmax=None, sli
     """
     viewer = SliceViewer(*datasets, data_dicts=data_dicts, title=title, vmin=vmin, vmax=vmax,
                          slice_label=slice_label,  slice_axis=slice_axis, cmap=cmap,
-                         show_instructions=show_instructions)
-    # The viewer blocks until its window closes.  Matplotlib's TkAgg backend leaves orphaned tkinter
-    # objects (toolbar icons/variables) that plt.close does not fully release; collect them now, on
-    # the main thread, so a later automatic GC -- e.g. during a sharded recon, whose reference-cycle
-    # arrays trigger gen-2 collection -- does not finalize them with no Tk mainloop running and print
-    # "main thread is not in main loop".  (Interim; a viewer overhaul is planned.)
+                         show_instructions=show_instructions, block=block)
+    if not block:
+        # Keep the viewer (and its Tk widgets) alive; the next BLOCKING call adopts it into the
+        # shared GUI event loop and tears it down after all windows close.
+        _NONBLOCKING_VIEWERS.append(viewer)
+        return
+    # The viewer blocked until every open window (including any earlier nonblocking ones) closed.
+    # Matplotlib's TkAgg backend leaves orphaned tkinter objects (toolbar icons/variables) that
+    # plt.close does not fully release; collect them now, on the main thread, so a later automatic
+    # GC -- e.g. during a sharded recon, whose reference-cycle arrays trigger gen-2 collection --
+    # does not finalize them with no Tk mainloop running and print "main thread is not in main
+    # loop".  (Interim; a viewer overhaul is planned.)
+    for nb in _NONBLOCKING_VIEWERS:
+        plt.close(nb.fig)
+    _NONBLOCKING_VIEWERS.clear()
 
     # Apply del before gc.collect so the viewer↔Tk reference cycle is unreachable and gets finalized here,
     # on the main thread, not by a later GC mid-recon.
