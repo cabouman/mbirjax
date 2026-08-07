@@ -311,7 +311,7 @@ def _otsu_thresholds_dp(hist, num_thresholds):
     return boundaries[::-1]
 
 
-def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bottom_margin=10,
+def segment_plastic_metal(recon, num_metal, radial_margin=None, top_margin=None, bottom_margin=None,
                           valid_mask=None, num_real_slices=None):
     """
     Segment a reconstruction into plastic and multiple metal masks using multi-threshold Otsu.
@@ -326,9 +326,14 @@ def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bot
     Args:
         recon (np.ndarray or jax.Array): Reconstructed volume array (host, single-device, or sharded).
         num_metal (int): Number of metal materials to segment.
-        radial_margin (int, optional): Margin in pixels to subtract from the cylindrical mask radius.
-        top_margin (int, optional): Number of slices to mask out from the top of the volume.
-        bottom_margin (int, optional): Number of slices to mask out from the bottom of the volume.
+        radial_margin (int or None, optional): Margin in pixels to subtract from the cylindrical mask
+            radius.  None (default) uses a size-relative margin, max(2, min(10, min(rows, cols) // 25)):
+            identical to the former fixed 10 for volumes 250 pixels and wider, and proportionally
+            smaller for small volumes (where a fixed 10 would cut real object).
+        top_margin (int or None, optional): Number of slices to mask out from the top of the volume.
+            None (default) uses max(2, min(10, num_slices // 25)) with the same rationale.
+        bottom_margin (int or None, optional): Number of slices to mask out from the bottom.
+            None (default) as for top_margin.
         valid_mask (jax array or None, optional): Broadcastable boolean mask, True on real voxels.
         num_real_slices (int or None, optional): Real slice count (see ``apply_cylindrical_mask``).
 
@@ -341,6 +346,16 @@ def segment_plastic_metal(recon, num_metal, radial_margin=10, top_margin=10, bot
     """
     if num_metal <= 0:
         raise ValueError("num_metal must be positive")
+
+    # Size-relative default margins: the former fixed 10 at production sizes, smaller for small
+    # volumes so the mask never carves off a large fraction of the field of view.
+    num_slices = num_real_slices if num_real_slices is not None else recon.shape[2]
+    if radial_margin is None:
+        radial_margin = max(2, min(10, min(recon.shape[0], recon.shape[1]) // 25))
+    if top_margin is None:
+        top_margin = max(2, min(10, num_slices // 25))
+    if bottom_margin is None:
+        bottom_margin = max(2, min(10, num_slices // 25))
 
     # Remove any flash from the boundary of the recon
     recon = mjp.apply_cylindrical_mask(recon, radial_margin=radial_margin, top_margin=top_margin,
