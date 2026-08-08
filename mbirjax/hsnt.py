@@ -12,8 +12,9 @@ from sklearn.utils.extmath import randomized_svd
 # -----------------------------------------------------------------------
 
 
-def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius', 
-                  max_iter=300, tolerance=1e-10, batch_size=2 ** 27, subspace_basis=None, verbose=1):
+def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius',
+                  max_iter=300, tolerance=1e-10, batch_size=2 ** 27, subspace_basis=None, random_state=None,
+                  verbose=1):
     """
     Denoise a hyperspectral dataset using dehydration and rehydration as described in:
 
@@ -34,6 +35,8 @@ def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_f
         batch_size: Size of data processed per batch. Useful for large datasets to limit memory usage. Defaults to 2^27.
         subspace_basis: Pre-computed subspace basis spectra of shape. If None, the basis spectra are
             estimated directly from the data. Defaults to None.
+        random_state: Random seed for reproducibility of the NMF initialization and batch row sampling. If None,
+            the factors vary from run to run. Defaults to None.
         verbose: Verbosity level. If 0, prints nothing; if 1, prints details; if >1, also generates plots. Defaults to 1.
 
     Returns:
@@ -55,6 +58,7 @@ def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_f
                                 tolerance=tolerance,
                                 batch_size=batch_size,
                                 subspace_basis=subspace_basis,
+                                random_state=random_state,
                                 verbose=verbose)
 
     # --------------------- Rehydrate ----------------------
@@ -63,8 +67,9 @@ def hyper_denoise(data, dataset_type='attenuation', num_materials=None, safety_f
     return denoised_data
 
 
-def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius', 
-              max_iter=300, tolerance=1e-10, batch_size=2 ** 27, subspace_basis=None, verbose=1):
+def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_factor=2, beta_loss='frobenius',
+              max_iter=300, tolerance=1e-10, batch_size=2 ** 27, subspace_basis=None, random_state=None,
+              verbose=1):
     """
     Dehydrate/compress a hyperspectral dataset onto a low-dimensional subspace as described in:
 
@@ -85,6 +90,9 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
         batch_size: Size of data processed per batch. Useful for large datasets to limit memory usage. Defaults to 2^27.
         subspace_basis: Pre-computed subspace basis spectra of shape :math:`(N_s, N_k)`. If None, the basis spectra are
             estimated directly from the data. Defaults to None.
+        random_state: Random seed for reproducibility of the NMF initialization and batch row sampling. The NMF
+            factorization is not unique, so with the default of None the returned factors vary from run to run even
+            though their product is stable; pass an int to make a run reproducible. Defaults to None.
         verbose: Verbosity level. If 0, prints nothing; if 1, prints details; if >1, also generates plots. Defaults to 1.
 
     Returns:
@@ -120,6 +128,7 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
                              max_iter=max_iter,
                              tolerance=tolerance,
                              batch_size=batch_size,
+                             random_state=random_state,
                              verbose=0)
         data[data < epsilon] = epsilon
         data = - np.log(data)  # Convert to attenuation
@@ -149,11 +158,12 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
     elif num_materials is not None:
         subspace_dimension = int(np.ceil(safety_factor * num_materials))
     else:
-        subspace_dimension = _estimate_subspace_dimension(data, safety_factor=safety_factor, verbose=verbose)
+        subspace_dimension = _estimate_subspace_dimension(data, safety_factor=safety_factor,
+                                                          random_state=random_state, verbose=verbose)
 
     # ------- Subspace basis estimation for multi-batch ------
     if subspace_basis is None and num_batches > 1:
-        row_idx = np.random.permutation(num_points)
+        row_idx = np.random.default_rng(random_state).permutation(num_points)
         subspace_basis_batch = [None] * num_batches
 
         # Estimate subspace basis for each batch using NMF
@@ -171,6 +181,7 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
                                                         solver=solver,
                                                         tol=tolerance,
                                                         max_iter=max(50, max_iter // num_batches),
+                                                        random_state=random_state,
                                                         update_H=True)
                 
         # Estimate final subspace basis from batch estimations using NMF
@@ -183,7 +194,8 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
                                        beta_loss=beta_loss,
                                        solver=solver,
                                        tol=tolerance,
-                                       max_iter=max_iter)
+                                       max_iter=max_iter,
+                                       random_state=random_state)
 
     # --------------- Subspace data estimation ---------------
     if num_batches == 1:
@@ -207,6 +219,7 @@ def dehydrate(data, dataset_type='attenuation', num_materials=None, safety_facto
                                                                     solver=solver,
                                                                     tol=tolerance,
                                                                     max_iter=max_iter,
+                                                                    random_state=random_state,
                                                                     update_H=update_basis)
 
     # ------------------ Final formatting -------------------
