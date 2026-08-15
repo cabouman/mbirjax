@@ -30,12 +30,10 @@ const PREVIEW_BIN: usize = 2;
 /// Number of randomly sampled pixel spectra used by the material estimation.
 const ESTIMATE_SAMPLE: usize = 384;
 
-/// ORNL Neutron Imaging team logo (same asset as the other rust
-/// applications) and the MBIRJAX logo (the Purdue library the correction is
-/// a port of), embedded in the binary and shown at the bottom-left of the
-/// window. The MBIRJAX logo has a light- and a dark-background variant;
-/// the one matching the active theme is displayed.
-const IMAGING_LOGO_BYTES: &[u8] = include_bytes!("../logos/ImagingLogo.png");
+/// MBIRJAX logo (the Purdue library that runs the correction), embedded in
+/// the binary and shown at the bottom-left of the window. It has a light-
+/// and a dark-background variant; the one matching the active theme is
+/// displayed.
 const MBIRJAX_LOGO_LIGHT_BYTES: &[u8] = include_bytes!("../logos/mbirjax_logo.png");
 const MBIRJAX_LOGO_DARK_BYTES: &[u8] = include_bytes!("../logos/mbirjax_logo_dark_background.png");
 const LOGO_HEIGHT: f32 = 44.0;
@@ -278,9 +276,9 @@ pub struct DehydrationApp {
     status: String,
     /// The "ℹ mbirjax" About dialog (algorithm provenance and versions).
     show_about: bool,
-    /// (imaging, mbirjax-light-bg, mbirjax-dark-bg) logo textures, loaded on
-    /// the first frame.
-    logo_tex: Option<[Option<TextureHandle>; 3]>,
+    /// (mbirjax-light-bg, mbirjax-dark-bg) logo textures, loaded on the
+    /// first frame.
+    logo_tex: Option<[Option<TextureHandle>; 2]>,
 }
 
 impl Default for DehydrationApp {
@@ -337,14 +335,13 @@ impl DehydrationApp {
         }
     }
 
-    /// The two logos, side by side. The MBIRJAX variant matching the active
-    /// theme is shown: the official transparent PNG (dark text) on light,
-    /// the white-on-black variant on dark.
+    /// The MBIRJAX logo, in the variant matching the active theme: the
+    /// official transparent PNG (dark text) on light, the white-on-black
+    /// variant on dark.
     fn logos_row(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let [imaging, mbirjax_light, mbirjax_dark] = self.logo_tex.get_or_insert_with(|| {
+        let [mbirjax_light, mbirjax_dark] = self.logo_tex.get_or_insert_with(|| {
             [
-                load_logo(&ctx, "imaging_logo", IMAGING_LOGO_BYTES),
                 load_logo(&ctx, "mbirjax_logo_light", MBIRJAX_LOGO_LIGHT_BYTES),
                 load_logo(&ctx, "mbirjax_logo_dark", MBIRJAX_LOGO_DARK_BYTES),
             ]
@@ -354,10 +351,6 @@ impl DehydrationApp {
             egui::Theme::Light => mbirjax_light,
         };
         ui.horizontal(|ui| {
-            if let Some(tex) = imaging {
-                ui.add(egui::Image::from_texture(&*tex).max_height(LOGO_HEIGHT))
-                    .on_hover_text("Neutron Imaging — Oak Ridge National Laboratory");
-            }
             if let Some(tex) = mbirjax {
                 ui.add(egui::Image::from_texture(&*tex).max_height(LOGO_HEIGHT))
                     .on_hover_text("MBIRJAX — Purdue University");
