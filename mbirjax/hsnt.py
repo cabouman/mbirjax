@@ -15,13 +15,14 @@ from jax import numpy as jnp
 # Hyperspectral Neutron Radiographic/Tomographic Data Denoising Functions
 # -----------------------------------------------------------------------
 @jax.jit
-def newton_update(W, H, T, update_H=True):
+def newton_update(W, H, T, lr_init, update_H=True):
     """JAX-optimized Newton update with automatic differentiation and line search.
 
     Args:
         W: Feature matrix (spatial pixels × num_materials), JAX array
         H: Spectral basis matrix (num_materials × spectral channels), JAX array
         T: Data term matrix (spatial pixels × spectral channels), JAX array
+        lr_init: Initial learning rate for line search
         update_H: If False, keep H fixed and only update W.
 
     Returns:
@@ -50,10 +51,11 @@ def newton_update(W, H, T, update_H=True):
     dH = lax.cond(update_H, lambda: grad_H / (d2L_dH2 + 1e-10), lambda: jnp.zeros_like(H))
 
     # Line search over learning rates (vectorized)
-    learning_rates = jnp.logspace(0.33, -1, 5)
+    s = 2  # Scaling factor for learning rates
+    learning_rates = lr_init * jnp.array([1 / s, 1, s])
 
     def line_search_step(carry, lr):
-        W_best, H_best, loss_best, found = carry
+        W_best, H_best, loss_best, lr_best, found = carry
         W_temp = jnp.maximum(W - lr * dW, 1e-10)
         H_temp = lax.cond(update_H, lambda: jnp.maximum(H - lr * dH, 1e-10), lambda: H)
         X_temp = W_temp @ H_temp
@@ -64,22 +66,25 @@ def newton_update(W, H, T, update_H=True):
         W_best = jnp.where(improved, W_temp, W_best)
         H_best = jnp.where(improved, H_temp, H_best)
         loss_best = jnp.where(improved, temp_loss, loss_best)
+        lr_best = jnp.where(improved, lr, lr_best)
         found = found | improved
 
-        return (W_best, H_best, loss_best, found), None
+        return (W_best, H_best, loss_best, lr_best, found), None
 
-    (W_new, H_new, _, _), _ = lax.scan(line_search_step, (W, H, init_loss, False), learning_rates)
+    (W_new, H_new, _, lr_new, _), _ = lax.scan(line_search_step, (W, H, init_loss, lr_init, False), learning_rates)
 
-    return W_new, H_new
+
+    return W_new, H_new, lr_new
 
 @jax.jit
-def multiplicative_update(W, H, T, update_H=True):
+def multiplicative_update(W, H, T, unused, update_H=True):
     """JAX-optimized multiplicative update for non-negative factorization.
 
     Args:
         W: Feature matrix (spatial pixels × num_materials), JAX array
         H: Spectral basis matrix (num_materials × spectral channels), JAX array
         T: Data term matrix (spatial pixels × spectral channels), JAX array
+        unused: Placeholder for auxiliary variables (not used in this implementation)
         update_H: If False, keep H fixed and only update W.
 
     Returns:
@@ -89,12 +94,12 @@ def multiplicative_update(W, H, T, update_H=True):
 
     def update_W_only():
         W_mult = ((Z @ H.T) / (T @ H.T) + 1) / 2
-        return W * W_mult, H
+        return W * W_mult, H, 0.0
 
     def update_both():
         W_mult = ((Z @ H.T) / (T @ H.T) + 1) / 2
         H_mult = ((W.T @ Z) / (W.T @ T) + 1) / 2
-        return W * W_mult, H * H_mult
+        return W * W_mult, H * H_mult, 0.0
 
     return lax.cond(update_H, update_both, update_W_only)
 
@@ -107,18 +112,18 @@ def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, W
     key = jax.random.PRNGKey(129)
 
     def cond(state):
-        _, _, _, i, converged = state
+        _, _, _, i, converged, _ = state
         return (i < max_steps) & (~converged)
 
     def body(state):
-        W, H, prev_loss, i, converged = state
-        W_new, H_new = update(W, H, T, update_H=update_H)
+        W, H, prev_loss, i, converged, aux = state
+        W_new, H_new, aux_new = update(W, H, T, aux, update_H=update_H)
         loss_new = (jnp.exp(-W_new @ H_new) + T * (W_new @ H_new)).sum()
         is_converged = jnp.abs(loss_new - prev_loss) / (prev_loss + 1e-10) < rel_tol
         W_out = jnp.where(converged, W, W_new)
         H_out = jnp.where(converged, H, H_new)
         loss_out = jnp.where(converged, prev_loss, loss_new)
-        return (W_out, H_out, loss_out, i + 1, converged | is_converged)
+        return (W_out, H_out, loss_out, i + 1, converged | is_converged, aux_new)
 
     key1, key2 = jax.random.split(key)
     if W_init is None:
@@ -127,9 +132,9 @@ def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, W
         H_init = jax.random.uniform(key2, shape=(num_materials, num_wavelengths), dtype=jnp.float32)
 
     prev_loss = (jnp.exp(-W_init @ H_init) + T * (W_init @ H_init)).sum()
-    state = (W_init, H_init, prev_loss, 0, False)
+    state = (W_init, H_init, prev_loss, 0, False, 0.2)
     state = lax.while_loop(cond, body, state)
-    W, H, _, i, _ = state
+    W, H, _, i, _, _ = state
 
     return W, H, i
 optimize = jax.jit(optimize_body, static_argnames=['update', 'num_materials', 'max_steps', 'rel_tol', 'update_H'])
