@@ -98,7 +98,7 @@ def multiplicative_update(W, H, T, update_H=True):
 
     return lax.cond(update_H, update_both, update_W_only)
 
-def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, H_init=None):
+def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, W_init=None, H_init=None):
     """Factorize T into W and H by minimizing nonnegative attenuation loss."""
     num_pixels = T.shape[0]
     num_wavelengths = T.shape[1]
@@ -121,6 +121,7 @@ def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, H
         return (W_out, H_out, loss_out, i + 1, converged | is_converged)
 
     key1, key2 = jax.random.split(key)
+    if W_init is None:
     W_init = jax.random.uniform(key1, shape=(num_pixels, num_materials), dtype=jnp.float32)
     if H_init is None:
         H_init = jax.random.uniform(key2, shape=(num_materials, num_wavelengths), dtype=jnp.float32)
@@ -133,7 +134,7 @@ def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, H
     return W, H, i
 optimize = jax.jit(optimize_body, static_argnames=['update', 'num_materials', 'max_steps', 'rel_tol', 'update_H'])
 
-def nnal_factorization(T, method='quasi_newton', num_materials=3, max_steps=1000, rel_tol=1e-8, batch_size=None):
+def nnal_factorization(T, method='quasi_newton', num_materials=3, max_steps=1000, rel_tol=1e-10, batch_size=None, **kwargs):
     if method == 'quasi_newton':
         update = newton_update
     elif method == 'mann_multiplicative':
@@ -141,12 +142,12 @@ def nnal_factorization(T, method='quasi_newton', num_materials=3, max_steps=1000
     else:
         raise ValueError("Invalid method. Choose 'quasi_newton' or 'mann_multiplicative'.")
 
-    kwargs = {
+    kwargs.update({
         'update': update,
         'num_materials': num_materials,
         'max_steps': max_steps,
         'rel_tol': rel_tol
-    }
+    })
 
     if type(T) is not jnp.ndarray:
         T = jnp.asarray(T, dtype=jnp.float32)
