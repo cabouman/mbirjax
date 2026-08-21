@@ -14,6 +14,55 @@ from jax import numpy as jnp
 # -----------------------------------------------------------------------
 # Hyperspectral Neutron Radiographic/Tomographic Data Denoising Functions
 # -----------------------------------------------------------------------
+def stable_nnal(X, T):
+    """
+    Compute a shifted form of the non-negative attentuation loss
+    that is much more numerically stable
+    """
+    positive = T > 0
+    Tsafe = jnp.where(positive, T, 1.0)
+
+    Xp = X + jnp.log(Tsafe)
+
+    positive_loss = T * (jnp.expm1(-Xp) + Xp)
+
+    zero_loss = jnp.exp(-X)
+
+    return jnp.sum(
+        jnp.where(positive, positive_loss, zero_loss)
+    )
+
+
+def stable_nnal_derivatives(X, T):
+    """
+    Given X = W @ H, compute
+
+        G = dL/dX = T - exp(-X)
+        Z = d^2L/dX^2 = exp(-X)
+
+    where L is the non-negative attenuation loss in a
+    numerically stable way that handles T = 0 appropriately.
+    """
+    positive = T > 0
+    Tsafe = jnp.where(positive, T, 1.0)
+
+    Xp = X + jnp.log(Tsafe)
+
+    G = jnp.where(
+        positive,
+        -T * jnp.expm1(-Xp),
+        -jnp.exp(-X),
+    )
+
+    Z = jnp.where(
+        positive,
+        T * jnp.exp(-Xp),
+        jnp.exp(-X),
+    )
+
+    return G, Z
+
+
 @jax.jit
 def newton_update(W, H, T, lr_init, update_H=True):
     """JAX-optimized Newton update with automatic differentiation and line search.
@@ -28,27 +77,20 @@ def newton_update(W, H, T, lr_init, update_H=True):
     Returns:
         Updated (W, H) pair as JAX arrays
     """
-    def loss_fn(W_h_pair):
-        W_, H_ = W_h_pair
-        X = W_ @ H_
-        return (jnp.exp(-X) + T * X).sum()
-
-    # Use JAX's automatic differentiation
-    loss_grad_fn = jax.grad(loss_fn)
-
     X = W @ H
-    Z = jnp.exp(-X)
-    init_loss = (Z + T * X).sum()
+    G, Z = stable_nnal_derivatives(X, T)
+    init_loss = stable_nnal(X, T)
 
-    # Compute gradients via automatic differentiation
-    grad_W, grad_H = loss_grad_fn((W, H))
+    # Compute gradients
+    grad_W = G @ H.T
+    grad_H = W.T @ G
 
     # Compute Hessian diagonal approximation manually (kept explicit for numerical stability)
     d2L_dW2 = Z @ (H.T**2)
     d2L_dH2 = (W.T**2) @ Z
 
-    dW = grad_W / (d2L_dW2 + 1e-10)
-    dH = lax.cond(update_H, lambda: grad_H / (d2L_dH2 + 1e-10), lambda: jnp.zeros_like(H))
+    dW = grad_W / (d2L_dW2 + 1e-30)
+    dH = lax.cond(update_H, lambda: grad_H / (d2L_dH2 + 1e-30), lambda: jnp.zeros_like(H))
 
     # Line search over learning rates (vectorized)
     s = 2  # Scaling factor for learning rates
@@ -56,10 +98,10 @@ def newton_update(W, H, T, lr_init, update_H=True):
 
     def line_search_step(carry, lr):
         W_best, H_best, loss_best, lr_best, found = carry
-        W_temp = jnp.maximum(W - lr * dW, 1e-10)
-        H_temp = lax.cond(update_H, lambda: jnp.maximum(H - lr * dH, 1e-10), lambda: H)
+        W_temp = jnp.maximum(W - lr * dW, 1e-30)
+        H_temp = lax.cond(update_H, lambda: jnp.maximum(H - lr * dH, 1e-30), lambda: H)
         X_temp = W_temp @ H_temp
-        temp_loss = (jnp.exp(-X_temp) + T * X_temp).sum()
+        temp_loss = stable_nnal(X_temp, T)
 
         # Update if loss improved
         improved = temp_loss < loss_best
@@ -118,8 +160,8 @@ def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, W
     def body(state):
         W, H, prev_loss, i, converged, aux = state
         W_new, H_new, aux_new = update(W, H, T, aux, update_H=update_H)
-        loss_new = (jnp.exp(-W_new @ H_new) + T * (W_new @ H_new)).sum()
-        is_converged = jnp.abs(loss_new - prev_loss) / (prev_loss + 1e-10) < rel_tol
+        loss_new = stable_nnal(W_new @ H_new, T)
+        is_converged = jnp.abs(loss_new - prev_loss) / (prev_loss + 1e-30) < rel_tol
         W_out = jnp.where(converged, W, W_new)
         H_out = jnp.where(converged, H, H_new)
         loss_out = jnp.where(converged, prev_loss, loss_new)
@@ -131,7 +173,7 @@ def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, W
     if H_init is None:
         H_init = jax.random.uniform(key2, shape=(num_materials, num_wavelengths), dtype=jnp.float32)
 
-    prev_loss = (jnp.exp(-W_init @ H_init) + T * (W_init @ H_init)).sum()
+    prev_loss = stable_nnal(W_init @ H_init, T)
     state = (W_init, H_init, prev_loss, 0, False, 0.2)
     state = lax.while_loop(cond, body, state)
     W, H, _, i, _, _ = state
@@ -805,7 +847,7 @@ def generate_hyper_data(material_basis, num_angles=1, detector_rows=64, detector
         raise ValueError("material_basis should be non-negative attenuation coefficients.")
 
     # Set variable values
-    epsilon = 1e-8
+    epsilon = 1e-30
     number_of_materials = material_basis.shape[0]
     number_of_wavelengths = material_basis.shape[1]
 
