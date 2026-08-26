@@ -180,8 +180,13 @@ def newton_update(W, H, T, lr_init, update_H=True):
         X_temp = W_temp @ H_temp
         temp_loss = stable_nnal(X_temp, T)
 
-        # Update if loss improved
-        improved = temp_loss < loss_best
+        # Compute Armijo-Goldstein condition for line search
+        directional_derivative = (
+            jnp.sum(grad_W * (W_temp - W))
+            + jnp.sum(grad_H * (H_temp - H))
+        )
+        improved = temp_loss <= loss_best + 1e-4 * directional_derivative
+
         W_best = jnp.where(improved, W_temp, W_best)
         H_best = jnp.where(improved, H_temp, H_best)
         loss_best = jnp.where(improved, temp_loss, loss_best)
