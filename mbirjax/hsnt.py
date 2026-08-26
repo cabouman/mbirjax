@@ -25,7 +25,13 @@ def stable_nnal(X, T):
 
     Xp = X + jnp.log(Tsafe)
 
-    positive_loss = T * (jnp.expm1(-Xp) + Xp)
+    phi = jnp.where(
+        jnp.abs(Xp) < 1e-3,
+        Xp * Xp * (0.5 + Xp * (-1.0 / 6.0 + Xp / 24.0)),
+        jnp.expm1(-Xp) + Xp,
+    )
+
+    positive_loss = T * phi
 
     zero_loss = jnp.exp(-X)
 
@@ -154,12 +160,12 @@ def newton_update(W, H, T, lr_init, update_H=True):
     init_loss = stable_nnal(X, T)
 
     # Compute gradients
-    grad_W = G @ H.T
-    grad_H = W.T @ G
+    grad_W = jnp.matmul(G, H.T, precision=lax.Precision.HIGHEST)
+    grad_H = jnp.matmul(W.T, G, precision=lax.Precision.HIGHEST)
 
     # Compute Hessian diagonal approximation manually (kept explicit for numerical stability)
-    d2L_dW2 = Z @ (H.T**2)
-    d2L_dH2 = (W.T**2) @ Z
+    d2L_dW2 = jnp.matmul(Z, H.T**2, precision=lax.Precision.HIGHEST)
+    d2L_dH2 = jnp.matmul(W.T**2, Z, precision=lax.Precision.HIGHEST)
 
     dW = grad_W / (d2L_dW2 + 1e-30)
     dH = lax.cond(update_H, lambda: grad_H / (d2L_dH2 + 1e-30), lambda: jnp.zeros_like(H))
