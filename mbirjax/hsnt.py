@@ -40,7 +40,7 @@ def stable_nnal(X, T):
     )
 
 
-def stable_nnal_derivatives(X, T):
+def stable_nnal_derivatives(X: jnp.ndarray, T: jnp.ndarray):
     """
     Given X = W @ H, compute
 
@@ -171,8 +171,7 @@ def newton_update(W, H, T, lr_init, update_H=True):
     dH = lax.cond(update_H, lambda: grad_H / (d2L_dH2 + 1e-30), lambda: jnp.zeros_like(H))
 
     # Line search over learning rates (vectorized)
-    s = 2  # Scaling factor for learning rates
-    learning_rates = lr_init * jnp.array([1 / s, 1, s])
+    learning_rates = lr_init * jnp.logspace(-10, 1, num=12, base=2, dtype=T.dtype)
 
     def line_search_step(carry, lr):
         W_best, H_best, loss_best, lr_best, found = carry
@@ -278,7 +277,7 @@ def nnal_factorization(T, method='quasi_newton', num_materials=3, max_steps=1000
     })
 
     if type(T) is not jnp.ndarray:
-        T = jnp.asarray(T, dtype=jnp.float32)
+        T = jnp.asarray(T)
 
     if batch_size is None:
         return optimize(T, **kwargs)
@@ -307,7 +306,7 @@ def nnal_factorization(T, method='quasi_newton', num_materials=3, max_steps=1000
     i_total += i
 
     # Compute material coefficients for each batch using the unified spectra
-    W = jnp.zeros((num_pixels, num_materials), dtype=jnp.float32)
+    W = jnp.zeros((num_pixels, num_materials), dtype=T.dtype)
     for batch in range(num_batches):
         start_idx = batch * batch_size
         end_idx = min((batch + 1) * batch_size, num_pixels)
@@ -939,7 +938,7 @@ def generate_hyper_data(material_basis, num_angles=1, detector_rows=64, detector
     height = detector_rows // 3
     width = detector_columns // 2
     thickness = 20 * np.sqrt((width//2)**2 - np.linspace(-width // 2, width // 2, width)**2)/ width
-    material_projection = np.zeros((num_angles, detector_rows, detector_columns, number_of_materials)).astype(np.float32)
+    material_projection = np.zeros((num_angles, detector_rows, detector_columns, number_of_materials), dtype=material_basis.dtype)
     material_projection[:, :height, width // 2:width + width // 2, 0] = material_density["Ni"] * thickness
     material_projection[:, 2 * height:, width // 2:width + width // 2, 1] = material_density["Cu"] * thickness
     material_projection[:, height:2 * height, width // 2:width + width // 2, 2] = material_density["Al"] * thickness
@@ -948,8 +947,7 @@ def generate_hyper_data(material_basis, num_angles=1, detector_rows=64, detector
     gt_hyper_projection = rehydrate([material_projection, material_basis, 'attenuation'])
 
     # Generate noiseless hyperspectral open beam data using the given dosage rate
-    noiseless_open_beam = dosage_rate * np.ones((detector_rows, detector_columns, number_of_wavelengths)).astype(
-        np.float32)
+    noiseless_open_beam = dosage_rate * np.ones((detector_rows, detector_columns, number_of_wavelengths), dtype=material_basis.dtype)
 
     # Generate noiseless raw hyperspectral neutron counts
     noiseless_object_scan = np.exp(-gt_hyper_projection) * noiseless_open_beam

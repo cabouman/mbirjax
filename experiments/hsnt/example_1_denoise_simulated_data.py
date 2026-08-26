@@ -40,7 +40,7 @@ def main():
     num_materials_true = material_basis.shape[0]
 
     # Generate simulated noisy hyperspectral data and ground truth
-    [noisy_hyper_projection, _, gt_hyper_projection] = generate_hyper_data(
+    [noisy_hyper_projection, _, _] = generate_hyper_data(
         material_basis,
                                                                            num_angles=num_angles,
                                                                            detector_rows=detector_rows,
@@ -56,7 +56,7 @@ def main():
     height = detector_rows // 3
     width = detector_columns // 2
     thickness = 20 * np.sqrt((width//2)**2 - np.linspace(-width // 2, width // 2, width)**2)/ width
-    material_projection = np.zeros((num_angles, detector_rows, detector_columns, num_materials_true)).astype(np.float32)
+    material_projection = np.zeros((num_angles, detector_rows, detector_columns, num_materials_true), dtype=material_basis.dtype)
     material_projection[:, :height, width // 2:width + width // 2, 0] = material_density["Ni"] * thickness
     material_projection[:, 2 * height:, width // 2:width + width // 2, 1] = material_density["Cu"] * thickness
     material_projection[:, height:2 * height, width // 2:width + width // 2, 2] = material_density["Al"] * thickness
@@ -70,8 +70,8 @@ def main():
                         num_materials=num_materials_fit,
                         safety_factor=1,
                         verbose=verbose)
-    W = W.reshape(np.prod(gt_hyper_projection.shape[:-1]), -1)
-    H = H.reshape(-1, gt_hyper_projection.shape[-1])
+    W = W.reshape(np.prod(noisy_hyper_projection.shape[:-1]), -1)
+    H = H.reshape(-1, noisy_hyper_projection.shape[-1])
     print('L2 factorization completed in: ', time.time() - start_time, ' seconds')
 
     ### Refine using nonnegative attenuation loss
