@@ -2,6 +2,7 @@ import numpy as np
 import h5py
 import warnings
 import matplotlib.pyplot as plt
+from functools import partial
 from scipy.ndimage import gaussian_filter1d
 from sklearn.decomposition import non_negative_factorization as nmf
 from sklearn.utils.extmath import randomized_svd
@@ -61,6 +62,77 @@ def stable_nnal_derivatives(X, T):
     )
 
     return G, Z
+
+
+@partial(jax.jit, static_argnames=("n_components",))
+def nndsvda(X, n_components):
+    """NNDSVDA initialization for X ~= W @ H.
+
+    Args:
+        X: Nonnegative array of shape (n_samples, n_features).
+        n_components: Factorization rank.
+
+    Returns:
+        W: Shape (n_samples, n_components).
+        H: Shape (n_components, n_features).
+    """
+    if X.ndim != 2:
+        raise ValueError("X must be two-dimensional.")
+
+    U, singular_values, Vh = jnp.linalg.svd(
+        X,
+        full_matrices=False,
+    )
+
+    n_components = min(
+        n_components,
+        U.shape[1],
+        Vh.shape[0],
+    )
+
+    W = jnp.zeros((X.shape[0], n_components), dtype=X.dtype)
+    H = jnp.zeros((n_components, X.shape[1]), dtype=X.dtype)
+
+    # First singular triplet.
+    scale = jnp.sqrt(singular_values[0])
+    W = W.at[:, 0].set(scale * jnp.abs(U[:, 0]))
+    H = H.at[0, :].set(scale * jnp.abs(Vh[0, :]))
+
+    # Remaining components.
+    for component in range(1, n_components):
+        u = U[:, component]
+        v = Vh[component, :]
+
+        u_pos = jnp.maximum(u, 0)
+        u_neg = jnp.maximum(-u, 0)
+        v_pos = jnp.maximum(v, 0)
+        v_neg = jnp.maximum(-v, 0)
+
+        positive_strength = (
+            jnp.linalg.norm(u_pos) * jnp.linalg.norm(v_pos)
+        )
+        negative_strength = (
+            jnp.linalg.norm(u_neg) * jnp.linalg.norm(v_neg)
+        )
+
+        use_positive = positive_strength > negative_strength
+
+        selected_u = jnp.where(use_positive, u_pos, u_neg)
+        selected_v = jnp.where(use_positive, v_pos, v_neg)
+
+        selected_u /= jnp.linalg.norm(selected_u) + jnp.finfo(X.dtype).eps
+        selected_v /= jnp.linalg.norm(selected_v) + jnp.finfo(X.dtype).eps
+
+        scale = jnp.sqrt(singular_values[component])
+        W = W.at[:, component].set(scale * selected_u)
+        H = H.at[component, :].set(scale * selected_v)
+
+    # NNDSVDA replaces zero entries with the mean of X.
+    fill_value = jnp.mean(X)
+    W = jnp.where(W == 0, fill_value, W)
+    H = jnp.where(H == 0, fill_value, H)
+
+    return W, H
 
 
 @jax.jit
@@ -145,7 +217,8 @@ def multiplicative_update(W, H, T, unused, update_H=True):
 
     return lax.cond(update_H, update_both, update_W_only)
 
-def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, W_init=None, H_init=None):
+@partial(jax.jit, static_argnames=("update", "num_materials", "max_steps", "rel_tol", "update_H"))
+def optimize(T, update, num_materials, max_steps, rel_tol, update_H=True, W_init=None, H_init=None):
     """Factorize T into W and H by minimizing nonnegative attenuation loss."""
     num_pixels = T.shape[0]
     num_wavelengths = T.shape[1]
@@ -168,10 +241,12 @@ def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, W
         return (W_out, H_out, loss_out, i + 1, converged | is_converged, aux_new)
 
     key1, key2 = jax.random.split(key)
-    if W_init is None:
-    W_init = jax.random.uniform(key1, shape=(num_pixels, num_materials), dtype=jnp.float32)
-    if H_init is None:
-        H_init = jax.random.uniform(key2, shape=(num_materials, num_wavelengths), dtype=jnp.float32)
+    if W_init is None and H_init is None:
+        W_init, H_init = nndsvda(T, n_components=num_materials)
+    elif W_init is None:
+        W_init = jnp.linalg.lstsq(H_init.T, T.T)[0].T
+    elif H_init is None:
+        H_init = jnp.linalg.lstsq(W_init, T)[0]
 
     prev_loss = stable_nnal(W_init @ H_init, T)
     state = (W_init, H_init, prev_loss, 0, False, 0.2)
@@ -179,7 +254,6 @@ def optimize_body(T, update, num_materials, max_steps, rel_tol, update_H=True, W
     W, H, _, i, _, _ = state
 
     return W, H, i
-optimize = jax.jit(optimize_body, static_argnames=['update', 'num_materials', 'max_steps', 'rel_tol', 'update_H'])
 
 def nnal_factorization(T, method='quasi_newton', num_materials=3, max_steps=1000, rel_tol=1e-10, batch_size=None, **kwargs):
     if method == 'quasi_newton':
