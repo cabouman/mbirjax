@@ -204,15 +204,16 @@ def multiplicative_update(W, H, T, unused, update_H=True):
     Returns:
         Updated (W, H) pair as JAX arrays
     """
+    damping_factor = 0.5
     Z = jnp.exp(-W @ H)
 
     def update_W_only():
-        W_mult = ((Z @ H.T) / (T @ H.T) + 1) / 2
+        W_mult = ((Z @ H.T) / jnp.maximum(T @ H.T, 1e-30)) ** damping_factor
         return W * W_mult, H, 0.0
 
     def update_both():
-        W_mult = ((Z @ H.T) / (T @ H.T) + 1) / 2
-        H_mult = ((W.T @ Z) / (W.T @ T) + 1) / 2
+        W_mult = ((Z @ H.T) / jnp.maximum(T @ H.T, 1e-30)) ** damping_factor
+        H_mult = ((W.T @ Z) / jnp.maximum(W.T @ T, 1e-30)) ** damping_factor
         return W * W_mult, H * H_mult, 0.0
 
     return lax.cond(update_H, update_both, update_W_only)
