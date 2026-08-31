@@ -62,7 +62,7 @@ def load_data_hdf5(file_path):
         return array, data_dict
 
 
-def save_volume_as_gif(volume, filename, vmin=0, vmax=1):
+def save_volume_as_gif(volume, filename, vmin=0, vmax=1, titles=None, fps=5):
     """
     Save a 3D volume as a GIF, iterating over axis 0 (row-wise).
 
@@ -71,7 +71,30 @@ def save_volume_as_gif(volume, filename, vmin=0, vmax=1):
         filename (str): Output path for the GIF file.
         vmin (float): Min pixel value for display normalization.
         vmax (float): Max pixel value for display normalization.
+        titles (str or sequence of str, optional): Title drawn above each frame.  A single
+            string is formatted with the frame index as ``titles.format(i)``, so
+            ``titles='t={}'`` numbers the frames; a sequence supplies one title per frame.
+            Defaults to None, which draws no title.
+        fps (float, optional): Frames per second in the saved GIF.  Defaults to 5.
+
+    Example:
+        >>> # One x slice of a 4D reconstruction, stepping through time frames.
+        >>> mj.save_volume_as_gif(recon_4d[:, recon_4d.shape[1] // 2], 'recon_4d.gif',
+        ...                       vmax=0.06, titles='t={}')
     """
+    # Resolve the titles before the optional import, so a bad argument is reported the same
+    # way whether or not imageio is installed.
+    num_frames = volume.shape[0]
+    if titles is None:
+        frame_titles = [None] * num_frames
+    elif isinstance(titles, str):
+        frame_titles = [titles.format(i) for i in range(num_frames)]
+    else:
+        frame_titles = list(titles)
+        if len(frame_titles) != num_frames:
+            raise ValueError('titles has {} entries but the volume has {} frames.'.format(
+                len(frame_titles), num_frames))
+
     try:
         import imageio.v2 as imageio
     except ImportError:
@@ -80,11 +103,13 @@ def save_volume_as_gif(volume, filename, vmin=0, vmax=1):
 
     from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
     images = []
-    for i in range(volume.shape[0]):
+    for i in range(num_frames):
         fig, ax = plt.subplots()
         canvas = FigureCanvas(fig)
         ax.imshow(volume[i, :, :].T, cmap='gray', vmin=vmin, vmax=vmax)
         ax.axis('off')
+        if frame_titles[i] is not None:
+            ax.set_title(frame_titles[i])
         # Convert canvas to image using RGBA buffer, then drop alpha channel
         canvas.draw()
         buf = canvas.get_renderer().buffer_rgba()
@@ -93,7 +118,7 @@ def save_volume_as_gif(volume, filename, vmin=0, vmax=1):
         images.append(image)
         plt.close(fig)
 
-    imageio.mimsave(filename, images, fps=5)  # 5 frames per second
+    imageio.mimsave(filename, images, fps=fps)
 
 
 def _write_hdf5_streaming(file_path, array_name, out_shape, dtype, produce_slab, attributes_dict=None):
@@ -1784,6 +1809,107 @@ def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_
     # The sinogram shape changed, so drop recon_shape and let build_model's auto pass recompute it.
     optional.pop('recon_shape', None)
     return build_model(required, optional, regularization)
+
+
+def construct_time_frame_models(model, frames_per_rotation=6, frame_overlap_factor=2.0):
+    """
+    Split a full rotation into overlapping fixed-size time frames and build one model per frame.
+
+    This is the model-only primitive: it needs no data, so it can be used to set up a 4D
+    reconstruction or to forward project a time-varying phantom frame by frame before any
+    sinogram exists.  Use :func:`construct_time_frames` to split a sinogram at the same time.
+
+    The number of views per frame and the stride between frames are derived from the model's
+    angle spacing, so they stay correct under view subsampling.  Trailing views that cannot
+    form a full frame are discarded.
+
+    Args:
+        model (mbirjax.TomographyModel): Fully-built ConeBeamModel or ParallelBeamModel for the
+            full scan.
+        frames_per_rotation (int, optional): Number of time frames per full 360 degree rotation.
+            Defaults to 6 (one frame every 60 degrees).
+        frame_overlap_factor (float, optional): Number of frames that share any given view.  Each
+            frame spans frame_overlap_factor * (360 / frames_per_rotation) degrees.  Defaults to
+            2.0 (each frame spans 120 degrees).
+
+    Returns:
+        (model_frames, view_slices): one model and one view slice per time frame.
+            - model_frames (list of mbirjax.TomographyModel): per-frame models built with
+              :func:`copy_ct_model` on the frame's angles.
+            - view_slices (list of slice): the views of the full sinogram belonging to each frame.
+
+    Raises:
+        ValueError: If the model angles have zero spacing, if the frame parameters give a frame
+            span or stride smaller than one view, or if a frame would be longer than the scan.
+
+    Example:
+        >>> model_frames, view_slices = mj.construct_time_frame_models(ct_model)
+        >>> sino_frames = [sinogram[view_slice] for view_slice in view_slices]
+    """
+    # Internal angular quantities in radians.
+    angle_stride = 2.0 * np.pi / frames_per_rotation
+    angle_span_per_frame = frame_overlap_factor * angle_stride
+
+    required_params, _, _ = model.get_all_params()
+    angles = required_params['angles']
+    num_views = len(angles)
+
+    # Angle step in radians from the model's actual view spacing.
+    angle_step = float(np.median(np.abs(np.diff(angles))))
+    if angle_step <= 0:
+        raise ValueError('Model angles must have nonzero spacing.')
+    views_per_frame = int(round(angle_span_per_frame / angle_step))
+    stride = int(round(angle_stride / angle_step))
+
+    if views_per_frame <= 0:
+        raise ValueError('frame_overlap_factor gives a frame span smaller than one view.')
+    if stride <= 0:
+        raise ValueError('frames_per_rotation gives a stride smaller than one view.')
+    if views_per_frame > num_views:
+        raise ValueError('frame span cannot exceed the full scan.')
+
+    model_frames = []
+    view_slices = []
+    for start in range(0, num_views - views_per_frame + 1, stride):
+        view_slice = slice(start, start + views_per_frame)
+        view_slices.append(view_slice)
+        model_frames.append(copy_ct_model(model, new_angles=angles[view_slice]))
+    return model_frames, view_slices
+
+
+def construct_time_frames(sinogram, model, frames_per_rotation=6, frame_overlap_factor=2.0):
+    """
+    Split a full sinogram into overlapping fixed-size time frames, with one model per frame.
+
+    Frames are defined by :func:`construct_time_frame_models`; this wrapper additionally slices
+    the sinogram.  The sinogram frames are views into ``sinogram``, so no data is copied.
+
+    Args:
+        sinogram (ndarray): Full sinogram, shape (num_views, num_det_rows, num_det_channels).
+        model (mbirjax.TomographyModel): Fully-built ConeBeamModel or ParallelBeamModel for the
+            full scan.
+        frames_per_rotation (int, optional): Number of time frames per full 360 degree rotation.
+            Defaults to 6 (one frame every 60 degrees).
+        frame_overlap_factor (float, optional): Number of frames that share any given view.  Each
+            frame spans frame_overlap_factor * (360 / frames_per_rotation) degrees.  Defaults to
+            2.0 (each frame spans 120 degrees).
+
+    Returns:
+        (sino_frames, model_frames): one sinogram and one model per time frame.
+            - sino_frames (list of ndarray): per-frame sinograms, each a view into ``sinogram``.
+              Trailing views that cannot form a full frame are discarded.
+            - model_frames (list of mbirjax.TomographyModel): per-frame models built with
+              :func:`copy_ct_model`.
+
+    Example:
+        >>> sino_frames, model_frames = mj.construct_time_frames(sinogram, ct_model)
+        >>> recon_frame_0, _ = model_frames[0].recon(sino_frames[0])
+    """
+    model_frames, view_slices = construct_time_frame_models(
+        model, frames_per_rotation=frames_per_rotation,
+        frame_overlap_factor=frame_overlap_factor)
+    sino_frames = [sinogram[view_slice] for view_slice in view_slices]
+    return sino_frames, model_frames
 
 
 def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors, voxel_row_aspect=1.0, voxel_slice_aspect=1.0):

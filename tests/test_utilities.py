@@ -186,5 +186,109 @@ class TestGetAllParamsBuildModel(unittest.TestCase):
             mj.build_model({'geometry_type': 'not-a-class', 'sinogram_shape': (1, 1, 1), 'angles': [0.0]})
 
 
+class TestTimeFrames(unittest.TestCase):
+    """Splitting a rotation into overlapping time frames."""
+
+    NUM_VIEWS = 24          # 24 views over 360 degrees -> 15 degrees per view
+    DET_ROWS = 8
+    DET_COLS = 10
+
+    def setUp(self):
+        angles = np.radians(360.0 / self.NUM_VIEWS) * np.arange(self.NUM_VIEWS)
+        self.model = mj.ConeBeamModel(
+            sinogram_shape=(self.NUM_VIEWS, self.DET_ROWS, self.DET_COLS), angles=angles,
+            source_detector_dist=100.0, source_iso_dist=50.0)
+        self.sinogram = np.arange(
+            self.NUM_VIEWS * self.DET_ROWS * self.DET_COLS, dtype=np.float32).reshape(
+            self.NUM_VIEWS, self.DET_ROWS, self.DET_COLS)
+
+    def test_frame_count_and_views(self):
+        # 120 degree frames advancing 60 degrees: views 0-7, 4-11, 8-15, 12-19, 16-23.
+        print('Testing time frame count and view membership')
+        sino_frames, model_frames = mj.construct_time_frames(
+            self.sinogram, self.model, frames_per_rotation=6, frame_overlap_factor=2.0)
+        self.assertEqual(len(sino_frames), 5)
+        self.assertEqual(len(model_frames), 5)
+        for sino_frame in sino_frames:
+            self.assertEqual(sino_frame.shape, (8, self.DET_ROWS, self.DET_COLS))
+        self.assertTrue(np.array_equal(sino_frames[1], self.sinogram[4:12]))
+
+    def test_frame_angles_match_views(self):
+        print('Testing that each frame model carries the angles of its own views')
+        _, model_frames = mj.construct_time_frames(
+            self.sinogram, self.model, frames_per_rotation=6, frame_overlap_factor=2.0)
+        full_angles = self.model.get_all_params()[0]['angles']
+        frame_angles = model_frames[1].get_all_params()[0]['angles']
+        self.assertTrue(np.allclose(frame_angles, full_angles[4:12]))
+
+    def test_view_slices_agree_with_sino_frames(self):
+        """The wrapper must slice exactly the views the primitive reports."""
+        print('Testing agreement between construct_time_frame_models and construct_time_frames')
+        model_frames, view_slices = mj.construct_time_frame_models(
+            self.model, frames_per_rotation=6, frame_overlap_factor=2.0)
+        sino_frames, wrapper_models = mj.construct_time_frames(
+            self.sinogram, self.model, frames_per_rotation=6, frame_overlap_factor=2.0)
+        self.assertEqual(len(view_slices), len(sino_frames))
+        self.assertEqual(len(model_frames), len(wrapper_models))
+        for view_slice, sino_frame in zip(view_slices, sino_frames):
+            self.assertTrue(np.array_equal(self.sinogram[view_slice], sino_frame))
+
+    def test_sino_frames_are_views_not_copies(self):
+        print('Testing that sinogram frames share memory with the full sinogram')
+        sino_frames, _ = mj.construct_time_frames(self.sinogram, self.model)
+        self.assertTrue(np.shares_memory(sino_frames[0], self.sinogram))
+
+    def test_frames_track_view_subsampling(self):
+        """Half the views at twice the angle step must give the same frames, half the size."""
+        print('Testing that frame size is derived from the model angle spacing')
+        subsampled = mj.copy_ct_model(
+            self.model, new_angles=self.model.get_all_params()[0]['angles'][::2])
+        model_frames, view_slices = mj.construct_time_frame_models(
+            subsampled, frames_per_rotation=6, frame_overlap_factor=2.0)
+        self.assertEqual(len(model_frames), 5)
+        self.assertEqual([s.stop - s.start for s in view_slices], [4] * 5)
+
+    def test_span_too_large_raises(self):
+        print('Testing that a frame longer than the scan raises')
+        with self.assertRaises(ValueError):
+            mj.construct_time_frames(self.sinogram, self.model, frames_per_rotation=6,
+                                     frame_overlap_factor=12.0)
+
+    def test_stride_smaller_than_one_view_raises(self):
+        print('Testing that a sub-view stride raises')
+        with self.assertRaises(ValueError):
+            mj.construct_time_frame_models(self.model, frames_per_rotation=self.NUM_VIEWS * 4)
+
+
+class TestSaveVolumeAsGif(unittest.TestCase):
+    """Titles and frame rate in save_volume_as_gif."""
+
+    def setUp(self):
+        self.volume = np.linspace(0, 1, 3 * 5 * 7, dtype=np.float32).reshape(3, 5, 7)
+
+    def test_gif_written_with_and_without_titles(self):
+        print('Testing save_volume_as_gif with per-frame titles')
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            plain_path = os.path.join(tmp_dir, 'plain.gif')
+            mj.save_volume_as_gif(self.volume, plain_path)
+            self.assertTrue(os.path.isfile(plain_path))
+
+            titled_path = os.path.join(tmp_dir, 'titled.gif')
+            mj.save_volume_as_gif(self.volume, titled_path, vmax=0.5, titles='t={}', fps=10)
+            self.assertTrue(os.path.isfile(titled_path))
+
+            listed_path = os.path.join(tmp_dir, 'listed.gif')
+            mj.save_volume_as_gif(self.volume, listed_path, titles=['a', 'b', 'c'])
+            self.assertTrue(os.path.isfile(listed_path))
+
+    def test_wrong_number_of_titles_raises(self):
+        print('Testing that a title list of the wrong length raises')
+        with self.assertRaises(ValueError):
+            mj.save_volume_as_gif(self.volume, 'unused.gif', titles=['only', 'two'])
+
+
 if __name__ == '__main__':
     unittest.main()
