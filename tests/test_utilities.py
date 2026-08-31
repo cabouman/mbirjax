@@ -260,34 +260,62 @@ class TestTimeFrames(unittest.TestCase):
             mj.construct_time_frame_models(self.model, frames_per_rotation=self.NUM_VIEWS * 4)
 
 
-class TestSaveVolumeAsGif(unittest.TestCase):
-    """Titles and frame rate in save_volume_as_gif."""
+class TestSave4DVolumeAsGif(unittest.TestCase):
+    """The 4D GIF writer: time on axis 0, one fixed spatial slice."""
 
     def setUp(self):
-        self.volume = np.linspace(0, 1, 3 * 5 * 7, dtype=np.float32).reshape(3, 5, 7)
+        # (num_times, nx, ny, nz) = (3, 5, 6, 7), distinct sizes so a wrong axis is visible.
+        self.volume = np.linspace(0, 1, 3 * 5 * 6 * 7, dtype=np.float32).reshape(3, 5, 6, 7)
 
-    def test_gif_written_with_and_without_titles(self):
-        print('Testing save_volume_as_gif with per-frame titles')
+    def _gif_bytes(self, tmp_dir, name, **kwargs):
         import os
+        path = os.path.join(tmp_dir, name)
+        mj.save_4d_volume_as_gif(self.volume, path, **kwargs)
+        self.assertTrue(os.path.isfile(path))
+        return os.path.getsize(path)
+
+    def test_default_and_explicit_slices(self):
+        print('Testing the 4D GIF writer over each spatial slice axis')
         import tempfile
-
         with tempfile.TemporaryDirectory() as tmp_dir:
-            plain_path = os.path.join(tmp_dir, 'plain.gif')
-            mj.save_volume_as_gif(self.volume, plain_path)
-            self.assertTrue(os.path.isfile(plain_path))
+            self._gif_bytes(tmp_dir, 'default.gif')
+            self._gif_bytes(tmp_dir, 'x.gif', slice_axis=1, slice_index=0, vmax=0.5)
+            self._gif_bytes(tmp_dir, 'y.gif', slice_axis=2, titles='t={}')
+            self._gif_bytes(tmp_dir, 'z.gif', slice_axis=3, titles=['a', 'b', 'c'], fps=10)
+            self._gif_bytes(tmp_dir, 'untitled.gif', titles='')
 
-            titled_path = os.path.join(tmp_dir, 'titled.gif')
-            mj.save_volume_as_gif(self.volume, titled_path, vmax=0.5, titles='t={}', fps=10)
-            self.assertTrue(os.path.isfile(titled_path))
+    def test_bad_arguments_raise(self):
+        print('Testing that the 4D GIF writer rejects bad arguments')
+        with self.assertRaises(ValueError):                    # 3D input
+            mj.save_4d_volume_as_gif(self.volume[0], 'unused.gif')
+        with self.assertRaises(ValueError):                    # time is not a display axis
+            mj.save_4d_volume_as_gif(self.volume, 'unused.gif', slice_axis=0)
+        with self.assertRaises(ValueError):                    # past the end of the axis
+            mj.save_4d_volume_as_gif(self.volume, 'unused.gif', slice_axis=1, slice_index=5)
+        with self.assertRaises(ValueError):                    # one title per time frame
+            mj.save_4d_volume_as_gif(self.volume, 'unused.gif', titles=['only', 'two'])
 
-            listed_path = os.path.join(tmp_dir, 'listed.gif')
-            mj.save_volume_as_gif(self.volume, listed_path, titles=['a', 'b', 'c'])
-            self.assertTrue(os.path.isfile(listed_path))
+    def test_slice_selection_actually_changes_the_frames(self):
+        """Different slices must render differently, and the same slice reproducibly."""
+        print('Testing that slice_axis and slice_index select what they claim')
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            titles = ''   # hold the title fixed so only the image content varies
+            first = self._gif_bytes(tmp_dir, 'x0.gif', slice_axis=1, slice_index=0, titles=titles)
+            same = self._gif_bytes(tmp_dir, 'x0_again.gif', slice_axis=1, slice_index=0, titles=titles)
+            other_index = self._gif_bytes(tmp_dir, 'x4.gif', slice_axis=1, slice_index=4, titles=titles)
+            other_axis = self._gif_bytes(tmp_dir, 'z0.gif', slice_axis=3, slice_index=0, titles=titles)
+        self.assertEqual(first, same)
+        self.assertNotEqual(first, other_index)
+        self.assertNotEqual(first, other_axis)
 
-    def test_wrong_number_of_titles_raises(self):
-        print('Testing that a title list of the wrong length raises')
-        with self.assertRaises(ValueError):
-            mj.save_volume_as_gif(self.volume, 'unused.gif', titles=['only', 'two'])
+    def test_negative_slice_index(self):
+        print('Testing that a negative slice index is accepted and named positively')
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            last = self._gif_bytes(tmp_dir, 'last.gif', slice_axis=1, slice_index=-1)
+            same = self._gif_bytes(tmp_dir, 'same.gif', slice_axis=1, slice_index=4)
+        self.assertEqual(last, same)
 
 
 if __name__ == '__main__':
