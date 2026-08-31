@@ -118,6 +118,8 @@ class MACE4DModel(ParameterHandler):
         self.model_list, self.view_slices = mj.construct_time_frame_models(
             ct_model, frames_per_rotation=frames_per_rotation,
             frame_overlap_factor=frame_overlap_factor)
+        if num_frames is not None and num_frames < 1:
+            raise ValueError(f'num_frames must be at least 1; got {num_frames}.')
         if num_frames is not None and num_frames < len(self.model_list):
             self.model_list = self.model_list[:num_frames]
             self.view_slices = self.view_slices[:num_frames]

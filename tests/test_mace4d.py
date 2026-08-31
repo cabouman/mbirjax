@@ -190,6 +190,12 @@ class TestConstruction(unittest.TestCase):
         self.assertEqual(len(mace.model_list), 3)
         self.assertEqual(mace.view_slices, [slice(0, 8), slice(4, 12), slice(8, 16)])
 
+    def test_num_frames_below_one_raises(self):
+        """Zero frames would otherwise fail later, on an empty model list."""
+        print('Testing that num_frames below one is rejected at construction')
+        with self.assertRaises(ValueError):
+            mj.MACE4DModel(self.ct_model, num_frames=0)
+
     def test_num_frames_above_the_total_uses_all(self):
         print('Testing that an oversized num_frames uses every frame')
         self.assertEqual(mj.MACE4DModel(self.ct_model, num_frames=99).nt, 5)
