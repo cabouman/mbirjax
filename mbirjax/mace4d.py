@@ -32,7 +32,7 @@ from mbirjax import ParameterHandler
 from mbirjax._device_setup import cpu_devices, default_devices, gpu_devices
 
 MACE4DParamNames = mj.ParamNames | Literal['mace_prior_weight', 'rho_mann', 'prox_num_iterations',
-                                           'prox_stop_threshold', 'dejitter']
+                                           'prox_stop_threshold', 'dejitter', 'dejitter_verbose']
 
 # Only the model and its parameter-name type are public; everything else in this module is an
 # implementation detail, so `from .mace4d import *` does not add scipy/typing names to mbirjax.
@@ -91,8 +91,8 @@ class MACE4DModel(ParameterHandler):
     decomposition for the lifetime of the object and are not settable with
     :meth:`~mbirjax.ParameterHandler.set_params`.  Changing them means building a new model.
     The reconstruction parameters (``mace_prior_weight``, ``rho_mann``, ``prox_num_iterations``,
-    ``prox_stop_threshold``, ``sigma_prox``, ``dejitter``, ``verbose``) are ordinary parameters
-    set with :meth:`~mbirjax.ParameterHandler.set_params`.
+    ``prox_stop_threshold``, ``sigma_prox``, ``dejitter``, ``dejitter_verbose``, ``verbose``)
+    are ordinary parameters set with :meth:`~mbirjax.ParameterHandler.set_params`.
 
     Attributes:
         model_list (list of mbirjax.TomographyModel): One model per time frame.
@@ -137,7 +137,7 @@ class MACE4DModel(ParameterHandler):
         # ones the base class already knows (sigma_prox, verbose) keep their existing defaults.
         self.set_params(no_warning=True, mace_prior_weight=0.5, rho_mann=0.5,
                         prox_num_iterations=3, prox_stop_threshold=0.02, dejitter=True,
-                        sigma_prox=None)
+                        dejitter_verbose=0, sigma_prox=None)
 
         # Device layout: unset until configure_devices is called, resolved on first use.
         self._devices = None
@@ -731,7 +731,7 @@ def _dejitter_4d_dct(
     band_width=1,
     dtype=np.float32,
     chunk_size=None,
-    verbose=True,
+    verbose=False,
 ):
     """Remove periodic temporal jitter from a 4D reconstruction via DCT-I filtering.
 
@@ -751,7 +751,7 @@ def _dejitter_4d_dct(
         dtype (np.dtype): Working dtype (float32 reduces memory).
         chunk_size (int or None): Process the last spatial axis in chunks of this size
             to reduce peak memory. None processes the whole axis in one pass.
-        verbose (bool): Print the modes being zeroed.
+        verbose (bool): Print the modes being zeroed. Defaults to False.
 
     Returns:
         ndarray: Dejittered volume, same shape as recon_4d.

@@ -1939,12 +1939,23 @@ def construct_time_frame_models(model, frames_per_rotation=6, frame_overlap_fact
     if views_per_frame > num_views:
         raise ValueError('frame span cannot exceed the full scan.')
 
+    # Each copy re-derives the recon geometry, which reports the axial padding at verbose >= 1.
+    # Only the angles differ between frames, so that report is identical every time; print it
+    # once for the first frame and build the rest quietly rather than repeating it nt times.
+    # The source model's verbosity is restored before returning, and each frame gets it too.
+    verbose = model.get_params('verbose')
     model_frames = []
     view_slices = []
-    for start in range(0, num_views - views_per_frame + 1, stride):
-        view_slice = slice(start, start + views_per_frame)
-        view_slices.append(view_slice)
-        model_frames.append(copy_ct_model(model, new_angles=angles[view_slice]))
+    try:
+        for start in range(0, num_views - views_per_frame + 1, stride):
+            view_slice = slice(start, start + views_per_frame)
+            view_slices.append(view_slice)
+            frame = copy_ct_model(model, new_angles=angles[view_slice])
+            model.set_params(no_warning=True, verbose=0)
+            frame.set_params(no_warning=True, verbose=verbose)
+            model_frames.append(frame)
+    finally:
+        model.set_params(no_warning=True, verbose=verbose)
     return model_frames, view_slices
 
 
