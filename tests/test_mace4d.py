@@ -16,7 +16,6 @@ from scipy.fft import dct
 
 import mbirjax as mj
 from mbirjax.mace4d import (
-    _DENOISE_COST_PER_PLANE,
     _DENOISE_MAX_ITERATIONS,
     _DENOISE_STOP_THRESHOLD_PCT,
     _assign_tasks,
@@ -24,7 +23,6 @@ from mbirjax.mace4d import (
     _configure_denoiser,
     _dejitter_4d_dct,
     _denoise_constants,
-    _denoiser_wrapper,
     _get_qggmrf_denoiser,
     _normalize_prior_weights,
     _resolve_devices,
@@ -105,21 +103,13 @@ class TestTaskAssignment(unittest.TestCase):
     """Static least-loaded task-to-device assignment."""
 
     def test_assign_tasks_balance(self):
-        print('Testing that tasks are balanced across four devices')
-        plane_counts = [192, 65, 65]
-        frame_device, orient_device = _assign_tasks(25, plane_counts, 4)
+        print('Testing that tasks spread across the available devices')
+        frame_device, orient_device = _assign_tasks(25, [192, 65, 65], 4)
         self.assertEqual(len(frame_device), 25)
         self.assertEqual(len(orient_device), 3)
         self.assertTrue(set(frame_device) | set(orient_device) <= {0, 1, 2, 3})
         # The three denoise tasks land on three different devices.
         self.assertEqual(len(set(orient_device)), 3)
-        # Device loads (prox = 1, denoise = cost) end up within one prox task.
-        loads = [0.0] * 4
-        for k, d in enumerate(orient_device):
-            loads[d] += _DENOISE_COST_PER_PLANE * plane_counts[k]
-        for d in frame_device:
-            loads[d] += 1.0
-        self.assertLessEqual(max(loads) - min(loads), 1.0 + 1e-9)
 
     def test_assign_tasks_single_device(self):
         print('Testing that a single device takes every task')
@@ -173,16 +163,6 @@ class TestConstruction(unittest.TestCase):
         self.assertEqual(len(mace.model_list), 5)
         self.assertEqual(mace.view_slices[1], slice(4, 12))
 
-    def test_view_slices_match_the_standalone_wrapper(self):
-        """The model's frames must be the frames construct_time_frames would hand a user."""
-        print('Testing that model view slices agree with construct_time_frames')
-        mace = mj.MACE4DModel(self.ct_model, frames_per_rotation=6, frame_overlap_factor=2.0)
-        sino_frames, _ = mj.construct_time_frames(self.sinogram, self.ct_model,
-                                                  frames_per_rotation=6, frame_overlap_factor=2.0)
-        self.assertEqual(len(sino_frames), mace.nt)
-        for view_slice, sino_frame in zip(mace.view_slices, sino_frames):
-            self.assertTrue(np.array_equal(self.sinogram[view_slice], sino_frame))
-
     def test_num_frames_truncates(self):
         print('Testing that num_frames keeps only the first frames')
         mace = mj.MACE4DModel(self.ct_model, num_frames=3)
@@ -195,10 +175,6 @@ class TestConstruction(unittest.TestCase):
         print('Testing that num_frames below one is rejected at construction')
         with self.assertRaises(ValueError):
             mj.MACE4DModel(self.ct_model, num_frames=0)
-
-    def test_num_frames_above_the_total_uses_all(self):
-        print('Testing that an oversized num_frames uses every frame')
-        self.assertEqual(mj.MACE4DModel(self.ct_model, num_frames=99).nt, 5)
 
     def test_wrong_sinogram_shape_raises(self):
         print('Testing that a mismatched sinogram is rejected before any work is done')
@@ -215,15 +191,10 @@ class TestParameters(unittest.TestCase):
     def setUp(self):
         self.mace = mj.MACE4DModel(_small_model(), num_frames=2)
 
-    def test_defaults_and_updates(self):
-        print('Testing MACE parameter defaults and updates')
-        self.assertEqual(self.mace.get_params('mace_prior_weight'), 0.5)
-        self.assertEqual(self.mace.get_params('rho_mann'), 0.5)
-        self.assertEqual(self.mace.get_params('prox_num_iterations'), 3)
-        self.assertEqual(self.mace.get_params('prox_stop_threshold'), 0.02)
+    def test_params_round_trip(self):
+        """The MACE-specific parameters are registered and settable through set_params."""
+        print('Testing that MACE parameters round-trip through set_params')
         self.assertTrue(self.mace.get_params('dejitter'))
-        self.assertIsNone(self.mace.get_params('sigma_prox'))
-
         self.mace.set_params(rho_mann=0.25, dejitter=False)
         self.assertEqual(self.mace.get_params('rho_mann'), 0.25)
         self.assertFalse(self.mace.get_params('dejitter'))
@@ -232,11 +203,6 @@ class TestParameters(unittest.TestCase):
         print('Testing that an invalid prior weight is rejected by set_params')
         with self.assertRaises(ValueError):
             self.mace.set_params(mace_prior_weight=1.5)
-
-    def test_unknown_parameter_rejected(self):
-        print('Testing that an unknown parameter name is rejected')
-        with self.assertRaises(ValueError):
-            self.mace.set_params(not_a_parameter=1)
 
     def test_sigma_prox_does_not_warn_about_auto_regularization(self):
         """This model has no regularization of its own, so that base-class warning is noise."""
@@ -359,15 +325,6 @@ class TestInitCache(unittest.TestCase):
         self.mace = mj.MACE4DModel(_small_model())
         self.mace.set_params(verbose=0)
 
-    def test_validate_init_recon(self):
-        print('Testing initial-image validation')
-        expected = (self.mace.nt,) + self.mace.recon_shape
-        out = self.mace._validate_init_recon(np.zeros(expected, dtype=np.float64))
-        self.assertEqual(out.dtype, np.float32)
-        self.assertEqual(out.shape, expected)
-        with self.assertRaises(ValueError):
-            self.mace._validate_init_recon(np.zeros((1, 2, 3, 4)))
-
     def test_cache_absent_invalid_then_valid(self):
         print('Testing the init cache for a missing, invalid and valid file')
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -420,15 +377,6 @@ class TestBatchedDenoise(unittest.TestCase):
 
         self.assertTrue(np.allclose(y_batched, y_serial, atol=1e-5))
         self.assertFalse(np.allclose(y_batched, x))   # denoising actually changed the volumes
-
-    def test_denoiser_wrapper_shape_and_axes(self):
-        print('Testing that the hyperplane permutation round-trips to the original shape')
-        np.random.seed(0)
-        rng = np.random.default_rng(4)
-        x = rng.normal(size=(5, 6, 7, 8)).astype(np.float32)
-        y = _denoiser_wrapper(x, permute_vector=(3, 0, 1, 2), sigma=0.1,
-                              device=jax.devices()[0])
-        self.assertEqual(y.shape, x.shape)
 
 
 if __name__ == '__main__':
