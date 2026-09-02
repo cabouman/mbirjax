@@ -89,7 +89,7 @@ class TestTaskAssignment(unittest.TestCase):
 
 
 class TestDeviceResolution(unittest.TestCase):
-    """configure_devices argument forms."""
+    """set_device_pool argument forms."""
 
     def test_resolve_none_int_and_list(self):
         print('Testing device resolution for None, int and explicit device list')
@@ -110,11 +110,11 @@ class TestDeviceResolution(unittest.TestCase):
         with self.assertRaises(ValueError):
             _resolve_devices('tpu')
 
-    def test_configure_devices_pins_the_choice(self):
-        print('Testing that configure_devices pins the device list on the model')
+    def test_set_device_pool_pins_the_choice(self):
+        print('Testing that set_device_pool pins the device pool on the model')
         mace = mj.MACE4DModel(_small_model())
         self.assertEqual(len(mace.devices), len(_resolve_devices(None)))   # automatic by default
-        mace.configure_devices(1)
+        mace.set_device_pool(1)
         self.assertEqual(len(mace.devices), 1)
 
 
@@ -173,7 +173,7 @@ class TestReconEndToEnd(unittest.TestCase):
         # temporal spectrum of this tiny test problem.
         self.mace = mj.MACE4DModel(self.ct_model, num_frames=3)
         self.mace.set_params(dejitter=False, verbose=0)
-        self.mace.configure_devices(1)
+        self.mace.set_device_pool(1)
 
     def test_recon_and_logs(self):
         print('Testing an end-to-end serial reconstruction with logging')
@@ -228,7 +228,7 @@ class TestReconMultiDevice(unittest.TestCase):
         np.random.seed(0)
         mace = mj.MACE4DModel(_small_model(), num_frames=4)
         mace.set_params(dejitter=False, verbose=0)
-        mace.configure_devices(devices)
+        mace.set_device_pool(devices)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             log_dir = os.path.join(tmp_dir, 'logs')

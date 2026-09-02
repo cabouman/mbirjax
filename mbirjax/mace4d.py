@@ -139,7 +139,7 @@ class MACE4DModel(ParameterHandler):
                         prox_num_iterations=3, prox_stop_threshold=0.02, dejitter=True,
                         dejitter_verbose=0, sigma_prox=None)
 
-        # Device layout: unset until configure_devices is called, resolved on first use.
+        # Device pool: unset until set_device_pool is called, resolved on first use.
         self._devices = None
         self._recon_token = 0
 
@@ -180,18 +180,23 @@ class MACE4DModel(ParameterHandler):
                                                       **kwargs))
         return recompile_flag
 
-    def configure_devices(self, devices=None):
+    def set_device_pool(self, devices=None):
         """
-        Configure which devices the reconstruction runs on.
+        Set the pool of devices that the reconstruction tasks are dispatched to.
 
         Every task -- one ``prox_map`` per time frame and one batched denoise per prior
-        orientation -- is pinned to a single device, and one worker thread per device executes
-        the tasks assigned to it.  A single device runs all tasks inline with no threads.
+        orientation -- is pinned to a single device from the pool, and one worker thread per
+        device executes the tasks assigned to it.  A single device runs all tasks inline with no
+        threads.  This only stores the pool; it takes effect at the next :meth:`recon` call.
+
+        ``devices`` accepts the same forms as ``TomographyModel.configure_devices``, but the
+        mechanism differs: that method shards one array across devices, this one hands whole
+        tasks to them.
 
           * ``None`` -- automatic: all visible GPUs, or the CPU when there is no GPU.  Never
-            calling this method is equivalent to ``configure_devices(None)``.
+            calling this method is equivalent to ``set_device_pool(None)``.
           * ``'cpu'`` / ``'gpu'`` -- all devices of that platform.
-          * ``int n`` -- the first ``n`` devices of the default platform.  ``configure_devices(1)``
+          * ``int n`` -- the first ``n`` devices of the default platform.  ``set_device_pool(1)``
             forces the serial path.
           * ``sequence of ints`` -- those indices into the default device list.
           * ``sequence of jax devices`` -- exactly those devices.
@@ -207,7 +212,7 @@ class MACE4DModel(ParameterHandler):
 
     @property
     def devices(self):
-        """The devices this model runs on: those configured, else the automatic selection."""
+        """The device pool this model runs on: the one set, else the automatic selection."""
         return self._devices if self._devices is not None else _resolve_devices(None)
 
     # ------------------------------------------------------------------
@@ -654,7 +659,7 @@ _THREAD_LOCAL = threading.local()
 # ---------------------------------------------------------------------------
 
 def _resolve_devices(devices):
-    """Return the list of jax devices to use; see MACE4DModel.configure_devices."""
+    """Return the list of jax devices to use; see MACE4DModel.set_device_pool."""
     if devices is None:
         # Automatic: every GPU, or a single CPU device when there is no GPU.  (Unlike a sharded
         # recon, this model runs one independent task per device, so spreading over the virtual
@@ -667,10 +672,10 @@ def _resolve_devices(devices):
         if platform == 'gpu':
             pool = list(gpu_devices())
             if not pool:
-                raise ValueError("configure_devices('gpu') was requested but no GPU backend "
+                raise ValueError("set_device_pool('gpu') was requested but no GPU backend "
                                  "is available.")
             return pool
-        raise ValueError("configure_devices platform string must be 'cpu' or 'gpu'; "
+        raise ValueError("set_device_pool platform string must be 'cpu' or 'gpu'; "
                          "got {!r}.".format(devices))
     if isinstance(devices, (int, np.integer)):
         pool = default_devices()
