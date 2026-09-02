@@ -62,134 +62,95 @@ def load_data_hdf5(file_path):
         return array, data_dict
 
 
-def save_volume_as_gif(volume, filename, vmin=0, vmax=1):
+def save_volume_as_gif(volume, filename, vmin=None, vmax=None, fps=5):
     """
-    Save a 3D volume as a GIF, iterating over axis 0 (row-wise).
+    Save a 3D or 4D volume as an animated GIF, stepping over axis 0.
+
+    A 3D volume of shape (nx, ny, nz) becomes a movie of its YZ planes, one per x.  A 4D volume
+    of shape (num_times, nx, ny, nz) plays over time instead, holding x fixed at the middle of the
+    volume, and titles each frame with the slice and time index.
+
+    Either way a frame shows the two remaining axes in increasing order, the lower one vertical,
+    which is how :func:`mbirjax.viewer.slice_viewer` lays out the same plane.
 
     Args:
-        volume (np.ndarray): 3D array to save as a movie.
+        volume (np.ndarray): 3D array (nx, ny, nz) or 4D array (num_times, nx, ny, nz).
         filename (str): Output path for the GIF file.
-        vmin (float): Min pixel value for display normalization.
-        vmax (float): Max pixel value for display normalization.
-    """
-    try:
-        import imageio.v2 as imageio
-    except ImportError:
-        print("The 'imageio' package is not installed. Please install it using:\n    pip install imageio")
-        return
-
-    from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-    images = []
-    for i in range(volume.shape[0]):
-        fig, ax = plt.subplots()
-        canvas = FigureCanvas(fig)
-        ax.imshow(volume[i, :, :].T, cmap='gray', vmin=vmin, vmax=vmax)
-        ax.axis('off')
-        # Convert canvas to image using RGBA buffer, then drop alpha channel
-        canvas.draw()
-        buf = canvas.get_renderer().buffer_rgba()
-        image = np.frombuffer(buf, dtype=np.uint8).reshape(canvas.get_width_height()[::-1] + (4,))
-        image = image[..., :3]  # Drop alpha channel
-        images.append(image)
-        plt.close(fig)
-
-    imageio.mimsave(filename, images, fps=5)  # 5 frames per second
-
-
-def save_4d_volume_as_gif(volume, filename, slice_axis=1, slice_index=None, vmin=0, vmax=1,
-                          titles=None, fps=5):
-    """
-    Save one spatial slice of a 4D volume as a GIF stepping through time.
-
-    A 4D volume has shape (num_times, nx, ny, nz), so time is always axis 0 and the movie always
-    plays over it.  What varies is which spatial plane is shown: ``slice_axis`` picks the spatial
-    axis to hold fixed and ``slice_index`` picks the position along it.  The default shows the
-    middle x slice, that is the YZ plane through the center of the volume.
-
-    This is deliberately separate from :func:`save_volume_as_gif`, which iterates over axis 0 of a
-    3D volume -- a spatial axis, shown transposed.  Here axis 0 means time and is never a display
-    axis, and the image is shown in its natural orientation, so the two have different meanings
-    for the same array and should not be conflated.
-
-    Args:
-        volume (np.ndarray): 4D array of shape (num_times, nx, ny, nz).
-        filename (str): Output path for the GIF file.
-        slice_axis (int, optional): Spatial axis to slice: 1, 2 or 3 for x, y or z.  Defaults to
-            1, giving the YZ plane.
-        slice_index (int, optional): Position along ``slice_axis``.  Defaults to None, the middle
-            of that axis.
-        vmin (float): Min pixel value for display normalization.
-        vmax (float): Max pixel value for display normalization.
-        titles (str or sequence of str, optional): Title drawn above each frame.  Defaults to
-            None, which names the fixed slice and numbers the time frame.  A single string is
-            formatted with the frame index as ``titles.format(t)``; a sequence supplies one title
-            per time frame; ``''`` draws no title.
+        vmin (float, optional): Min pixel value for display normalization.  Defaults to None, the
+            minimum over the frames shown.  The window is computed once for the whole movie, not
+            per frame, so intensity changes from frame to frame remain visible.
+        vmax (float, optional): Max pixel value for display normalization.  Defaults to None, the
+            maximum over the frames shown.
         fps (float, optional): Frames per second in the saved GIF.  Defaults to 5.
 
     Raises:
-        ValueError: If ``volume`` is not 4D, ``slice_axis`` is not 1, 2 or 3, ``slice_index`` is
-            out of range, or a title sequence does not have one entry per time frame.
+        ValueError: If ``volume`` is not 3D or 4D, or ``fps`` is not positive.
 
     Example:
-        >>> # The middle x slice of a 4D reconstruction, playing over time.
-        >>> mj.save_4d_volume_as_gif(recon_4d, 'recon_4d.gif', vmax=0.06)
-        >>> # A specific z slice instead, one frame every 200 ms.
-        >>> mj.save_4d_volume_as_gif(recon_4d, 'recon_4d_z.gif', slice_axis=3, slice_index=40, fps=5)
+        >>> # A 3D reconstruction, scaled to its own data range.
+        >>> mj.save_volume_as_gif(recon, 'recon.gif')
+        >>> # A 4D reconstruction: the middle x slice, playing over time.
+        >>> mj.save_volume_as_gif(recon_4d, 'recon_4d.gif', vmax=0.06)
     """
     volume = np.asarray(volume)
-    if volume.ndim != 4:
-        raise ValueError('volume must be 4D with shape (num_times, nx, ny, nz); '
+    if volume.ndim not in (3, 4):
+        raise ValueError('volume must be 3D (nx, ny, nz) or 4D (num_times, nx, ny, nz); '
                          'got shape {}.'.format(volume.shape))
-    if slice_axis not in (1, 2, 3):
-        raise ValueError('slice_axis must be 1, 2 or 3 (x, y or z); axis 0 is time and is always '
-                         'the movie axis.  Got {}.'.format(slice_axis))
+    if fps <= 0:
+        raise ValueError('fps must be positive; got {}.'.format(fps))
 
-    num_times = volume.shape[0]
-    axis_length = volume.shape[slice_axis]
-    if slice_index is None:
-        slice_index = axis_length // 2
-    if not -axis_length <= slice_index < axis_length:
-        raise ValueError('slice_index {} is out of range for axis {} of length {}.'.format(
-            slice_index, slice_axis, axis_length))
-
-    if titles is None:
-        axis_name = {1: 'x', 2: 'y', 3: 'z'}[slice_axis]
-        frame_titles = ['{} slice = {}, t = {}'.format(axis_name, slice_index % axis_length, t)
-                        for t in range(num_times)]
-    elif isinstance(titles, str):
-        frame_titles = [titles.format(t) for t in range(num_times)]
+    if volume.ndim == 3:
+        frames, titles = volume, None
     else:
-        frame_titles = list(titles)
-        if len(frame_titles) != num_times:
-            raise ValueError('titles has {} entries but the volume has {} time frames.'.format(
-                len(frame_titles), num_times))
+        # Axis 0 is time, so the movie plays over it and one spatial axis has to be fixed to leave
+        # a 2D image.  Hold x at the middle of the volume; a 2D slice per frame, so the full
+        # volume is never copied.
+        slice_index = volume.shape[1] // 2
+        frames = volume[:, slice_index]
+        titles = ['x slice = {}, t = {}'.format(slice_index, t) for t in range(len(frames))]
 
-    try:
-        import imageio.v2 as imageio
-    except ImportError:
-        print("The 'imageio' package is not installed. Please install it using:\n    pip install imageio")
-        return
+    if vmin is None or vmax is None:
+        # Scale to the frames actually shown, so a slice that is never displayed cannot consume
+        # the dynamic range.
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN frames warn; handled below
+            data_min, data_max = float(np.nanmin(frames)), float(np.nanmax(frames))
+        if not (np.isfinite(data_min) and np.isfinite(data_max)):
+            data_min, data_max = 0.0, 1.0  # nothing finite to scale to; fall back to a unit window
+        vmin = data_min if vmin is None else vmin
+        vmax = data_max if vmax is None else vmax
+    if vmin == vmax:
+        # A constant volume gives imshow a zero-width window.  Widen it as slice_viewer does.
+        scale = max(1e-6 * abs(vmax), 1e-6)
+        vmin, vmax = vmin - scale, vmax + scale
 
+    # imageio is a required dependency, so a missing one should raise here rather than be caught
+    # and turned into a run that completes normally and silently writes no file.
+    import imageio.v2 as imageio
     from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-    # One small 2D image per time frame; the full volume is never copied.
-    planes = np.take(volume, slice_index, axis=slice_axis)
+
+    # One figure for the whole movie: cheaper than rebuilding it per frame, and it guarantees
+    # every frame comes out the same size, which a GIF requires.
+    fig, ax = plt.subplots()
+    canvas = FigureCanvas(fig)
+    image_artist = ax.imshow(frames[0], cmap='gray', vmin=vmin, vmax=vmax)
+    ax.axis('off')
+    title_artist = ax.set_title('')
     images = []
-    for t in range(num_times):
-        fig, ax = plt.subplots()
-        canvas = FigureCanvas(fig)
-        ax.imshow(planes[t], cmap='gray', vmin=vmin, vmax=vmax)
-        ax.axis('off')
-        if frame_titles[t]:
-            ax.set_title(frame_titles[t])
-        # Convert canvas to image using RGBA buffer, then drop alpha channel
+    for i, frame in enumerate(frames):
+        image_artist.set_data(frame)
+        if titles is not None:
+            title_artist.set_text(titles[i])
         canvas.draw()
+        # Convert canvas to image using RGBA buffer, then drop alpha channel.  The buffer is
+        # reused on the next draw, so each frame must be copied out and not merely viewed.
         buf = canvas.get_renderer().buffer_rgba()
         image = np.frombuffer(buf, dtype=np.uint8).reshape(canvas.get_width_height()[::-1] + (4,))
-        image = image[..., :3]  # Drop alpha channel
-        images.append(image)
-        plt.close(fig)
+        images.append(image[..., :3].copy())
+    plt.close(fig)
 
-    imageio.mimsave(filename, images, fps=fps)
+    # imageio deprecated fps in favor of a per-frame duration in milliseconds.
+    imageio.mimsave(filename, images, duration=1000 / fps)
 
 
 def _write_hdf5_streaming(file_path, array_name, out_shape, dtype, produce_slab, attributes_dict=None):

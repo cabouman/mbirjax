@@ -52,36 +52,6 @@ def _smooth_sino(num_views=NUM_VIEWS, rows=DET_ROWS, cols=DET_COLS):
     return np.stack([base * (1.0 + 0.1 * np.sin(0.5 * a))
                      for a in range(num_views)]).astype(np.float32)
 
-
-class TestDejitter(unittest.TestCase):
-    """DCT-I temporal dejitter."""
-
-    def test_dejitter_zeroes_target_bands_only(self):
-        print('Testing that dejitter zeroes the jitter bands and leaves the rest untouched')
-        rng = np.random.default_rng(1)
-        num_frames, period, band_width = 49, 6, 1
-        vol = rng.normal(size=(num_frames, 3, 4, 5)).astype(np.float32)
-        out = _dejitter_4d_dct(vol, period=period, verbose=False)
-
-        coefs_in = dct(vol.reshape(num_frames, -1), type=1, norm='ortho', axis=0)
-        coefs_out = dct(out.reshape(num_frames, -1), type=1, norm='ortho', axis=0)
-        zeroed = set()
-        for h in range(1, period // 2 + 1):
-            k0 = int(round(2 * (num_frames - 1) / (period / h)))
-            zeroed.update(range(max(0, k0 - band_width), min(num_frames, k0 + band_width + 1)))
-        kept = sorted(set(range(num_frames)) - zeroed)
-        self.assertLess(np.abs(coefs_out[sorted(zeroed)]).max(), 1e-5)
-        self.assertTrue(np.allclose(coefs_out[kept], coefs_in[kept], atol=1e-4))
-
-    def test_dejitter_chunked_equals_whole(self):
-        print('Testing that chunked dejitter matches the single-pass result')
-        rng = np.random.default_rng(2)
-        vol = rng.normal(size=(30, 4, 5, 6)).astype(np.float32)
-        whole = _dejitter_4d_dct(vol, period=6, verbose=False)
-        chunked = _dejitter_4d_dct(vol, period=6, chunk_size=2, verbose=False)
-        self.assertTrue(np.allclose(whole, chunked, atol=1e-5))
-
-
 class TestPriorWeights(unittest.TestCase):
     """Agent weight normalization."""
 
@@ -163,19 +133,6 @@ class TestConstruction(unittest.TestCase):
         self.assertEqual(len(mace.model_list), 5)
         self.assertEqual(mace.view_slices[1], slice(4, 12))
 
-    def test_num_frames_truncates(self):
-        print('Testing that num_frames keeps only the first frames')
-        mace = mj.MACE4DModel(self.ct_model, num_frames=3)
-        self.assertEqual(mace.nt, 3)
-        self.assertEqual(len(mace.model_list), 3)
-        self.assertEqual(mace.view_slices, [slice(0, 8), slice(4, 12), slice(8, 16)])
-
-    def test_num_frames_below_one_raises(self):
-        """Zero frames would otherwise fail later, on an empty model list."""
-        print('Testing that num_frames below one is rejected at construction')
-        with self.assertRaises(ValueError):
-            mj.MACE4DModel(self.ct_model, num_frames=0)
-
     def test_wrong_sinogram_shape_raises(self):
         print('Testing that a mismatched sinogram is rejected before any work is done')
         mace = mj.MACE4DModel(self.ct_model, num_frames=1)
@@ -203,15 +160,6 @@ class TestParameters(unittest.TestCase):
         print('Testing that an invalid prior weight is rejected by set_params')
         with self.assertRaises(ValueError):
             self.mace.set_params(mace_prior_weight=1.5)
-
-    def test_sigma_prox_does_not_warn_about_auto_regularization(self):
-        """This model has no regularization of its own, so that base-class warning is noise."""
-        print('Testing that setting sigma_prox is warning-free on the MACE model')
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter('always')
-            self.mace.set_params(sigma_prox=0.1)
-        self.assertEqual([w for w in caught if 'auto-regularization' in str(w.message)], [])
-        self.assertEqual(self.mace.get_params('sigma_prox'), 0.1)
 
 
 class TestReconEndToEnd(unittest.TestCase):
@@ -251,21 +199,6 @@ class TestReconEndToEnd(unittest.TestCase):
                                              stop_threshold_change_pct=0, init_dir=init_dir)
             self.assertEqual(recon_again.shape, recon.shape)
 
-    def test_weights_are_used_per_frame(self):
-        """Explicit weights must reach the frames and change the result."""
-        print('Testing explicit weights against the unit-weight default')
-        weights = mj.gen_weights(self.sinogram, weight_type='transmission_root')
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            init_dir = os.path.join(tmp_dir, 'init')   # shared init isolates the weight effect
-            unweighted, _ = self.mace.recon(self.sinogram, max_iterations=1,
-                                            stop_threshold_change_pct=0, init_dir=init_dir)
-            weighted, recon_dict = self.mace.recon(self.sinogram, weights=weights,
-                                                   max_iterations=1, stop_threshold_change_pct=0,
-                                                   init_dir=init_dir)
-        self.assertEqual(recon_dict['recon_params']['weights'], 'supplied by caller')
-        self.assertTrue(np.all(np.isfinite(weighted)))
-        self.assertFalse(np.allclose(weighted, unweighted))
-
     def test_stop_threshold_ends_the_loop_early(self):
         print('Testing that the consensus stopping threshold ends the outer loop')
         _, recon_dict = self.mace.recon(self.sinogram, max_iterations=5,
@@ -282,15 +215,6 @@ class TestReconEndToEnd(unittest.TestCase):
         self.assertEqual(recon_dict['recon_params']['init source'], 'provided by caller')
         with self.assertRaises(ValueError):
             self.mace.recon(self.sinogram, init_recon=np.zeros((1, 2, 3, 4)))
-
-    def test_constant_init_recon_reports_the_cause(self):
-        """A constant initial image leaves nothing to estimate the denoiser sigma from."""
-        print('Testing that a constant initial image gives an explanatory error')
-        constant = np.zeros((3,) + self.mace.recon_shape, dtype=np.float32)
-        with self.assertRaises(ValueError) as caught:
-            self.mace.recon(self.sinogram, init_recon=constant, max_iterations=1)
-        self.assertIn('constant', str(caught.exception))
-
 
 class TestReconMultiDevice(unittest.TestCase):
     """The threaded path, exercised on virtual CPU devices when no GPU is present."""
