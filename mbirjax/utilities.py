@@ -75,13 +75,14 @@ def _normalize_index(index, size, name):
 def save_volume_as_gif(volume, filename, frame_axis=None, slice_axis=None, slice_index=None,
                        vmin=None, vmax=None, fps=5):
     """
-    Save a 3D or 4D volume as an animated GIF by stepping along one axis.
+    Save a 3D or 4D volume as an animated GIF by looping over one axis.
 
-    A 3D volume yields one frame per index along ``frame_axis``, each frame showing the two
-    remaining axes.  A 4D volume has one axis too many for that, so ``slice_axis`` is held fixed
-    at ``slice_index`` to reduce it to 3D first; ``frame_axis`` then selects the movie axis among
-    those that are left.  With the defaults, a 4D volume of shape (num_times, nx, ny, nz) plays
-    over time at the middle x slice, and a 3D volume of shape (nx, ny, nz) steps over x.
+    ``frame_axis`` is the looping axis.  A 3D volume gives one frame per index along it, each
+    frame showing the two remaining axes.  A 4D volume has one axis too many for that, so
+    ``slice_axis`` is held fixed at ``slice_index`` to reduce it to 3D first, and ``frame_axis``
+    then loops over one of the axes that are left.  With the defaults, a 4D volume of shape
+    (num_times, nx, ny, nz) loops over time at the middle x slice, and a 3D volume of shape
+    (nx, ny, nz) loops over x.
 
     Choosing both axes selects the displayed plane: for a 4D volume the four useful combinations
     give a movie over time of a YZ, XZ or XY plane, or a walk through the volume of a single time
@@ -94,8 +95,8 @@ def save_volume_as_gif(volume, filename, frame_axis=None, slice_axis=None, slice
     Args:
         volume (np.ndarray): 3D array (nx, ny, nz) or 4D array (num_times, nx, ny, nz).
         filename (str): Output path for the GIF file.
-        frame_axis (int, optional): Axis to step along, one frame per index, given in the
-            numbering of ``volume``.  Defaults to None, meaning axis 0, or axis 1 when axis 0 is
+        frame_axis (int, optional): The looping axis, numbered as in ``volume``; the GIF gets one
+            frame per index along it.  Defaults to None, meaning axis 0, or axis 1 when axis 0 is
             the one held fixed by ``slice_axis``.
         slice_axis (int, optional): 4D only; the axis held fixed to leave a 3D volume.  Defaults
             to None, meaning axis 1 (x).  Must differ from ``frame_axis``.  Passing this for a 3D
