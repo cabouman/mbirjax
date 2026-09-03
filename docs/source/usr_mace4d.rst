@@ -5,8 +5,7 @@
 =================
 
 MBIRJAX reconstructs a time sequence of volumes from a single continuous scan of a moving
-object, using multi-agent consensus equilibrium :cite:`venkatakrishnan2013plug`
-:cite:`sreehari2016plug`.
+object, using multi-agent consensus equilibrium.
 
 +++++++++++
 MACE4DModel
@@ -16,9 +15,7 @@ The scan is divided into overlapping angular windows, one per time frame.
 ``frames_per_rotation`` sets how many frames make up a full rotation, and
 ``frame_overlap_factor`` sets how many frames share any given view, so each frame spans
 ``frame_overlap_factor * (360 / frames_per_rotation)`` degrees.  Wider frames give each one
-more views and better SNR at the cost of temporal resolution.  The number of frames follows
-from the scan length rather than being set directly, so check ``mace.nt`` and
-``mace.view_slices`` before committing to a long run.
+more views and better SNR at the cost of temporal resolution.
 
 Each iteration runs one :meth:`~mbirjax.TomographyModel.prox_map` per time frame as the
 forward agent, together with three batched qGGMRF denoisers acting on the XY-t, YZ-t and XZ-t
