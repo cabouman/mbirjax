@@ -62,20 +62,46 @@ def load_data_hdf5(file_path):
         return array, data_dict
 
 
-def save_volume_as_gif(volume, filename, vmin=None, vmax=None, fps=5):
+def _normalize_index(index, size, name):
+    """Range-check an axis number or slice index, accepting Python-style negative values."""
+    if not isinstance(index, (int, np.integer)) or isinstance(index, bool):
+        raise ValueError('{} must be an integer; got {!r}.'.format(name, index))
+    index = int(index)
+    if not -size <= index < size:
+        raise ValueError('{} must be in [{}, {}]; got {}.'.format(name, -size, size - 1, index))
+    return index % size
+
+
+def save_volume_as_gif(volume, filename, frame_axis=None, slice_axis=None, slice_index=None,
+                       vmin=None, vmax=None, fps=5):
     """
-    Save a 3D or 4D volume as an animated GIF, stepping over axis 0.
+    Save a 3D or 4D volume as an animated GIF by stepping along one axis.
 
-    A 3D volume of shape (nx, ny, nz) becomes a movie of its YZ planes, one per x.  A 4D volume
-    of shape (num_times, nx, ny, nz) plays over time instead, holding x fixed at the middle of the
-    volume, and titles each frame with the slice and time index.
+    A 3D volume yields one frame per index along ``frame_axis``, each frame showing the two
+    remaining axes.  A 4D volume has one axis too many for that, so ``slice_axis`` is held fixed
+    at ``slice_index`` to reduce it to 3D first; ``frame_axis`` then selects the movie axis among
+    those that are left.  With the defaults, a 4D volume of shape (num_times, nx, ny, nz) plays
+    over time at the middle x slice, and a 3D volume of shape (nx, ny, nz) steps over x.
 
-    Either way a frame shows the two remaining axes in increasing order, the lower one vertical,
-    which is how :func:`mbirjax.viewer.slice_viewer` lays out the same plane.
+    Choosing both axes selects the displayed plane: for a 4D volume the four useful combinations
+    give a movie over time of a YZ, XZ or XY plane, or a walk through the volume of a single time
+    frame (``slice_axis=0``).
+
+    A frame always shows its two axes in increasing order, the lower one vertical, which is how
+    :func:`mbirjax.viewer.slice_viewer` lays out the same plane.  Axes are selected by indexing
+    and reordering only, so no copy of the volume is made.
 
     Args:
         volume (np.ndarray): 3D array (nx, ny, nz) or 4D array (num_times, nx, ny, nz).
         filename (str): Output path for the GIF file.
+        frame_axis (int, optional): Axis to step along, one frame per index, given in the
+            numbering of ``volume``.  Defaults to None, meaning axis 0, or axis 1 when axis 0 is
+            the one held fixed by ``slice_axis``.
+        slice_axis (int, optional): 4D only; the axis held fixed to leave a 3D volume.  Defaults
+            to None, meaning axis 1 (x).  Must differ from ``frame_axis``.  Passing this for a 3D
+            volume is an error, since it would leave a single image rather than a movie.
+        slice_index (int, optional): Index along ``slice_axis``.  Defaults to None, the middle of
+            that axis.
         vmin (float, optional): Min pixel value for display normalization.  Defaults to None, the
             minimum over the frames shown.  The window is computed once for the whole movie, not
             per frame, so intensity changes from frame to frame remain visible.
@@ -84,13 +110,19 @@ def save_volume_as_gif(volume, filename, vmin=None, vmax=None, fps=5):
         fps (float, optional): Frames per second in the saved GIF.  Defaults to 5.
 
     Raises:
-        ValueError: If ``volume`` is not 3D or 4D, or ``fps`` is not positive.
+        ValueError: If ``volume`` is not 3D or 4D, an axis or index is out of range,
+            ``frame_axis`` and ``slice_axis`` are the same axis, ``slice_axis`` or ``slice_index``
+            is given for a 3D volume, or ``fps`` is not positive.
 
     Example:
         >>> # A 3D reconstruction, scaled to its own data range.
         >>> mj.save_volume_as_gif(recon, 'recon.gif')
         >>> # A 4D reconstruction: the middle x slice, playing over time.
         >>> mj.save_volume_as_gif(recon_4d, 'recon_4d.gif', vmax=0.06)
+        >>> # A 4D reconstruction: an XY plane at the middle z, playing over time.
+        >>> mj.save_volume_as_gif(recon_4d, 'recon_4d_xy.gif', slice_axis=3)
+        >>> # A single time frame of a 4D reconstruction, stepping through z.
+        >>> mj.save_volume_as_gif(recon_4d, 'frame0_z.gif', frame_axis=3, slice_axis=0, slice_index=0)
     """
     volume = np.asarray(volume)
     if volume.ndim not in (3, 4):
@@ -99,16 +131,54 @@ def save_volume_as_gif(volume, filename, vmin=None, vmax=None, fps=5):
     if fps <= 0:
         raise ValueError('fps must be positive; got {}.'.format(fps))
 
-    if volume.ndim == 3:
-        frames, titles = volume, None
-    else:
-        # Axis 0 is time, so the movie plays over it and one spatial axis has to be fixed to leave
-        # a 2D image.  Hold x at the middle of the volume; a 2D slice per frame, so the full
-        # volume is never copied.
-        slice_index = volume.shape[1] // 2
-        frames = volume[:, slice_index]
-        titles = ['x slice = {}, t = {}'.format(slice_index, t) for t in range(len(frames))]
+    # Axis names are fixed by the mbirjax layout, so frame titles can name the axes rather than
+    # print bare numbers.
+    axis_names = ('x', 'y', 'z') if volume.ndim == 3 else ('t', 'x', 'y', 'z')
 
+    if volume.ndim == 3:
+        if slice_axis is not None or slice_index is not None:
+            raise ValueError('slice_axis and slice_index apply only to a 4D volume; fixing an '
+                             'axis of a 3D volume would leave a single image, not a movie.')
+        frame_axis = 0 if frame_axis is None else _normalize_index(frame_axis, 3, 'frame_axis')
+        frames = np.moveaxis(volume, frame_axis, 0)
+        titles = ['{} = {}'.format(axis_names[frame_axis], i) for i in range(len(frames))]
+    else:
+        slice_axis = 1 if slice_axis is None else _normalize_index(slice_axis, 4, 'slice_axis')
+        # Default to axis 0, except when axis 0 is the one being held fixed, which is the case
+        # that produces a walk through the volume of a single time frame.
+        if frame_axis is None:
+            frame_axis = 0 if slice_axis != 0 else 1
+        else:
+            frame_axis = _normalize_index(frame_axis, 4, 'frame_axis')
+        if frame_axis == slice_axis:
+            raise ValueError('frame_axis and slice_axis must differ; both are {} ({}).'
+                             .format(frame_axis, axis_names[frame_axis]))
+        num_slices = volume.shape[slice_axis]
+        if slice_index is None:
+            slice_index = num_slices // 2
+        else:
+            slice_index = _normalize_index(slice_index, num_slices, 'slice_index')
+
+        # Basic indexing and moveaxis both return views, so a large 4D volume is never copied.
+        # Removing slice_axis renumbers every axis above it, so frame_axis shifts down by one
+        # when it was above.  Dropping one axis and moving another to the front leaves the
+        # remaining two in ascending order, which is the layout slice_viewer uses.
+        index = [slice(None)] * 4
+        index[slice_axis] = slice_index
+        frames = np.moveaxis(volume[tuple(index)], frame_axis - (frame_axis > slice_axis), 0)
+        titles = ['{} slice = {}, {} = {}'.format(axis_names[slice_axis], slice_index,
+                                                  axis_names[frame_axis], i)
+                  for i in range(len(frames))]
+
+    _save_frames_as_gif(frames, filename, titles, vmin, vmax, fps)
+
+
+def _save_frames_as_gif(frames, filename, titles, vmin, vmax, fps):
+    """Write a stack of 2D frames, indexed along axis 0, as an animated GIF.
+
+    frames may be a strided view; each frame is rendered one at a time, so the stack is never
+    copied as a whole.  titles gives one label per frame.
+    """
     if vmin is None or vmax is None:
         # Scale to the frames actually shown, so a slice that is never displayed cannot consume
         # the dynamic range.
@@ -139,8 +209,7 @@ def save_volume_as_gif(volume, filename, vmin=None, vmax=None, fps=5):
     images = []
     for i, frame in enumerate(frames):
         image_artist.set_data(frame)
-        if titles is not None:
-            title_artist.set_text(titles[i])
+        title_artist.set_text(titles[i])
         canvas.draw()
         # Convert canvas to image using RGBA buffer, then drop alpha channel.  The buffer is
         # reused on the next draw, so each frame must be copied out and not merely viewed.
