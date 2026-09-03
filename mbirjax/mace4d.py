@@ -552,9 +552,12 @@ class MACE4DModel(ParameterHandler):
         """Apply the DCT-I temporal dejitter if enabled; otherwise return x unchanged."""
         if not self.get_params('dejitter'):
             return x
+        # Keyed to dejitter_verbose, not the general verbose: this runs once for the prox stack
+        # and once per prior orientation on every iteration, so tying it to verbose buried the
+        # iteration progress under repeats of the same mode list.
         return _dejitter_4d_dct(x, period=self.frames_per_rotation, harmonics=True,
                                 band_width=1, dtype=np.float32,
-                                verbose=bool(self.get_params('verbose')))
+                                verbose=bool(self.get_params('dejitter_verbose')))
 
     def _run_settings(self, devs, init_source, global_sigma, weights, max_iterations,
                       stop_threshold_change_pct):
