@@ -1972,7 +1972,7 @@ def construct_time_frame_models(model, frames_per_rotation=6, frame_overlap_fact
 
     # Each copy re-derives the recon geometry, which reports the axial padding at verbose >= 1.
     # Only the angles differ between frames, so that report is identical every time; print it
-    # once for the first frame and build the rest quietly rather than repeating it nt times.
+    # once for the first frame and build the rest quietly rather than repeating it once per frame.
     # The source model's verbosity is restored before returning, and each frame gets it too.
     verbose = model.get_params('verbose')
     model_frames = []

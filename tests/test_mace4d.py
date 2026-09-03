@@ -129,7 +129,7 @@ class TestConstruction(unittest.TestCase):
         print('Testing that the constructor derives the frame structure from the model')
         mace = mj.MACE4DModel(self.ct_model, frames_per_rotation=6, frame_overlap_factor=2.0)
         # 120 degree frames advancing 60 degrees: views 0-7, 4-11, 8-15, 12-19, 16-23.
-        self.assertEqual(mace.nt, 5)
+        self.assertEqual(mace.num_frames, 5)
         self.assertEqual(len(mace.model_list), 5)
         self.assertEqual(mace.view_slices[1], slice(4, 12))
 
@@ -265,7 +265,7 @@ class TestInitCache(unittest.TestCase):
             self.assertIn('invalid', str(caught[0].message))
 
             # Valid: loaded as float32.
-            good = np.zeros((self.mace.nt,) + self.mace.recon_shape, dtype=np.float32)
+            good = np.zeros((self.mace.num_frames,) + self.mace.recon_shape, dtype=np.float32)
             np.save(os.path.join(tmp_dir, 'init_recon.npy'), good)
             loaded = self.mace._load_cached_init(tmp_dir)
             self.assertIsNotNone(loaded)

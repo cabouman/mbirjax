@@ -44,9 +44,9 @@ _INIT_MBIR_ITERATIONS = 15
 # Prior-agent hyperplane orientations. The permutation moves the hyperplane
 # axis first; recon axes are (t, x, y, z).
 _PRIOR_ORIENTATIONS = [
-    ("XY-t", (3, 0, 1, 2)),  # nz hyperplanes of shape (nt, nx, ny)
-    ("YZ-t", (1, 0, 2, 3)),  # nx hyperplanes of shape (nt, ny, nz)
-    ("XZ-t", (2, 0, 1, 3)),  # ny hyperplanes of shape (nt, nx, nz)
+    ("XY-t", (3, 0, 1, 2)),  # nz hyperplanes of shape (num_frames, nx, ny)
+    ("YZ-t", (1, 0, 2, 3)),  # nx hyperplanes of shape (num_frames, ny, nz)
+    ("XZ-t", (2, 0, 1, 3)),  # ny hyperplanes of shape (num_frames, nx, nz)
 ]
 
 _TIMING_FIELDS = [
@@ -97,7 +97,8 @@ class MACE4DModel(ParameterHandler):
     Attributes:
         model_list (list of mbirjax.TomographyModel): One model per time frame.
         view_slices (list of slice): The views of the full sinogram belonging to each frame.
-        nt (int): Number of time frames.
+        num_frames (int): Number of time frames in the decomposition, after any
+            truncation by the ``num_frames`` argument.
 
     Example:
         >>> import mbirjax as mj
@@ -123,7 +124,7 @@ class MACE4DModel(ParameterHandler):
         if num_frames is not None and num_frames < len(self.model_list):
             self.model_list = self.model_list[:num_frames]
             self.view_slices = self.view_slices[:num_frames]
-        self.nt = len(self.model_list)
+        self.num_frames = len(self.model_list)
         # The reconstruction shape is the FRAME models' shape: those are the models that
         # produce the volumes.  It follows from the detector geometry, so it matches ct_model's
         # own recon shape unless copy_ct_model recomputed it differently for the shorter scan.
@@ -236,7 +237,7 @@ class MACE4DModel(ParameterHandler):
                 implicitly all 1, as in :meth:`mbirjax.TomographyModel.recon`.  For 4D
                 transmission data, ``mj.gen_weights(sinogram, weight_type='transmission_root')``
                 is the validated choice and is strongly preferred over the unweighted default.
-            init_recon (ndarray, optional): Initial 4D image, shape (nt, nx, ny, nz).  Defaults
+            init_recon (ndarray, optional): Initial 4D image, shape (num_frames, nx, ny, nz).  Defaults
                 to None, in which case the initial image comes from ``init_dir`` if it holds one,
                 and is otherwise computed by reconstructing each frame separately.
             max_iterations (int, optional): Maximum number of outer MACE iterations.  Defaults to 10.
@@ -251,7 +252,7 @@ class MACE4DModel(ParameterHandler):
 
         Returns:
             (recon, recon_dict): the 4D reconstruction and a dict describing the run.
-                - recon (ndarray): 4D reconstruction, shape (nt, nx, ny, nz).
+                - recon (ndarray): 4D reconstruction, shape (num_frames, nx, ny, nz).
                 - recon_dict (dict): the run settings ('recon_params'), one entry per iteration
                   with its timing and consensus change ('timing'), plus 'notes' and 'model_params'.
 
@@ -262,7 +263,7 @@ class MACE4DModel(ParameterHandler):
             >>> weights = mj.gen_weights(sinogram, weight_type='transmission_root')
             >>> recon_4d, recon_dict = mace.recon(sinogram, weights=weights, log_dir='./logs')
         """
-        nt = self.nt
+        num_frames = self.num_frames
         beta = _normalize_prior_weights(self.get_params('mace_prior_weight'))
         verbose = self.get_params('verbose')
         rho_mann = self.get_params('rho_mann')
@@ -277,7 +278,7 @@ class MACE4DModel(ParameterHandler):
             counts = [self._frame_device.count(d) for d in range(len(devs))]
             print(f"[MACE] {len(devs)} device(s); prox frames per device: {counts}; "
                   f"denoise on devices {self._orient_device}.")
-            print(f"[MACE] Start 4D reconstruction with {nt} time frames.")
+            print(f"[MACE] Start 4D reconstruction with {num_frames} time frames.")
 
         # One single-thread executor per device: each device's tasks always run
         # on the same thread, which keeps the per-thread denoiser caches valid
@@ -301,7 +302,7 @@ class MACE4DModel(ParameterHandler):
                     init_source = f"cached ({os.path.join(init_dir, 'init_recon.npy')})"
                 else:
                     init_recon = self._compute_init_recon(devs, executors, init_dir)
-                    init_source = (f"computed ({self.nt} frames, "
+                    init_source = (f"computed ({self.num_frames} frames, "
                                    f"{_INIT_MBIR_ITERATIONS} MBIR iterations each)")
 
             # -- Global denoiser sigma (one value for all orientations) --------
@@ -353,7 +354,7 @@ class MACE4DModel(ParameterHandler):
                 # Tasks only read W; W is not written until the consensus update
                 # after the barrier, so no snapshot copy is needed.
                 tasks = []
-                for t in range(nt):
+                for t in range(num_frames):
                     d = self._frame_device[t]
                     tasks.append((d, ("prox", t),
                                   lambda tt=t, dd=d: self._run_prox_task(tt, W[0][tt], X[0][tt], devs[dd])))
@@ -367,7 +368,7 @@ class MACE4DModel(ParameterHandler):
 
                 # Gather in frame order, then dejitter the assembled stack.
                 # X[0] keeps the dejittered stack -- it feeds the next prox calls.
-                X[0] = self._dejitter(np.stack([results[("prox", t)] for t in range(nt)]))
+                X[0] = self._dejitter(np.stack([results[("prox", t)] for t in range(num_frames)]))
                 for k in range(3):
                     X[k + 1] = results[("denoise", k)]
 
@@ -456,16 +457,16 @@ class MACE4DModel(ParameterHandler):
         and stay there.  Frames are slices of the full arrays, so nothing is copied on the host.
         """
         plane_counts = [self.recon_shape[2], self.recon_shape[0], self.recon_shape[1]]  # XY-t, YZ-t, XZ-t
-        self._frame_device, self._orient_device = _assign_tasks(self.nt, plane_counts, len(devs))
-        for t in range(self.nt):
+        self._frame_device, self._orient_device = _assign_tasks(self.num_frames, plane_counts, len(devs))
+        for t in range(self.num_frames):
             self.model_list[t].configure_devices([devs[self._frame_device[t]]])
         self._sino_dev = [jax.device_put(np.asarray(sinogram[self.view_slices[t]]),
-                                         devs[self._frame_device[t]]) for t in range(self.nt)]
+                                         devs[self._frame_device[t]]) for t in range(self.num_frames)]
         if weights is None:
-            self._weights_dev = [None] * self.nt
+            self._weights_dev = [None] * self.num_frames
         else:
             self._weights_dev = [jax.device_put(np.asarray(weights[self.view_slices[t]]),
-                                                devs[self._frame_device[t]]) for t in range(self.nt)]
+                                                devs[self._frame_device[t]]) for t in range(self.num_frames)]
 
     def _run_task_set(self, executors, tasks, t0):
         """Run tasks [(device_index, tag, fn)] and wait for all of them.
@@ -541,7 +542,7 @@ class MACE4DModel(ParameterHandler):
 
     def _estimate_global_sigma(self, init_recon, device):
         """One global noise sigma for all denoising, estimated from the initial image."""
-        # Merge (nt, nx) so the estimator sees a 3D array; it subsamples internally.
+        # Merge (num_frames, nx) so the estimator sees a 3D array; it subsamples internally.
         image_3d = init_recon.reshape(-1, init_recon.shape[2], init_recon.shape[3])
         denoiser = mj.QGGMRFDenoiser(image_3d.shape)
         denoiser.configure_devices([device])
@@ -567,7 +568,7 @@ class MACE4DModel(ParameterHandler):
         return {
             'date': time.strftime('%Y-%m-%d %H:%M:%S'),
             'mbirjax version': self.version,
-            'time frames (nt)': self.nt,
+            'time frames': self.num_frames,
             'frame shape': self.recon_shape,
             'views per frame': self.view_slices[0].stop - self.view_slices[0].start,
             'mode': mode,
@@ -595,8 +596,8 @@ class MACE4DModel(ParameterHandler):
         return sinogram
 
     def _expected_init_shape(self):
-        """Shape the initial image must have: (nt,) + per-frame recon shape."""
-        return (self.nt,) + self.recon_shape
+        """Shape the initial image must have: (num_frames,) + per-frame recon shape."""
+        return (self.num_frames,) + self.recon_shape
 
     def _validate_init_recon(self, init_recon):
         """Return init_recon as float32, or raise ValueError on a wrong shape."""
@@ -638,9 +639,9 @@ class MACE4DModel(ParameterHandler):
         t0 = time.time()
         tasks = [(self._frame_device[t], ("init", t),
                   lambda tt=t: self._init_frame_task(tt, devs[self._frame_device[tt]]))
-                 for t in range(self.nt)]
+                 for t in range(self.num_frames)]
         results, _ = self._run_task_set(executors, tasks, t0)
-        init_recon = np.stack([results[("init", t)] for t in range(self.nt)])
+        init_recon = np.stack([results[("init", t)] for t in range(self.num_frames)])
         if init_dir is not None:
             os.makedirs(init_dir, exist_ok=True)
             np.save(os.path.join(init_dir, "init_recon.npy"), init_recon)
@@ -884,7 +885,7 @@ def _configure_denoiser(denoiser, sigma, image_for_stats):
 
     QGGMRFDenoiser.auto_set_regularization_params() (inherited from
     TomographyModel) calls subsample_views with num_real_views=sinogram_shape[0],
-    which equals nt for a hyperplane batch -- not the batch size -- so it would
+    which equals num_frames for a hyperplane batch -- not the batch size -- so it would
     use only the first hyperplane's statistics. The individual auto-set methods
     are called directly on the full array instead.
     """
@@ -1013,7 +1014,7 @@ def _denoiser_wrapper(x, permute_vector, sigma, device, config_token=None):
     resulting stack of 3D volumes at the shared global sigma, then unpermute.
 
     Args:
-        x (ndarray): 4D volume, shape (nt, nx, ny, nz).
+        x (ndarray): 4D volume, shape (num_frames, nx, ny, nz).
         permute_vector (tuple of int): Permutation that puts the hyperplane axis first.
         sigma (float): Global noise sigma shared by every volume.
         device (jax.Device): Device on which denoising runs.
