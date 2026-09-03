@@ -19,9 +19,10 @@ Here is an example showing views of a modified Shepp-Logan phantom, with changin
 .. image:: https://www.math.purdue.edu/~buzzard/images/slice_viewer_demo.gif
    :alt: An animated image of the slice viewer.
 
-For a movie saved to a file rather than viewed interactively, use the GIF writer.  It steps a 3D
-volume over its first axis, or a 4D volume over time at the middle slice, and lays out a plane
-the same way the viewer does.
+For a movie saved to a file rather than viewed interactively, use the GIF writer.  It loops a 3D
+or 4D volume over an axis of your choosing, laying out the plane shown the same way the viewer
+does.  By default a 3D volume loops over its first axis and a 4D volume loops over time at the
+middle slice.
 
 .. autofunction:: mbirjax.utilities.save_volume_as_gif
 
