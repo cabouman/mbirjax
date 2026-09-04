@@ -12,7 +12,6 @@ import warnings
 import jax
 import jax.numpy as jnp
 import numpy as np
-from scipy.fft import dct
 
 import mbirjax as mj
 from mbirjax.mace4d import (
@@ -21,7 +20,6 @@ from mbirjax.mace4d import (
     _assign_tasks,
     _batched_hyperplane_denoise,
     _configure_denoiser,
-    _dejitter_4d_dct,
     _denoise_constants,
     _get_qggmrf_denoiser,
     _normalize_prior_weights,
