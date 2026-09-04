@@ -62,38 +62,165 @@ def load_data_hdf5(file_path):
         return array, data_dict
 
 
-def save_volume_as_gif(volume, filename, vmin=0, vmax=1):
+def save_volume_as_gif(volume, filename, frame_axis=None, slice_axis=None, slice_index=None,
+                       vmin=None, vmax=None, fps=5):
     """
-    Save a 3D volume as a GIF, iterating over axis 0 (row-wise).
+    Save a 3D or 4D volume as an animated GIF by looping over one axis.
+
+    ``frame_axis`` is the looping axis.  A 3D volume gives one frame per index along it, each
+    frame showing the two remaining axes.  A 4D volume has one axis too many for that, so
+    ``slice_axis`` is held fixed at ``slice_index`` to reduce it to 3D first, and ``frame_axis``
+    then loops over one of the axes that are left.  With the defaults, a 4D volume of shape
+    (num_times, nx, ny, nz) loops over time at the middle x slice, and a 3D volume of shape
+    (nx, ny, nz) loops over x.
+
+    Choosing both axes selects the displayed plane: for a 4D volume the four useful combinations
+    give a movie over time of a YZ, XZ or XY plane, or a walk through the volume of a single time
+    frame (``slice_axis=0``).
+
+    A frame always shows its two axes in increasing order, the lower one vertical, which is how
+    :func:`mbirjax.viewer.slice_viewer` lays out the same plane.  Axes are selected by indexing
+    and reordering only, so no copy of the volume is made.
 
     Args:
-        volume (np.ndarray): 3D array to save as a movie.
+        volume (np.ndarray): 3D array (nx, ny, nz) or 4D array (num_times, nx, ny, nz).
         filename (str): Output path for the GIF file.
-        vmin (float): Min pixel value for display normalization.
-        vmax (float): Max pixel value for display normalization.
-    """
-    try:
-        import imageio.v2 as imageio
-    except ImportError:
-        print("The 'imageio' package is not installed. Please install it using:\n    pip install imageio")
-        return
+        frame_axis (int, optional): The looping axis, numbered as in ``volume``; the GIF gets one
+            frame per index along it.  Negative values count from the end.  Defaults to None,
+            meaning axis 0, or axis 1 when axis 0 is the one held fixed by ``slice_axis``.
+        slice_axis (int, optional): 4D only; the axis held fixed to leave a 3D volume.  Negative
+            values count from the end.  Defaults to None, meaning axis 1 (x).  Must differ from
+            ``frame_axis``.  Passing this for a 3D volume is an error, since it would leave a
+            single image rather than a movie.
+        slice_index (int, optional): Index along ``slice_axis``.  Defaults to None, the middle of
+            that axis.
+        vmin (float, optional): Min pixel value for display normalization.  Defaults to None, the
+            minimum over the frames shown.  The window is computed once for the whole movie, not
+            per frame, so intensity changes from frame to frame remain visible.
+        vmax (float, optional): Max pixel value for display normalization.  Defaults to None, the
+            maximum over the frames shown.
+        fps (float, optional): Frames per second in the saved GIF.  Defaults to 5.
 
-    from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-    images = []
-    for i in range(volume.shape[0]):
+    Raises:
+        ValueError: If ``volume`` is not 3D or 4D, ``frame_axis`` and ``slice_axis`` are the same
+            axis, ``slice_axis`` or ``slice_index`` is given for a 3D volume, or ``fps`` is not
+            positive.
+        IndexError: If an axis or index is out of range for ``volume``.  These come from numpy
+            when the volume is indexed, not from a check here.
+
+    Example:
+        >>> # A 3D reconstruction, scaled to its own data range.
+        >>> mj.save_volume_as_gif(recon, 'recon.gif')
+        >>> # A 4D reconstruction: the middle x slice, playing over time.
+        >>> mj.save_volume_as_gif(recon_4d, 'recon_4d.gif', vmax=0.06)
+        >>> # A 4D reconstruction: an XY plane at the middle z, playing over time.
+        >>> mj.save_volume_as_gif(recon_4d, 'recon_4d_xy.gif', slice_axis=3)
+        >>> # A single time frame of a 4D reconstruction, stepping through z.
+        >>> mj.save_volume_as_gif(recon_4d, 'frame0_z.gif', frame_axis=3, slice_axis=0, slice_index=0)
+    """
+
+    def _save_frames_as_gif(frames, filename, titles, vmin, vmax, fps):
+        """Write a stack of 2D frames, indexed along axis 0, as an animated GIF.
+
+        frames may be a strided view; each frame is rendered one at a time, so the stack is never
+        copied as a whole.  titles gives one label per frame.
+        """
+        if vmin is None or vmax is None:
+            # Scale to the frames actually shown, so a slice that is never displayed cannot consume
+            # the dynamic range.
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN frames warn; handled below
+                data_min, data_max = float(np.nanmin(frames)), float(np.nanmax(frames))
+            if not (np.isfinite(data_min) and np.isfinite(data_max)):
+                data_min, data_max = 0.0, 1.0  # nothing finite to scale to; fall back to a unit window
+            vmin = data_min if vmin is None else vmin
+            vmax = data_max if vmax is None else vmax
+        if vmin == vmax:
+            # A constant volume gives imshow a zero-width window.  Widen it as slice_viewer does.
+            scale = max(1e-6 * abs(vmax), 1e-6)
+            vmin, vmax = vmin - scale, vmax + scale
+
+        # imageio is a required dependency, so a missing one should raise here rather than be caught
+        # and turned into a run that completes normally and silently writes no file.
+        import imageio.v2 as imageio
+        from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+
+        # One figure for the whole movie: cheaper than rebuilding it per frame, and it guarantees
+        # every frame comes out the same size, which a GIF requires.
         fig, ax = plt.subplots()
         canvas = FigureCanvas(fig)
-        ax.imshow(volume[i, :, :].T, cmap='gray', vmin=vmin, vmax=vmax)
+        image_artist = ax.imshow(frames[0], cmap='gray', vmin=vmin, vmax=vmax)
         ax.axis('off')
-        # Convert canvas to image using RGBA buffer, then drop alpha channel
-        canvas.draw()
-        buf = canvas.get_renderer().buffer_rgba()
-        image = np.frombuffer(buf, dtype=np.uint8).reshape(canvas.get_width_height()[::-1] + (4,))
-        image = image[..., :3]  # Drop alpha channel
-        images.append(image)
+        title_artist = ax.set_title('')
+        images = []
+        for i, frame in enumerate(frames):
+            image_artist.set_data(frame)
+            title_artist.set_text(titles[i])
+            canvas.draw()
+            # Convert canvas to image using RGBA buffer, then drop alpha channel.  The buffer is
+            # reused on the next draw, so each frame must be copied out and not merely viewed.
+            buf = canvas.get_renderer().buffer_rgba()
+            image = np.frombuffer(buf, dtype=np.uint8).reshape(canvas.get_width_height()[::-1] + (4,))
+            images.append(image[..., :3].copy())
         plt.close(fig)
 
-    imageio.mimsave(filename, images, fps=5)  # 5 frames per second
+        # imageio deprecated fps in favor of a per-frame duration in milliseconds.
+        imageio.mimsave(filename, images, duration=1000 / fps)
+
+    volume = np.asarray(volume)
+    if volume.ndim not in (3, 4):
+        raise ValueError('volume must be 3D (nx, ny, nz) or 4D (num_times, nx, ny, nz); '
+                         'got shape {}.'.format(volume.shape))
+    if fps <= 0:
+        raise ValueError('fps must be positive; got {}.'.format(fps))
+
+    # Negative axes count from the end, as they do throughout numpy.  Only an in-range negative is
+    # wrapped, and by adding ndim rather than taking a modulo, so anything out of range stays out
+    # of range for numpy to reject.  Everything below -- the equality check, the renumbering, the
+    # title lookup -- then works in one numbering.
+    if frame_axis is not None and -volume.ndim <= frame_axis < 0:
+        frame_axis += volume.ndim
+    if slice_axis is not None and -volume.ndim <= slice_axis < 0:
+        slice_axis += volume.ndim
+
+    # Axis names are fixed by the mbirjax layout, so frame titles can name the axes rather than
+    # print bare numbers.
+    axis_names = ('x', 'y', 'z') if volume.ndim == 3 else ('t', 'x', 'y', 'z')
+
+    if volume.ndim == 3:
+        if slice_axis is not None or slice_index is not None:
+            raise ValueError('slice_axis and slice_index apply only to a 4D volume; fixing an '
+                             'axis of a 3D volume would leave a single image, not a movie.')
+        if frame_axis is None:
+            frame_axis = 0
+        frames = np.moveaxis(volume, frame_axis, 0)
+        titles = ['{} = {}'.format(axis_names[frame_axis], i) for i in range(len(frames))]
+    else:
+        if slice_axis is None:
+            slice_axis = 1
+        # Default to axis 0, except when axis 0 is the one being held fixed, which is the case
+        # that produces a walk through the volume of a single time frame.
+        if frame_axis is None:
+            frame_axis = 0 if slice_axis != 0 else 1
+        if frame_axis == slice_axis:
+            raise ValueError('frame_axis and slice_axis must differ; both are {} ({}).'
+                             .format(frame_axis, axis_names[frame_axis]))
+        num_slices = volume.shape[slice_axis]
+        if slice_index is None:
+            slice_index = num_slices // 2
+
+        # Basic indexing and moveaxis both return views, so a large 4D volume is never copied.
+        # Removing slice_axis renumbers every axis above it, so frame_axis shifts down by one
+        # when it was above.  Dropping one axis and moving another to the front leaves the
+        # remaining two in ascending order, which is the layout slice_viewer uses.
+        index = [slice(None)] * 4
+        index[slice_axis] = slice_index
+        frames = np.moveaxis(volume[tuple(index)], frame_axis - (frame_axis > slice_axis), 0)
+        titles = ['{} slice = {}, {} = {}'.format(axis_names[slice_axis], slice_index,
+                                                  axis_names[frame_axis], i)
+                  for i in range(len(frames))]
+
+    _save_frames_as_gif(frames, filename, titles, vmin, vmax, fps)
 
 
 def _write_hdf5_streaming(file_path, array_name, out_shape, dtype, produce_slab, attributes_dict=None):
@@ -1784,6 +1911,118 @@ def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_
     # The sinogram shape changed, so drop recon_shape and let build_model's auto pass recompute it.
     optional.pop('recon_shape', None)
     return build_model(required, optional, regularization)
+
+
+def construct_time_frame_models(model, frames_per_rotation=6, frame_overlap_factor=2.0):
+    """
+    Split a full rotation into overlapping fixed-size time frames and build one model per frame.
+
+    This is the model-only primitive: it needs no data, so it can be used to set up a 4D
+    reconstruction or to forward project a time-varying phantom frame by frame before any
+    sinogram exists.  Use :func:`construct_time_frames` to split a sinogram at the same time.
+
+    The number of views per frame and the stride between frames are derived from the model's
+    angle spacing, so they stay correct under view subsampling.  Trailing views that cannot
+    form a full frame are discarded.
+
+    Args:
+        model (mbirjax.TomographyModel): Fully-built ConeBeamModel or ParallelBeamModel for the
+            full scan.
+        frames_per_rotation (int, optional): Number of time frames per full 360 degree rotation.
+            Defaults to 6 (one frame every 60 degrees).
+        frame_overlap_factor (float, optional): Number of frames that share any given view.  Each
+            frame spans frame_overlap_factor * (360 / frames_per_rotation) degrees.  Defaults to
+            2.0 (each frame spans 120 degrees).
+
+    Returns:
+        (model_frames, view_slices): one model and one view slice per time frame.
+            - model_frames (list of mbirjax.TomographyModel): per-frame models built with
+              :func:`copy_ct_model` on the frame's angles.
+            - view_slices (list of slice): the views of the full sinogram belonging to each frame.
+
+    Raises:
+        ValueError: If the model angles have zero spacing, if the frame parameters give a frame
+            span or stride smaller than one view, or if a frame would be longer than the scan.
+
+    Example:
+        >>> model_frames, view_slices = mj.construct_time_frame_models(ct_model)
+        >>> sino_frames = [sinogram[view_slice] for view_slice in view_slices]
+    """
+    # Internal angular quantities in radians.
+    angle_stride = 2.0 * np.pi / frames_per_rotation
+    angle_span_per_frame = frame_overlap_factor * angle_stride
+
+    required_params, _, _ = model.get_all_params()
+    angles = required_params['angles']
+    num_views = len(angles)
+
+    # Angle step in radians from the model's actual view spacing.
+    angle_step = float(np.median(np.abs(np.diff(angles))))
+    if angle_step <= 0:
+        raise ValueError('Model angles must have nonzero spacing.')
+    views_per_frame = int(round(angle_span_per_frame / angle_step))
+    stride = int(round(angle_stride / angle_step))
+
+    if views_per_frame <= 0:
+        raise ValueError('frame_overlap_factor gives a frame span smaller than one view.')
+    if stride <= 0:
+        raise ValueError('frames_per_rotation gives a stride smaller than one view.')
+    if views_per_frame > num_views:
+        raise ValueError('frame span cannot exceed the full scan.')
+
+    # Each copy re-derives the recon geometry, which reports the axial padding at verbose >= 1.
+    # Only the angles differ between frames, so that report is identical every time; print it
+    # once for the first frame and build the rest quietly rather than repeating it once per frame.
+    # The source model's verbosity is restored before returning, and each frame gets it too.
+    verbose = model.get_params('verbose')
+    model_frames = []
+    view_slices = []
+    try:
+        for start in range(0, num_views - views_per_frame + 1, stride):
+            view_slice = slice(start, start + views_per_frame)
+            view_slices.append(view_slice)
+            frame = copy_ct_model(model, new_angles=angles[view_slice])
+            model.set_params(no_warning=True, verbose=0)
+            frame.set_params(no_warning=True, verbose=verbose)
+            model_frames.append(frame)
+    finally:
+        model.set_params(no_warning=True, verbose=verbose)
+    return model_frames, view_slices
+
+
+def construct_time_frames(sinogram, model, frames_per_rotation=6, frame_overlap_factor=2.0):
+    """
+    Split a full sinogram into overlapping fixed-size time frames, with one model per frame.
+
+    Frames are defined by :func:`construct_time_frame_models`; this wrapper additionally slices
+    the sinogram.  The sinogram frames are views into ``sinogram``, so no data is copied.
+
+    Args:
+        sinogram (ndarray): Full sinogram, shape (num_views, num_det_rows, num_det_channels).
+        model (mbirjax.TomographyModel): Fully-built ConeBeamModel or ParallelBeamModel for the
+            full scan.
+        frames_per_rotation (int, optional): Number of time frames per full 360 degree rotation.
+            Defaults to 6 (one frame every 60 degrees).
+        frame_overlap_factor (float, optional): Number of frames that share any given view.  Each
+            frame spans frame_overlap_factor * (360 / frames_per_rotation) degrees.  Defaults to
+            2.0 (each frame spans 120 degrees).
+
+    Returns:
+        (sino_frames, model_frames): one sinogram and one model per time frame.
+            - sino_frames (list of ndarray): per-frame sinograms, each a view into ``sinogram``.
+              Trailing views that cannot form a full frame are discarded.
+            - model_frames (list of mbirjax.TomographyModel): per-frame models built with
+              :func:`copy_ct_model`.
+
+    Example:
+        >>> sino_frames, model_frames = mj.construct_time_frames(sinogram, ct_model)
+        >>> recon_frame_0, _ = model_frames[0].recon(sino_frames[0])
+    """
+    model_frames, view_slices = construct_time_frame_models(
+        model, frames_per_rotation=frames_per_rotation,
+        frame_overlap_factor=frame_overlap_factor)
+    sino_frames = [sinogram[view_slice] for view_slice in view_slices]
+    return sino_frames, model_frames
 
 
 def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors, voxel_row_aspect=1.0, voxel_slice_aspect=1.0):
