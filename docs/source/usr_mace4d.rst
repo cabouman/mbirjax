@@ -41,6 +41,11 @@ Constructor
 .. autoclass:: mbirjax.MACE4DModel
    :show-inheritance:
 
+Parameters
+----------
+
+.. automethod:: mbirjax.MACE4DModel.set_params
+
 Reconstruction
 --------------
 

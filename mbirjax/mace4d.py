@@ -70,7 +70,7 @@ class MACE4DModel(ParameterHandler):
 
     The constructor arguments fix the frame decomposition for the lifetime of the object.
     Reconstruction parameters such as ``mace_prior_weight`` and ``rho_mann`` are ordinary
-    parameters set with :meth:`~mbirjax.ParameterHandler.set_params`.
+    parameters set with :meth:`~mbirjax.MACE4DModel.set_params`.
 
     Args:
         ct_model (mbirjax.TomographyModel): ConeBeamModel or ParallelBeamModel for the full scan.
