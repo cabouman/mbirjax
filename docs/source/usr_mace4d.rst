@@ -17,23 +17,21 @@ The scan is divided into overlapping angular windows, one per time frame.
 ``frame_overlap_factor * (360 / frames_per_rotation)`` degrees.  Wider frames give each one
 more views and better SNR at the cost of temporal resolution.
 
-Each iteration runs one :meth:`~mbirjax.TomographyModel.prox_map` per time frame as the
-forward agent, together with three batched qGGMRF denoisers acting on the XY-t, YZ-t and XZ-t
-hyperplanes as prior agents, and reconciles them by consensus equilibrium.  Gating imprints a
-modulation on the time axis whose period is ``frames_per_rotation``; a DCT-I filter removes it
-inside every agent, under the ``dejitter`` parameter.
+The reconstruction is performed using the MACE algorithm of :cite:`mace4d`.
+Each MACE iteration runs one :meth:`~mbirjax.TomographyModel.prox_map` per time frame and
+three qGGMRF denoisers.  The prox maps fit the measured data.  The denoisers regularize
+the XY-t, YZ-t and XZ-t hyperplanes of the 4D volume.  The MACE update combines these
+outputs into a single consensus reconstruction.
 
-The agents are independent within an iteration, so they are distributed across devices one
-task at a time rather than by sharding a single array, which is what
-:meth:`~mbirjax.MACE4DModel.set_device_pool` below configures.
+The MACE algorithm also incorporates a dejittering algorithm that removes oscillations
+produced when consecutive time frames are reconstructed from different angular windows.
+The window pattern repeats once per rotation, so the oscillation has a period of
+``frames_per_rotation`` frames.  A DCT filter removes this component of the temporal
+spectrum within the MACE loop.  The ``dejitter`` parameter controls the filter.
 
-.. note::
-
-   ``weights=None`` means unit weights, following :meth:`~mbirjax.TomographyModel.recon`.  For
-   transmission data the validated choice is ``transmission_root``, which must be passed
-   explicitly::
-
-       weights = mj.gen_weights(sinogram, weight_type='transmission_root')
+The computations within a MACE iteration are independent, so they run as separate tasks
+distributed across the available devices.  :meth:`~mbirjax.MACE4DModel.set_device_pool`
+selects the devices.
 
 Constructor
 -----------
@@ -55,12 +53,3 @@ Device Pool
 -----------
 
 .. automethod:: mbirjax.MACE4DModel.set_device_pool
-
-Time Frames
------------
-
-The frame decomposition is also available on its own, for building a 4D forward model or
-inspecting the split before a reconstruction.
-
-.. autofunction:: mbirjax.utilities.construct_time_frame_models
-.. autofunction:: mbirjax.utilities.construct_time_frames

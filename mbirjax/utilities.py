@@ -1912,13 +1912,12 @@ def copy_ct_model(ct_model, new_angles=None, new_helical_z_shifts=None, new_num_
     return build_model(required, optional, regularization)
 
 
-def construct_time_frame_models(model, frames_per_rotation=6, frame_overlap_factor=2.0):
+def _construct_time_frame_models(model, frames_per_rotation=6, frame_overlap_factor=2.0):
     """
     Split a full rotation into overlapping fixed-size time frames and build one model per frame.
 
-    This function needs no sinogram data.  It can therefore be used to set up a 4D
-    reconstruction, or to forward project a time-varying phantom frame by frame before
-    any sinogram exists.  Use :func:`construct_time_frames` to also split a sinogram.
+    This function needs no sinogram data, so MACE4DModel calls it at construction, before
+    any sinogram exists.
 
     The number of views per frame and the stride between frames are derived from the model's
     angle spacing, so they stay correct under view subsampling.  Trailing views that cannot
@@ -1943,9 +1942,6 @@ def construct_time_frame_models(model, frames_per_rotation=6, frame_overlap_fact
         ValueError: If the model angles have zero spacing, if the frame parameters give a frame
             span or stride smaller than one view, or if a frame would be longer than the scan.
 
-    Example:
-        >>> model_frames, view_slices = mj.construct_time_frame_models(ct_model)
-        >>> sino_frames = [sinogram[view_slice] for view_slice in view_slices]
     """
     # Internal angular quantities in radians.
     angle_stride = 2.0 * np.pi / frames_per_rotation
@@ -1989,40 +1985,6 @@ def construct_time_frame_models(model, frames_per_rotation=6, frame_overlap_fact
     return model_frames, view_slices
 
 
-def construct_time_frames(sinogram, model, frames_per_rotation=6, frame_overlap_factor=2.0):
-    """
-    Split a full sinogram into overlapping fixed-size time frames, with one model per frame.
-
-    The frames are defined by :func:`construct_time_frame_models`.  This wrapper also
-    slices the sinogram.  The sinogram frames are views into ``sinogram``, so no data is
-    copied.
-
-    Args:
-        sinogram (ndarray): Full sinogram, shape (num_views, num_det_rows, num_det_channels).
-        model (mbirjax.TomographyModel): Fully-built ConeBeamModel or ParallelBeamModel for the
-            full scan.
-        frames_per_rotation (int, optional): Number of time frames per full 360 degree rotation.
-            Defaults to 6 (one frame every 60 degrees).
-        frame_overlap_factor (float, optional): Number of frames that share any given view.  Each
-            frame spans frame_overlap_factor * (360 / frames_per_rotation) degrees.  Defaults to
-            2.0 (each frame spans 120 degrees).
-
-    Returns:
-        (sino_frames, model_frames): one sinogram and one model per time frame.
-            - sino_frames (list of ndarray): per-frame sinograms, each a view into ``sinogram``.
-              Trailing views that cannot form a full frame are discarded.
-            - model_frames (list of mbirjax.TomographyModel): per-frame models built with
-              :func:`copy_ct_model`.
-
-    Example:
-        >>> sino_frames, model_frames = mj.construct_time_frames(sinogram, ct_model)
-        >>> recon_frame_0, _ = model_frames[0].recon(sino_frames[0])
-    """
-    model_frames, view_slices = construct_time_frame_models(
-        model, frames_per_rotation=frames_per_rotation,
-        frame_overlap_factor=frame_overlap_factor)
-    sino_frames = [sinogram[view_slice] for view_slice in view_slices]
-    return sino_frames, model_frames
 
 
 def calc_tct_recon_params(source_det_dist, source_iso_dist, delta_det_row, delta_det_channel, sinogram_shape, translation_vectors, voxel_row_aspect=1.0, voxel_slice_aspect=1.0):

@@ -22,6 +22,7 @@ from scipy.fft import dct, idct
 import mbirjax as mj
 from mbirjax import ParameterHandler
 from mbirjax._device_setup import cpu_devices, default_devices, gpu_devices
+from mbirjax.utilities import _construct_time_frame_models
 
 MACE4DParamNames = mj.ParamNames | Literal['mace_prior_weight', 'rho_mann', 'prox_num_iterations',
                                            'prox_stop_threshold', 'dejitter', 'dejitter_verbose']
@@ -82,11 +83,6 @@ class MACE4DModel(ParameterHandler):
         num_frames (int, optional): If given, reconstruct only the first num_frames time frames.
             Defaults to None, which uses every frame.
 
-    Attributes:
-        model_list (list of mbirjax.TomographyModel): One model per time frame.
-        view_slices (list of slice): The views of the full sinogram belonging to each frame.
-        num_frames (int): Number of time frames.
-
     Example:
         >>> import mbirjax as mj
         >>> mace = mj.MACE4DModel(ct_model, frames_per_rotation=6, frame_overlap_factor=2.0)
@@ -103,7 +99,7 @@ class MACE4DModel(ParameterHandler):
         self.frame_overlap_factor = frame_overlap_factor
         self.sinogram_shape = tuple(ct_model.get_params('sinogram_shape'))
 
-        self.model_list, self.view_slices = mj.construct_time_frame_models(
+        self.model_list, self.view_slices = _construct_time_frame_models(
             ct_model, frames_per_rotation=frames_per_rotation,
             frame_overlap_factor=frame_overlap_factor)
         if num_frames is not None and num_frames < 1:
@@ -140,6 +136,28 @@ class MACE4DModel(ParameterHandler):
     def set_params(self, no_warning=False, no_compile=False, **kwargs):
         """
         Update reconstruction parameters of a MACE4DModel using keyword arguments.
+
+        The settable parameters are:
+
+        * mace_prior_weight (float or list of 3 floats): Total weight of the three prior
+          agents.  A scalar w gives each prior agent weight w/3 and the forward agent
+          weight 1-w.  A 3-element list sets the XY-t, YZ-t and XZ-t weights
+          individually.  Defaults to 0.5.
+        * rho_mann (float): Step size of the Mann iteration.  Defaults to 0.5.
+        * prox_num_iterations (int): Maximum number of iterations in each prox map.
+          Defaults to 3.
+        * prox_stop_threshold (float): Convergence threshold of each prox map, in percent
+          change per iteration.  Defaults to 0.02.
+        * sigma_prox (float or None): Proximal map sigma passed to each frame's prox map.
+          Defaults to None, which selects the value automatically.
+        * dejitter (bool): Apply the temporal dejitter filter.  Defaults to True.
+        * dejitter_verbose (int): Print the dejitter filter details when nonzero.
+          Defaults to 0.
+        * verbose (int): 0 = silent, 1 = progress, 2 = debug.  Defaults to 1.
+
+        Parameters of the scan geometry and regularization, such as ``sharpness``
+        (see :ref:`ParametersDocs`), belong to the CT model.  Set them on ``ct_model``
+        before constructing the MACE4DModel.
 
         Args:
             no_warning (bool, optional): If True, disables validity checking and warning messages.
