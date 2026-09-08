@@ -34,6 +34,10 @@ class ParameterHandler:
         self.params = mj._utils.get_default_params()
         self.logger = None
         self.log_buffer = None
+        # Name of this instance's private logger.  Loggers are per instance, not per class, so
+        # that two models alive at once (one per device in a threaded driver, say) never share
+        # one logger object and rebuild each other's handlers.  See setup_logger.
+        self._logger_name = '{}.{:x}'.format(self.__class__.__name__, id(self))
 
     @staticmethod
     def make_geometry_params(field_names, values):
@@ -82,8 +86,18 @@ class ParameterHandler:
         else:
             level = logging.DEBUG
 
-        # Configure logger
-        logger = logging.getLogger(self.__class__.__name__)
+        # Configure logger.  The logger belongs to THIS instance: it is built with
+        # logging.Logger(...) rather than logging.getLogger(...), so it is not entered in the
+        # global logging registry and no other instance can obtain it.  A registry logger is
+        # keyed by name, so keying on the class name gave every model of one class a single
+        # shared logger -- and concurrent models then rebuilt each other's handlers, letting
+        # one thread close a log file while another was writing to it.  An existing instance
+        # logger is reused (not replaced) so that the handler close/remove below still runs on
+        # the handlers actually open, which is what prevents leaked file descriptors.
+        logger = self.logger
+        if logger is None:
+            logger = logging.Logger(getattr(self, '_logger_name', None) or
+                                    '{}.{:x}'.format(self.__class__.__name__, id(self)))
         logger.setLevel(level)
         # Close and remove any existing handlers to prevent leaked file descriptors
         for h in list(logger.handlers):

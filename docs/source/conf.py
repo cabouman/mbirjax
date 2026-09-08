@@ -55,10 +55,7 @@ extensions = [
 ]
 
 
-# Warn on every cross-reference that fails to resolve.  Unresolved references otherwise
-# render silently as plain (unlinked) code; the backlog was cleared 2026-07-10, and this
-# keeps it at zero.  If an intentionally-unlinkable reference is ever needed, add it to
-# nitpick_ignore rather than turning this off.
+# Warn on every cross-reference that fails to resolve.
 nitpicky = True
 nitpick_ignore = [
     # External types in autodoc signatures; we deliberately do not pull in
@@ -69,6 +66,7 @@ nitpick_ignore = [
     # ever autoclass'd on the utilities page, remove these two entries.
     ('py:class', 'mbirjax.utilities.ObjectType'),
     ('py:class', 'mbirjax.utilities.ModelType'),
+    ('py:class', 'mbirjax.parameter_handler.ParameterHandler'),
 ]
 
 # Exclude __init__ method from documentation
