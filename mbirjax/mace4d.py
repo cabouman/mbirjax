@@ -61,7 +61,7 @@ _DENOISE_COST_PER_PLANE = 0.015
 class MACE4DModel(ParameterHandler):
     """
     The MACE4DModel class is used to compute space-time reconstructions from a single continuous CT scan.
-    The model assumes that the views are collected sequentially in time.
+    The model assumes that the views are collected sequentially in time with uniform angular spacing.
 
     The scan is divided into overlapping time frames.  Each frame covers a contiguous angular
     window of views, and the reconstruction produces one 3D volume per frame.  The constructor
