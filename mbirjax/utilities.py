@@ -67,31 +67,31 @@ def save_volume_as_gif(volume, filename, frame_axis=None, slice_axis=None, slice
     """
     Save a 3D or 4D volume as an animated GIF by looping over one axis.
 
-    ``frame_axis`` is the looping axis.  A 3D volume gives one frame per index along it, each
-    frame showing the two remaining axes.  A 4D volume has one axis too many for that, so
-    ``slice_axis`` is held fixed at ``slice_index`` to reduce it to 3D first, and ``frame_axis``
-    then loops over one of the axes that are left.  With the defaults, a 4D volume of shape
-    (num_times, nx, ny, nz) loops over time at the middle x slice, and a 3D volume of shape
-    (nx, ny, nz) loops over x.
+    ``frame_axis`` is the looping axis, and the GIF gets one frame per index along it.
+    For a 3D volume, each frame shows the two remaining axes.  A 4D volume must first be
+    reduced to 3D, so ``slice_axis`` is held fixed at ``slice_index``.  With the defaults,
+    a 4D volume of shape (num_times, nx, ny, nz) plays over time at the middle x slice,
+    and a 3D volume of shape (nx, ny, nz) plays over x.
 
-    Choosing both axes selects the displayed plane: for a 4D volume the four useful combinations
-    give a movie over time of a YZ, XZ or XY plane, or a walk through the volume of a single time
-    frame (``slice_axis=0``).
+    Choosing both axes selects the displayed plane.  For a 4D volume, the four useful
+    combinations give a movie of a YZ, XZ or XY plane playing over time, or a movie that
+    steps through the slices of a single time frame (``slice_axis=0``).
 
-    A frame always shows its two axes in increasing order, the lower one vertical, which is how
-    :func:`mbirjax.viewer.slice_viewer` lays out the same plane.  Axes are selected by indexing
-    and reordering only, so no copy of the volume is made.
+    A frame shows its two axes in increasing order, with the lower-numbered axis
+    vertical.  This is the layout that :func:`mbirjax.viewer.slice_viewer` uses for the
+    same plane.  The axes are selected by indexing and reordering only, so the volume is
+    not copied.
 
     Args:
         volume (np.ndarray): 3D array (nx, ny, nz) or 4D array (num_times, nx, ny, nz).
         filename (str): Output path for the GIF file.
-        frame_axis (int, optional): The looping axis, numbered as in ``volume``; the GIF gets one
-            frame per index along it.  Negative values count from the end.  Defaults to None,
-            meaning axis 0, or axis 1 when axis 0 is the one held fixed by ``slice_axis``.
-        slice_axis (int, optional): 4D only; the axis held fixed to leave a 3D volume.  Negative
-            values count from the end.  Defaults to None, meaning axis 1 (x).  Must differ from
-            ``frame_axis``.  Passing this for a 3D volume is an error, since it would leave a
-            single image rather than a movie.
+        frame_axis (int, optional): The looping axis, numbered as in ``volume``.  Negative
+            values count from the end.  Defaults to None, which means axis 0, or axis 1
+            when axis 0 is held fixed by ``slice_axis``.
+        slice_axis (int, optional): The axis held fixed to reduce a 4D volume to 3D.
+            Negative values count from the end.  Must differ from ``frame_axis``.
+            Defaults to None, which means axis 1 (x).  Passing this for a 3D volume is an
+            error, since it would leave a single image rather than a movie.
         slice_index (int, optional): Index along ``slice_axis``.  Defaults to None, the middle of
             that axis.
         vmin (float, optional): Min pixel value for display normalization.  Defaults to None, the
@@ -122,17 +122,17 @@ def save_volume_as_gif(volume, filename, frame_axis=None, slice_axis=None, slice
     def _save_frames_as_gif(frames, filename, titles, vmin, vmax, fps):
         """Write a stack of 2D frames, indexed along axis 0, as an animated GIF.
 
-        frames may be a strided view; each frame is rendered one at a time, so the stack is never
-        copied as a whole.  titles gives one label per frame.
+        frames may be a strided view.  Each frame is rendered one at a time, so the stack
+        is never copied as a whole.  titles gives one label per frame.
         """
         if vmin is None or vmax is None:
             # Scale to the frames actually shown, so a slice that is never displayed cannot consume
             # the dynamic range.
             with warnings.catch_warnings():
-                warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN frames warn; handled below
+                warnings.simplefilter('ignore', RuntimeWarning)  # An all-NaN frame warns and is handled below.
                 data_min, data_max = float(np.nanmin(frames)), float(np.nanmax(frames))
             if not (np.isfinite(data_min) and np.isfinite(data_max)):
-                data_min, data_max = 0.0, 1.0  # nothing finite to scale to; fall back to a unit window
+                data_min, data_max = 0.0, 1.0  # Nothing finite to scale to, so use a unit window.
             vmin = data_min if vmin is None else vmin
             vmax = data_max if vmax is None else vmax
         if vmin == vmax:
@@ -140,13 +140,13 @@ def save_volume_as_gif(volume, filename, frame_axis=None, slice_axis=None, slice
             scale = max(1e-6 * abs(vmax), 1e-6)
             vmin, vmax = vmin - scale, vmax + scale
 
-        # imageio is a required dependency, so a missing one should raise here rather than be caught
-        # and turned into a run that completes normally and silently writes no file.
+        # imageio is a required dependency.  A missing install should raise here rather
+        # than let the run complete without writing a file.
         import imageio.v2 as imageio
         from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
-        # One figure for the whole movie: cheaper than rebuilding it per frame, and it guarantees
-        # every frame comes out the same size, which a GIF requires.
+        # One figure is used for the whole movie.  This is cheaper than rebuilding it per
+        # frame, and it guarantees that every frame has the same size, which a GIF requires.
         fig, ax = plt.subplots()
         canvas = FigureCanvas(fig)
         image_artist = ax.imshow(frames[0], cmap='gray', vmin=vmin, vmax=vmax)
@@ -174,10 +174,9 @@ def save_volume_as_gif(volume, filename, frame_axis=None, slice_axis=None, slice
     if fps <= 0:
         raise ValueError('fps must be positive; got {}.'.format(fps))
 
-    # Negative axes count from the end, as they do throughout numpy.  Only an in-range negative is
-    # wrapped, and by adding ndim rather than taking a modulo, so anything out of range stays out
-    # of range for numpy to reject.  Everything below -- the equality check, the renumbering, the
-    # title lookup -- then works in one numbering.
+    # Negative axes count from the end, as they do throughout numpy.  Only an in-range
+    # negative is wrapped, so an out-of-range value stays out of range for numpy to
+    # reject.  Everything below then works in one numbering.
     if frame_axis is not None and -volume.ndim <= frame_axis < 0:
         frame_axis += volume.ndim
     if slice_axis is not None and -volume.ndim <= slice_axis < 0:
@@ -198,8 +197,8 @@ def save_volume_as_gif(volume, filename, frame_axis=None, slice_axis=None, slice
     else:
         if slice_axis is None:
             slice_axis = 1
-        # Default to axis 0, except when axis 0 is the one being held fixed, which is the case
-        # that produces a walk through the volume of a single time frame.
+        # Default to axis 0, except when axis 0 is held fixed.  That case produces a
+        # movie that steps through the slices of a single time frame.
         if frame_axis is None:
             frame_axis = 0 if slice_axis != 0 else 1
         if frame_axis == slice_axis:
@@ -1917,9 +1916,9 @@ def construct_time_frame_models(model, frames_per_rotation=6, frame_overlap_fact
     """
     Split a full rotation into overlapping fixed-size time frames and build one model per frame.
 
-    This is the model-only primitive: it needs no data, so it can be used to set up a 4D
-    reconstruction or to forward project a time-varying phantom frame by frame before any
-    sinogram exists.  Use :func:`construct_time_frames` to split a sinogram at the same time.
+    This function needs no sinogram data.  It can therefore be used to set up a 4D
+    reconstruction, or to forward project a time-varying phantom frame by frame before
+    any sinogram exists.  Use :func:`construct_time_frames` to also split a sinogram.
 
     The number of views per frame and the stride between frames are derived from the model's
     angle spacing, so they stay correct under view subsampling.  Trailing views that cannot
@@ -1970,10 +1969,10 @@ def construct_time_frame_models(model, frames_per_rotation=6, frame_overlap_fact
     if views_per_frame > num_views:
         raise ValueError('frame span cannot exceed the full scan.')
 
-    # Each copy re-derives the recon geometry, which reports the axial padding at verbose >= 1.
-    # Only the angles differ between frames, so that report is identical every time; print it
-    # once for the first frame and build the rest quietly rather than repeating it once per frame.
-    # The source model's verbosity is restored before returning, and each frame gets it too.
+    # Each copy re-derives the recon geometry, which is reported at verbose >= 1.  Only
+    # the angles differ between frames, so that report would be identical every time.
+    # Print it for the first frame only.  The verbosity of the source model is restored
+    # before returning, and each frame receives it as well.
     verbose = model.get_params('verbose')
     model_frames = []
     view_slices = []
@@ -1994,8 +1993,9 @@ def construct_time_frames(sinogram, model, frames_per_rotation=6, frame_overlap_
     """
     Split a full sinogram into overlapping fixed-size time frames, with one model per frame.
 
-    Frames are defined by :func:`construct_time_frame_models`; this wrapper additionally slices
-    the sinogram.  The sinogram frames are views into ``sinogram``, so no data is copied.
+    The frames are defined by :func:`construct_time_frame_models`.  This wrapper also
+    slices the sinogram.  The sinogram frames are views into ``sinogram``, so no data is
+    copied.
 
     Args:
         sinogram (ndarray): Full sinogram, shape (num_views, num_det_rows, num_det_channels).

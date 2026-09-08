@@ -1,14 +1,6 @@
 """
-4D MACE reconstruction: the MACE4DModel class and the helpers it uses for DCT-I temporal
-dejitter and batched hyperplane denoising.
-
-MACE4DModel reconstructs a time sequence of volumes from a single continuous scan.  The scan
-is divided into overlapping time frames (see :func:`mbirjax.construct_time_frame_models`), and
-the frames are reconciled by MACE: one cone-beam ``prox_map`` per time frame as the forward
-agent, plus three batched qGGMRF denoisers acting on the XY-t, YZ-t and XZ-t hyperplanes as
-prior agents.  Each iteration's work is a set of independent tasks executed by one worker
-thread per device under a fixed least-loaded assignment; a single device runs the same tasks
-inline.
+The mace4d module implements 4D MACE reconstruction.  The public interface is the
+MACE4DModel class.
 """
 from __future__ import annotations
 
@@ -34,15 +26,15 @@ from mbirjax._device_setup import cpu_devices, default_devices, gpu_devices
 MACE4DParamNames = mj.ParamNames | Literal['mace_prior_weight', 'rho_mann', 'prox_num_iterations',
                                            'prox_stop_threshold', 'dejitter', 'dejitter_verbose']
 
-# Only the model and its parameter-name type are public; everything else in this module is an
-# implementation detail, so `from .mace4d import *` does not add scipy/typing names to mbirjax.
+# Only the model and its parameter-name type are public.  This keeps
+# `from .mace4d import *` from adding scipy and typing names to mbirjax.
 __all__ = ['MACE4DModel', 'MACE4DParamNames']
 
 # MBIR iterations for the per-frame initialization recon.
 _INIT_MBIR_ITERATIONS = 15
 
-# Prior-agent hyperplane orientations. The permutation moves the hyperplane
-# axis first; recon axes are (t, x, y, z).
+# Hyperplane orientations of the three prior agents.  Each permutation moves the
+# hyperplane axis first.  The recon axes are (t, x, y, z).
 _PRIOR_ORIENTATIONS = [
     ("XY-t", (3, 0, 1, 2)),  # nz hyperplanes of shape (num_frames, nx, ny)
     ("YZ-t", (1, 0, 2, 3)),  # nx hyperplanes of shape (num_frames, ny, nz)
@@ -60,45 +52,40 @@ _TIMING_FIELDS = [
 
 _TASK_FIELDS = ["iteration", "kind", "index", "device", "start_sec", "end_sec"]
 
-# Estimated cost of denoising one hyperplane, in units of one prox_map task.
-# Measured on an H100 at smoke scale; only the relative size matters, and only
-# for the static load-balancing assignment.
+# Estimated cost of denoising one hyperplane, in units of one prox_map task.  The
+# value was measured on an H100 GPU on a small test problem.  Only the relative size
+# matters, and it is used only for the task assignment.
 _DENOISE_COST_PER_PLANE = 0.015
 
 
 class MACE4DModel(ParameterHandler):
-    """4D MACE CT reconstruction model.
+    """
+    The MACE4DModel class is used to compute space-time reconstructions from a single continuous CT scan.
+    The model assumes that the views are collected sequentially in time.
 
-    The model is built from a cone-beam or parallel-beam model of the full scan.  The frame
-    decomposition follows from that model's angles alone, so the per-frame models and view
-    slices exist immediately after construction, before any data is supplied; the sinogram
-    enters at :meth:`recon`, as in every other mbirjax model.
+    The scan is divided into overlapping time frames.  Each frame covers a contiguous angular
+    window of views, and the reconstruction produces one 3D volume per frame.  The constructor
+    takes the model of the full scan and the two parameters that define the frame decomposition.
+    The sinogram is passed in later, to :meth:`recon`.
+
+    The constructor arguments fix the frame decomposition for the lifetime of the object.
+    Reconstruction parameters such as ``mace_prior_weight`` and ``rho_mann`` are ordinary
+    parameters set with :meth:`~mbirjax.ParameterHandler.set_params`.
 
     Args:
-        ct_model (mbirjax.TomographyModel): Fully-built ConeBeamModel or ParallelBeamModel for
-            the full scan.  Per-frame models and view slices are derived from its angles.
-        frames_per_rotation (int, optional): Time frames per full 360 degree rotation.  This is
-            also the period of the jitter that gating introduces, so it sets the period of the
-            temporal dejitter filter.  Defaults to 6.
-        frame_overlap_factor (float, optional): Number of frames that share any given view.  Each
-            frame spans frame_overlap_factor * (360 / frames_per_rotation) degrees.  Defaults
-            to 2.0.
-        num_frames (int, optional): Reconstruct only the first N time frames, for smoke tests and
-            partial runs.  Defaults to None, which uses every frame.  A value at or above the
-            total frame count uses every frame.
-
-    These are structural arguments, like ``angles`` in a geometry model: they fix the frame
-    decomposition for the lifetime of the object and are not settable with
-    :meth:`~mbirjax.ParameterHandler.set_params`.  Changing them means building a new model.
-    The reconstruction parameters (``mace_prior_weight``, ``rho_mann``, ``prox_num_iterations``,
-    ``prox_stop_threshold``, ``sigma_prox``, ``dejitter``, ``dejitter_verbose``, ``verbose``)
-    are ordinary parameters set with :meth:`~mbirjax.ParameterHandler.set_params`.
+        ct_model (mbirjax.TomographyModel): ConeBeamModel or ParallelBeamModel for the full scan.
+        frames_per_rotation (int, optional): Number of time frames per full 360 degree rotation.
+            This also sets the period of the temporal dejitter filter.  Defaults to 6.
+        frame_overlap_factor (float, optional): Number of frames that share any given view.
+            Each frame spans frame_overlap_factor * (360 / frames_per_rotation) degrees.
+            Defaults to 2.0.
+        num_frames (int, optional): If given, reconstruct only the first num_frames time frames.
+            Defaults to None, which uses every frame.
 
     Attributes:
         model_list (list of mbirjax.TomographyModel): One model per time frame.
         view_slices (list of slice): The views of the full sinogram belonging to each frame.
-        num_frames (int): Number of time frames in the decomposition, after any
-            truncation by the ``num_frames`` argument.
+        num_frames (int): Number of time frames.
 
     Example:
         >>> import mbirjax as mj
@@ -125,22 +112,22 @@ class MACE4DModel(ParameterHandler):
             self.model_list = self.model_list[:num_frames]
             self.view_slices = self.view_slices[:num_frames]
         self.num_frames = len(self.model_list)
-        # The reconstruction shape is the FRAME models' shape: those are the models that
-        # produce the volumes.  It follows from the detector geometry, so it matches ct_model's
-        # own recon shape unless copy_ct_model recomputed it differently for the shorter scan.
+        # The reconstruction shape comes from the frame models, since those are the
+        # models that produce the volumes.  It can differ from the recon shape of ct_model.
         self.recon_shape = tuple(self.model_list[0].get_params('recon_shape'))
         try:
             self.version = importlib_version('mbirjax')
         except Exception:
             self.version = 'unknown'
 
-        # Reconstruction parameters. no_warning=True registers the names that are new here; the
-        # ones the base class already knows (sigma_prox, verbose) keep their existing defaults.
+        # Set the default reconstruction parameters.  no_warning=True allows parameter
+        # names that are new in this class to be registered.
         self.set_params(no_warning=True, mace_prior_weight=0.5, rho_mann=0.5,
                         prox_num_iterations=3, prox_stop_threshold=0.02, dejitter=True,
                         dejitter_verbose=0, sigma_prox=None)
 
-        # Device pool: unset until set_device_pool is called, resolved on first use.
+        # The device pool is None until set_device_pool is called.  It is resolved to a
+        # device list on first use.
         self._devices = None
         self._recon_token = 0
 
@@ -152,7 +139,7 @@ class MACE4DModel(ParameterHandler):
 
     def set_params(self, no_warning=False, no_compile=False, **kwargs):
         """
-        Update reconstruction parameters using keyword arguments.
+        Update reconstruction parameters of a MACE4DModel using keyword arguments.
 
         Args:
             no_warning (bool, optional): If True, disables validity checking and warning messages.
@@ -165,11 +152,11 @@ class MACE4DModel(ParameterHandler):
             >>> mace.set_params(mace_prior_weight=0.5, rho_mann=0.5, dejitter=True)
         """
         if 'mace_prior_weight' in kwargs:
-            _normalize_prior_weights(kwargs['mace_prior_weight'])   # reject a bad weight here
+            _normalize_prior_weights(kwargs['mace_prior_weight'])   # Reject an invalid weight now.
 
-        # sigma_prox is forwarded verbatim to each frame's prox_map; this model performs no
-        # reconstruction of its own, so the base class's "you have disabled auto-regularization"
-        # warning does not apply and is suppressed for that one name.
+        # sigma_prox is forwarded unchanged to each frame's prox_map.  This model performs
+        # no reconstruction of its own, so the base class warning about disabled
+        # auto-regularization does not apply.  The warning is suppressed for that one name.
         sigma_prox_given = 'sigma_prox' in kwargs
         sigma_prox = kwargs.pop('sigma_prox', None)
         recompile_flag = False
@@ -183,37 +170,36 @@ class MACE4DModel(ParameterHandler):
 
     def set_device_pool(self, devices=None):
         """
-        Set the pool of devices that the reconstruction tasks are dispatched to.
+        Set the devices that :meth:`recon` distributes its work across.
 
-        Every task -- one ``prox_map`` per time frame and one batched denoise per prior
-        orientation -- is pinned to a single device from the pool, and one worker thread per
-        device executes the tasks assigned to it.  A single device runs all tasks inline with no
-        threads.  This only stores the pool; it takes effect at the next :meth:`recon` call.
-
-        ``devices`` accepts the same forms as ``TomographyModel.configure_devices``, but the
-        mechanism differs: that method shards one array across devices, this one hands whole
-        tasks to them.
-
-          * ``None`` -- automatic: all visible GPUs, or the CPU when there is no GPU.  Never
-            calling this method is equivalent to ``set_device_pool(None)``.
-          * ``'cpu'`` / ``'gpu'`` -- all devices of that platform.
-          * ``int n`` -- the first ``n`` devices of the default platform.  ``set_device_pool(1)``
-            forces the serial path.
-          * ``sequence of ints`` -- those indices into the default device list.
-          * ``sequence of jax devices`` -- exactly those devices.
+        The reconstruction is a set of independent tasks, and each task runs entirely on one
+        device from this pool.  Calling this method only stores the pool.  It takes effect at
+        the next :meth:`recon` call.
 
         Args:
-            devices (None, str, int, or sequence of ints / jax devices): see above.
+            devices (optional): The devices to use, in one of the following forms.
+                Defaults to None.
+
+                * None: all visible GPUs, or the CPU when there is no GPU.  This is also
+                  the behavior when the method is never called.
+                * 'cpu' or 'gpu': all devices of that platform.
+                * int n: the first n devices of the default platform.  A value of 1 runs
+                  every task on one device.
+                * sequence of ints: the devices with those indices.
+                * sequence of jax devices: exactly those devices.
 
         Raises:
-            ValueError: If a platform string is unrecognized, a GPU is requested with no GPU
-                backend, or the requested device count exceeds the number available.
+            ValueError: If the platform string is not 'cpu' or 'gpu', a GPU is requested
+                when none is available, or more devices are requested than are visible.
+
+        Example:
+            >>> mace.set_device_pool(2)   # run on the first two GPUs
         """
         self._devices = _resolve_devices(devices)
 
     @property
     def devices(self):
-        """The device pool this model runs on: the one set, else the automatic selection."""
+        """Return the device pool set by set_device_pool, or the automatic selection if none was set."""
         return self._devices if self._devices is not None else _resolve_devices(None)
 
     # ------------------------------------------------------------------
@@ -222,39 +208,37 @@ class MACE4DModel(ParameterHandler):
 
     def recon(self, sinogram, weights=None, init_recon=None, max_iterations=10,
               stop_threshold_change_pct=0.2, init_dir=None, log_dir=None):
-        """Run 4D MACE reconstruction.
+        """
+        Compute a 4D MACE reconstruction from the sinogram of the full scan.
 
-        Each iteration is a set of independent tasks -- one ``prox_map`` per time frame and one
-        batched denoise per prior orientation -- executed by one worker thread per device with a
-        fixed least-loaded task assignment.
+        The method returns one 3D volume per time frame.  All visible GPUs are used by
+        default.  The device set can be changed with :meth:`set_device_pool`.
 
         Args:
-            sinogram (ndarray): Full sinogram, shape (num_views, num_det_rows, num_det_channels),
-                matching the sinogram shape of the model this object was built from.  It is
-                sliced into per-frame sinograms internally.
-            weights (ndarray, optional): Positive weights with the same shape as ``sinogram``,
-                sliced per frame internally.  Defaults to None, in which case the weights are
-                implicitly all 1, as in :meth:`mbirjax.TomographyModel.recon`.  For 4D
-                transmission data, ``mj.gen_weights(sinogram, weight_type='transmission_root')``
-                is the validated choice and is strongly preferred over the unweighted default.
-            init_recon (ndarray, optional): Initial 4D image, shape (num_frames, nx, ny, nz).  Defaults
-                to None, in which case the initial image comes from ``init_dir`` if it holds one,
-                and is otherwise computed by reconstructing each frame separately.
-            max_iterations (int, optional): Maximum number of outer MACE iterations.  Defaults to 10.
+            sinogram (ndarray): Sinogram of the full scan, with shape
+                (num_views, num_det_rows, num_det_channels).  It is sliced into per-frame
+                sinograms internally.
+            weights (ndarray, optional): Positive weights with the same shape as ``sinogram``.
+                Defaults to None, which uses unit weights.  For transmission data,
+                ``mj.gen_weights(sinogram, weight_type='transmission_root')`` is recommended.
+            init_recon (ndarray, optional): Initial 4D image with shape (num_frames, nx, ny, nz).
+                Defaults to None.  In that case the initial image is loaded from ``init_dir``
+                if available, and is otherwise computed by reconstructing each frame separately.
+            max_iterations (int, optional): Maximum number of MACE iterations.  Defaults to 10.
             stop_threshold_change_pct (float, optional): Stop when the percent change of the
-                consensus image from one iteration to the next falls below this value.  Defaults
-                to 0.2.  Set to 0 to guarantee exactly ``max_iterations``.
-            init_dir (str, optional): Cache directory for the computed initial image
-                (``init_recon.npy``).  If it holds an image of the correct shape that image is
-                used; otherwise the initialization is recomputed and saved there.  Defaults to None.
-            log_dir (str, optional): Directory for ``run_info.txt``, ``timing_log.csv`` and
-                ``task_log.csv``.  Created if needed.  Defaults to None, which writes no log files.
+                consensus reconstruction in one iteration falls below this value.  Defaults
+                to 0.2.  A value of 0 runs all ``max_iterations`` iterations.
+            init_dir (str, optional): Directory used to cache the computed initial image.
+                If the directory holds a valid image, that image is used.  Otherwise the
+                initialization is computed and saved there.  Defaults to None, which disables
+                caching.
+            log_dir (str, optional): Directory for the log files run_info.txt, timing_log.csv
+                and task_log.csv.  Defaults to None, which writes no log files.
 
         Returns:
-            (recon, recon_dict): the 4D reconstruction and a dict describing the run.
-                - recon (ndarray): 4D reconstruction, shape (num_frames, nx, ny, nz).
-                - recon_dict (dict): the run settings ('recon_params'), one entry per iteration
-                  with its timing and consensus change ('timing'), plus 'notes' and 'model_params'.
+            (recon, recon_dict): The reconstruction and a dictionary describing the run.
+                - recon (ndarray): 4D reconstruction with shape (num_frames, nx, ny, nz).
+                - recon_dict (dict): Run settings, per-iteration timing, and model parameters.
 
         Raises:
             ValueError: If ``sinogram``, ``weights`` or ``init_recon`` has the wrong shape.
@@ -280,12 +264,12 @@ class MACE4DModel(ParameterHandler):
                   f"denoise on devices {self._orient_device}.")
             print(f"[MACE] Start 4D reconstruction with {num_frames} time frames.")
 
-        # One single-thread executor per device: each device's tasks always run
-        # on the same thread, which keeps the per-thread denoiser caches valid
-        # and gives every model object exactly one owning thread.
+        # Each device gets one single-thread executor, so a device's tasks always run on
+        # the same thread.  This keeps the per-thread denoiser caches valid, and it
+        # ensures that each model object is used by only one thread.
         executors = ([concurrent.futures.ThreadPoolExecutor(max_workers=1) for _ in devs]
                      if len(devs) > 1 else None)
-        # Denoisers reconfigure once per recon (sigma + regularization constants).
+        # Incrementing this token makes each denoiser reconfigure once per recon call.
         self._recon_token += 1
         timing_rows = []
         try:
@@ -308,9 +292,8 @@ class MACE4DModel(ParameterHandler):
             # -- Global denoiser sigma (one value for all orientations) --------
             global_sigma = self._estimate_global_sigma(init_recon, devs[0])
             if not np.isfinite(global_sigma) or global_sigma <= 0:
-                # Every denoiser is scaled by this sigma, and a zero divides through to the
-                # qGGMRF forward-model constant.  Report the cause here rather than as a
-                # division by zero several calls deeper.
+                # Every denoiser is scaled by this sigma, and a zero value would later cause
+                # a division by zero deep inside the qGGMRF code.  Report the cause here.
                 raise ValueError(
                     f"The denoiser noise level estimated from the initial image is "
                     f"{global_sigma}, which happens when that image is constant (all zeros, "
@@ -325,9 +308,7 @@ class MACE4DModel(ParameterHandler):
             # -- MACE state (all on CPU / NumPy) -------------------------------
             W = [np.copy(init_recon) for _ in range(4)]
             X = [np.copy(init_recon) for _ in range(4)]
-            # Reused every iteration by the consensus update below, so the
-            # temp-heavy expression form (sum() over freshly allocated full-size
-            # arrays) never runs -- see the in-place rewrite there.
+            # This scratch array is reused by the consensus update in every iteration.
             _consensus_scratch = np.empty_like(init_recon)
 
             # -- Log files -----------------------------------------------------
@@ -343,16 +324,16 @@ class MACE4DModel(ParameterHandler):
                     csv.DictWriter(f, fieldnames=_TASK_FIELDS).writeheader()
 
             # -- Main MACE loop ------------------------------------------------
-            # xbar is the consensus average sum(beta[k] X[k]); its relative
-            # change per iteration is the convergence measure in timing_log.csv.
+            # xbar is the consensus reconstruction sum(beta[k] X[k]).  Its percent change
+            # per iteration is the convergence measure and the stopping criterion.
             xbar = init_recon
             for itr in range(max_iterations):
                 itr_t0 = time.time()
                 if verbose:
                     print(f"\n[MACE] -- Iteration {itr + 1}/{max_iterations} --")
 
-                # Tasks only read W; W is not written until the consensus update
-                # after the barrier, so no snapshot copy is needed.
+                # The tasks only read W.  W is not written until all tasks have finished,
+                # so no copy of W is needed.
                 tasks = []
                 for t in range(num_frames):
                     d = self._frame_device[t]
@@ -366,17 +347,16 @@ class MACE4DModel(ParameterHandler):
                                       W[kk + 1], pp, global_sigma, devs[dd])))
                 results, task_rows = self._run_task_set(executors, tasks, itr_t0)
 
-                # Gather in frame order, then dejitter the assembled stack.
-                # X[0] keeps the dejittered stack -- it feeds the next prox calls.
+                # Gather the prox results in frame order and dejitter the assembled stack.
+                # X[0] keeps the dejittered stack, which feeds the next prox calls.
                 X[0] = self._dejitter(np.stack([results[("prox", t)] for t in range(num_frames)]))
                 for k in range(3):
                     X[k + 1] = results[("denoise", k)]
 
-                # ADMM consensus (CPU). In-place: the equivalent expression
-                # form (z = sum(beta[k]*(2*X[k]-W[k]) ...), W[k] = W[k] + ...)
-                # allocates ~28 fresh full-size arrays per iteration and measured
-                # 7.1x slower on the full-resolution volume. Same math, same order
-                # of operations, verified to produce identical results.
+                # This is the ADMM consensus update, computed in place on the CPU.  The
+                # equivalent expression form allocates about 28 full-size arrays per
+                # iteration and measured 7.1 times slower on the full-resolution volume.
+                # The in-place form computes the same values in the same order.
                 scratch = _consensus_scratch
                 z = np.zeros_like(X[0])
                 for k in range(4):
@@ -432,8 +412,8 @@ class MACE4DModel(ParameterHandler):
         if verbose:
             print("\n[MACE] Reconstruction complete.")
 
-        # run_info.txt is written before the loop so a long run's settings are readable while
-        # it is still going; rewrite it now that the iteration count is known.
+        # run_info.txt was written before the loop so that the settings of a long run can
+        # be read while it runs.  Rewrite it now that the iteration count is known.
         run_settings['iterations completed'] = len(timing_rows)
         if log_dir is not None:
             _write_run_info(os.path.join(log_dir, "run_info.txt"), run_settings)
@@ -450,11 +430,11 @@ class MACE4DModel(ParameterHandler):
     # ------------------------------------------------------------------
 
     def _assign_and_place(self, devs, sinogram, weights):
-        """Fix the task-to-device assignment, pin models, and place per-frame data.
+        """Fix the task-to-device assignment, pin the models, and place the per-frame data.
 
-        The assignment is computed once and reused for every iteration: each model object gets
-        one owning thread, and each frame's sinogram and weights are uploaded to its device once
-        and stay there.  Frames are slices of the full arrays, so nothing is copied on the host.
+        The assignment is computed once and reused for every iteration.  Each frame's
+        sinogram and weights are uploaded to the frame's device once and stay there.  The
+        frames are slices of the full arrays, so nothing is copied on the host.
         """
         plane_counts = [self.recon_shape[2], self.recon_shape[0], self.recon_shape[1]]  # XY-t, YZ-t, XZ-t
         self._frame_device, self._orient_device = _assign_tasks(self.num_frames, plane_counts, len(devs))
@@ -469,11 +449,13 @@ class MACE4DModel(ParameterHandler):
                                                 devs[self._frame_device[t]]) for t in range(self.num_frames)]
 
     def _run_task_set(self, executors, tasks, t0):
-        """Run tasks [(device_index, tag, fn)] and wait for all of them.
+        """Run a list of tasks and wait for all of them to finish.
 
-        Inline when executors is None (one device). Returns ({tag: result},
-        [(kind, index, device_index, start, end)]) with times relative to t0.
-        A failed task raises immediately, naming the task.
+        Each task is a tuple (device_index, tag, fn).  When executors is None, the tasks
+        run one at a time on the calling thread.  The method returns a dict mapping each
+        tag to its result, and a list of rows (kind, index, device_index, start, end)
+        with times measured relative to t0.  A failed task raises RuntimeError naming
+        the task.
         """
         results = {}
         rows = []
@@ -504,7 +486,7 @@ class MACE4DModel(ParameterHandler):
         return results, rows
 
     def _run_prox_task(self, t, W0_t, X0_t, device):
-        """One frame's proximal map on its assigned device."""
+        """Run one frame's proximal map on its assigned device."""
         return np.asarray(
             self.model_list[t].prox_map(
                 prox_input=jax.device_put(W0_t, device),
@@ -519,13 +501,13 @@ class MACE4DModel(ParameterHandler):
             )[0])
 
     def _run_denoise_task(self, W_k, permute_vector, sigma, device):
-        """One orientation's batched qGGMRF denoise on its assigned device."""
+        """Run one orientation's batched qGGMRF denoise on its assigned device."""
         return _denoiser_wrapper(self._dejitter(W_k), permute_vector=permute_vector,
                                  sigma=sigma, device=device,
                                  config_token=self._recon_token)
 
     def _init_frame_task(self, t, device):
-        """One frame's MBIR initialization recon on its assigned device."""
+        """Run one frame's MBIR initialization recon on its assigned device."""
         return np.asarray(
             self.model_list[t].recon(
                 self._sino_dev[t],
@@ -541,27 +523,27 @@ class MACE4DModel(ParameterHandler):
     # ------------------------------------------------------------------
 
     def _estimate_global_sigma(self, init_recon, device):
-        """One global noise sigma for all denoising, estimated from the initial image."""
-        # Merge (num_frames, nx) so the estimator sees a 3D array; it subsamples internally.
+        """Estimate one global noise sigma from the initial image for all denoising."""
+        # Merge the first two axes so the estimator sees a 3D array.  The estimator
+        # subsamples internally.
         image_3d = init_recon.reshape(-1, init_recon.shape[2], init_recon.shape[3])
         denoiser = mj.QGGMRFDenoiser(image_3d.shape)
         denoiser.configure_devices([device])
         return float(denoiser.estimate_image_noise_std(image_3d))
 
     def _dejitter(self, x):
-        """Apply the DCT-I temporal dejitter if enabled; otherwise return x unchanged."""
+        """Apply the temporal dejitter filter when enabled.  Otherwise return x unchanged."""
         if not self.get_params('dejitter'):
             return x
-        # Keyed to dejitter_verbose, not the general verbose: this runs once for the prox stack
-        # and once per prior orientation on every iteration, so tying it to verbose buried the
-        # iteration progress under repeats of the same mode list.
+        # Printing is controlled by dejitter_verbose rather than verbose.  This filter runs
+        # four times per iteration and would repeat the same output each time.
         return _dejitter_4d_dct(x, period=self.frames_per_rotation, harmonics=True,
                                 band_width=1, dtype=np.float32,
                                 verbose=bool(self.get_params('dejitter_verbose')))
 
     def _run_settings(self, devs, init_source, global_sigma, weights, max_iterations,
                       stop_threshold_change_pct):
-        """The settings that describe this run, for run_info.txt and the returned recon dict."""
+        """Return the settings that describe this run, for run_info.txt and the recon dict."""
         if len(devs) > 1:
             mode = f"task queue over {len(devs)} devices: " + ", ".join(str(d) for d in devs)
         else:
@@ -591,7 +573,7 @@ class MACE4DModel(ParameterHandler):
         }
 
     def _validate_sinogram(self, sinogram, name):
-        """Return the array unchanged, or raise ValueError if it is not sinogram-shaped."""
+        """Return the array unchanged, or raise ValueError if its shape is not the sinogram shape."""
         sinogram = np.asarray(sinogram)
         if sinogram.shape != self.sinogram_shape:
             raise ValueError(f"{name} shape {sinogram.shape} does not match the model's "
@@ -599,7 +581,7 @@ class MACE4DModel(ParameterHandler):
         return sinogram
 
     def _expected_init_shape(self):
-        """Shape the initial image must have: (num_frames,) + per-frame recon shape."""
+        """Return the required shape of the initial image: (num_frames,) + recon_shape."""
         return (self.num_frames,) + self.recon_shape
 
     def _validate_init_recon(self, init_recon):
@@ -613,10 +595,10 @@ class MACE4DModel(ParameterHandler):
         return init_recon
 
     def _load_cached_init(self, init_dir):
-        """Load init_recon.npy from init_dir if present and valid; else return None.
+        """Load init_recon.npy from init_dir, or return None.
 
-        A missing file is normal (first run) and silent. A file that cannot be
-        loaded or has the wrong shape produces a warning.
+        A missing file is normal on a first run and returns None silently.  A file that
+        cannot be loaded or has the wrong shape produces a warning and returns None.
         """
         path = os.path.join(init_dir, "init_recon.npy")
         if not os.path.isfile(path):
@@ -631,10 +613,10 @@ class MACE4DModel(ParameterHandler):
         return init_recon
 
     def _compute_init_recon(self, devs, executors, init_dir):
-        """Per-frame MBIR recon used as the MACE initial image.
+        """Compute the initial image by reconstructing each frame separately.
 
-        Uses the same workers and frame-to-device assignment as the MACE loop,
-        so compiled programs and resident data carry over.
+        The computation uses the same workers and the same frame-to-device assignment as
+        the MACE loop, so the compiled programs and resident data are reused there.
         """
         verbose = self.get_params('verbose')
         if verbose:
@@ -653,8 +635,8 @@ class MACE4DModel(ParameterHandler):
         return init_recon
 
 
-# Thread-local denoiser cache: key = (shape, device), value = QGGMRFDenoiser.
-# Ensures no denoiser instance is shared across threads (critical for multi-GPU).
+# Thread-local cache of QGGMRFDenoiser objects, keyed by (shape, device).  The cache
+# ensures that no denoiser instance is shared across threads.
 _THREAD_LOCAL = threading.local()
 
 
@@ -663,11 +645,11 @@ _THREAD_LOCAL = threading.local()
 # ---------------------------------------------------------------------------
 
 def _resolve_devices(devices):
-    """Return the list of jax devices to use; see MACE4DModel.set_device_pool."""
+    """Return the list of jax devices to use.  See MACE4DModel.set_device_pool."""
     if devices is None:
-        # Automatic: every GPU, or a single CPU device when there is no GPU.  (Unlike a sharded
-        # recon, this model runs one independent task per device, so spreading over the virtual
-        # CPU devices of one machine would oversubscribe the same cores.)
+        # The automatic choice is every GPU, or one CPU device when there is no GPU.  This
+        # model runs one independent task per device, so using the several virtual CPU
+        # devices of one machine would oversubscribe the same cores.
         return list(gpu_devices()) or [cpu_devices()[0]]
     if isinstance(devices, str):
         platform = devices.lower()
@@ -694,16 +676,16 @@ def _resolve_devices(devices):
 
 
 def _assign_tasks(num_frames, plane_counts, num_devices):
-    """Fixed least-loaded-first assignment of tasks to devices.
+    """Assign the tasks to devices, always placing the next task on the least-loaded device.
 
-    The denoise tasks (estimated cost proportional to their hyperplane count)
-    are placed first, largest first; then each unit-cost prox task goes to the
-    least-loaded device.
+    The three denoise tasks are placed first, largest first, with estimated cost
+    proportional to their hyperplane counts.  Each prox task then has unit cost and
+    goes to the least-loaded device.  The assignment is fixed for the whole run.
 
     Returns:
-        tuple: (frame_device, orient_device) where frame_device is a list of int
-            device indices for each frame's prox task, and orient_device is a list
-            of int device indices for each orientation's denoise.
+        tuple: (frame_device, orient_device).  frame_device lists the device index of
+            each frame's prox task.  orient_device lists the device index of each
+            orientation's denoise task.
     """
     loads = [0.0] * num_devices
     orient_device = [0] * len(plane_counts)
@@ -818,10 +800,10 @@ def _dejitter_4d_dct(
 
 def _normalize_prior_weights(prior_weight):
     """
-    Convert a scalar or list prior weight into [forward_w, xyt_w, yzt_w, xzt_w].
+    Convert a scalar or list prior weight into the form [forward_w, xyt_w, yzt_w, xzt_w].
 
-    Scalar w -> [1-w, w/3, w/3, w/3].
-    List/tuple [w1, w2, w3] -> [1-(w1+w2+w3), w1, w2, w3].
+    A scalar w becomes [1-w, w/3, w/3, w/3].  A list [w1, w2, w3] becomes
+    [1-(w1+w2+w3), w1, w2, w3].
     """
     if isinstance(prior_weight, (list, tuple, np.ndarray)):
         prior = [float(w) for w in prior_weight]
@@ -839,15 +821,14 @@ def _normalize_prior_weights(prior_weight):
 # Device-pinned denoiser helpers
 # ---------------------------------------------------------------------------
 #
-# IMPORTANT: each QGGMRFDenoiser must be pinned to exactly ONE GPU via
-# configure_devices([device]). Without this, mbirjax auto-shards the denoiser
-# across every visible GPU using a NamedSharding Mesh. Running 4 such denoisers
-# concurrently then causes each thread's model to open its own 4-way NCCL
-# clique simultaneously -- producing an "Acquire clique ... may be stuck" deadlock.
-# Cache key includes the device so each thread gets its own pinned instance.
+# IMPORTANT: each QGGMRFDenoiser must be pinned to exactly one GPU with
+# configure_devices([device]).  Without pinning, mbirjax shards the denoiser across
+# every visible GPU.  Several such denoisers running concurrently then deadlock in
+# NCCL with the error "Acquire clique ... may be stuck".  The cache key includes the
+# device, so each thread gets its own pinned instance.
 
 def _get_qggmrf_denoiser(shape, device):
-    """Return a per-thread, per-device cached QGGMRFDenoiser pinned to one GPU."""
+    """Return a cached QGGMRFDenoiser pinned to one device.  The cache is per thread."""
     cache = getattr(_THREAD_LOCAL, "denoiser_cache", None)
     if cache is None:
         cache = {}
@@ -860,37 +841,33 @@ def _get_qggmrf_denoiser(shape, device):
     return cache[key]
 
 
-# Denoiser iteration settings (match the per-volume denoise() defaults).
+# Denoiser iteration settings.  These match the defaults of QGGMRFDenoiser.denoise().
 _DENOISE_MAX_ITERATIONS = 15
 _DENOISE_STOP_THRESHOLD_PCT = 0.2
 
-# Working-set multiplier for the batch-size estimate: bytes used per volume
-# during the jitted sweep, as a multiple of the volume size. Heuristic; refine
-# by measurement on the target GPU.
+# Multiplier for the batch-size estimate.  It approximates the bytes used per volume
+# during the jitted sweep, as a multiple of the volume size.  The value is a heuristic.
 _DENOISE_BUFFER_MULTIPLIER = 16
 
-# Absolute cap on the denoise batch size, so a bad memory estimate cannot
-# request an enormous compile.
+# The batch size is capped so that a bad memory estimate cannot request an enormous
+# compilation.
 _DENOISE_BATCH_CAP = 128
 
-# Floor for the auto-estimated qGGMRF regularization scale (sigma_x). Guards
-# against a batch whose statistics happen to come out at or near zero (e.g. a
-# batch dominated by background-only hyperplanes), which would otherwise make
-# the qGGMRF solver produce NaN for the whole batch.
+# Floor for the auto-estimated qGGMRF regularization scale sigma_x.  A batch dominated
+# by background hyperplanes can produce a sigma_x near zero, and the qGGMRF solver
+# would then return NaN for the whole batch.
 _SIGMA_X_FLOOR = 1e-6
 
 
 def _configure_denoiser(denoiser, sigma, image_for_stats):
     """Set the shared sigma and the regularization constants on the denoiser.
 
-    Replicates the parameter setup that QGGMRFDenoiser.denoise() performs, so
-    the jitted sweep can be called directly with shared constants.
+    This replicates the parameter setup that QGGMRFDenoiser.denoise() performs, so the
+    jitted sweep can be called directly with shared constants.
 
-    QGGMRFDenoiser.auto_set_regularization_params() (inherited from
-    TomographyModel) calls subsample_views with num_real_views=sinogram_shape[0],
-    which equals num_frames for a hyperplane batch -- not the batch size -- so it would
-    use only the first hyperplane's statistics. The individual auto-set methods
-    are called directly on the full array instead.
+    The standard method auto_set_regularization_params() is not used here.  For a
+    hyperplane batch it would compute its statistics from only the first hyperplane.
+    The individual auto-set methods are therefore called directly on the full array.
     """
     denoiser.set_params(use_ror_mask=False, sigma_noise=float(sigma))
     verbose = denoiser.get_params('verbose')
@@ -907,12 +884,12 @@ def _configure_denoiser(denoiser, sigma, image_for_stats):
     if not np.isfinite(sigma_x) or sigma_x < _SIGMA_X_FLOOR:
         denoiser.set_params(no_warning=True, sigma_x=np.float32(_SIGMA_X_FLOOR))
     denoiser.set_params(verbose=verbose)
-    # The sweep's progress callback converts its arguments with int()/float(),
-    # which fails on the batched arrays a vmapped sweep passes it; silence it.
+    # The sweep's progress callback converts its arguments with int() and float(),
+    # which fails on the batched arrays that a vmapped sweep passes it.  Silence it.
     denoiser._log_denoise_progress = lambda *args: None
-    # Recompute the sweep constants for this configuration. The pixel partition
-    # is random per generation, so it must be built once here and reused --
-    # otherwise repeated calls run different VCD subset orders.
+    # Recompute the sweep constants for this configuration.  The pixel partition is
+    # drawn at random each time it is generated, so it is built once here and reused.
+    # Otherwise repeated calls would use different VCD subset orders.
     denoiser._mace4d_constants = None
     _denoise_constants(denoiser)
     # New constants invalidate the cached batch size and compiled batch function.
@@ -921,14 +898,14 @@ def _configure_denoiser(denoiser, sigma, image_for_stats):
 
 
 def _denoise_constants(denoiser):
-    """The constant arguments of the denoiser's jitted sweep, cached per configuration."""
+    """Return the constant arguments of the denoiser's jitted sweep, cached per configuration."""
     cached = getattr(denoiser, '_mace4d_constants', None)
     if cached is not None:
         return cached
     image_shape, granularity = denoiser.get_params(['recon_shape', 'granularity'])
-    # Keep at least ~64 pixels per VCD subset: with very small subsets the
-    # qGGMRF line search can hit 0/0 in flat regions. At real volume sizes
-    # this leaves the subset count unchanged.
+    # Keep at least 64 pixels per VCD subset.  With very small subsets the qGGMRF line
+    # search can reach 0/0 in flat regions.  At real volume sizes this limit leaves the
+    # subset count unchanged.
     num_pixels = image_shape[0] * image_shape[1]
     num_subsets = max(1, min(granularity[0], num_pixels // 64))
     partition = mj.gen_set_of_pixel_partitions(image_shape, [num_subsets],
@@ -942,7 +919,10 @@ def _denoise_constants(denoiser):
 
 
 def _auto_batch_size(vol_shape, device):
-    """Largest volume batch that fits in device memory; a small fixed batch on CPU."""
+    """Return the largest volume batch that fits in device memory.
+
+    A device without memory statistics, such as the CPU, gets a small fixed batch.
+    """
     stats = getattr(device, 'memory_stats', lambda: None)()
     if not stats:
         return 4
@@ -952,12 +932,11 @@ def _auto_batch_size(vol_shape, device):
 
 
 def _batched_hyperplane_denoise(x, denoiser, device):
-    """Denoise a stack of same-shaped 3D volumes with shared, preconfigured settings.
+    """Denoise a stack of 3D volumes of equal shape with shared, preconfigured settings.
 
-    One jax.vmap call runs the denoiser's single-device jitted sweep over a
-    whole batch, so the GPU is filled instead of processing volumes one at a time.
-    The volumes are independent, so the result equals per-volume denoising with
-    the same constants.
+    One jax.vmap call runs the denoiser's jitted sweep over a whole batch, so the device
+    processes many volumes at once instead of one at a time.  The volumes are
+    independent, so the result equals per-volume denoising with the same constants.
 
     Args:
         x (ndarray): Stack of volumes, shape (num_volumes, d0, d1, d2).
@@ -978,8 +957,8 @@ def _batched_hyperplane_denoise(x, denoiser, device):
             qggmrf_params, image_shape, _DENOISE_MAX_ITERATIONS, stop_thresh, 0)
         return out
 
-    # One fixed batch size and one compiled batch function per configuration.
-    # The last block is padded to the fixed size so every call reuses the same
+    # Each configuration uses one fixed batch size and one compiled batch function.
+    # The last block is padded to the fixed size, so every call reuses the same
     # compiled program.
     if getattr(denoiser, "_mace4d_batch", None) is None:
         denoiser._mace4d_batch = min(_DENOISE_BATCH_CAP, num_vols,
@@ -1001,7 +980,7 @@ def _batched_hyperplane_denoise(x, denoiser, device):
             try:
                 out = np.asarray(fn(jax.device_put(block, device)))
             except Exception as err:
-                # Out of device memory: halve the batch and recompile once.
+                # The device ran out of memory.  Halve the batch size and recompile.
                 if "RESOURCE_EXHAUSTED" in str(err) and denoiser._mace4d_batch > 1:
                     denoiser._mace4d_batch = max(1, denoiser._mace4d_batch // 2)
                     denoiser._mace4d_batched_fn = jax.jit(jax.vmap(denoise_one))
@@ -1013,16 +992,18 @@ def _batched_hyperplane_denoise(x, denoiser, device):
 
 
 def _denoiser_wrapper(x, permute_vector, sigma, device, config_token=None):
-    """Permute a 4D volume so the hyperplane axis is first, batch-denoise the
-    resulting stack of 3D volumes at the shared global sigma, then unpermute.
+    """Denoise the hyperplanes of a 4D volume at the shared global sigma.
+
+    The volume is permuted so that the hyperplane axis is first.  The resulting stack
+    of 3D volumes is denoised in batches, and the result is permuted back.
 
     Args:
         x (ndarray): 4D volume, shape (num_frames, nx, ny, nz).
         permute_vector (tuple of int): Permutation that puts the hyperplane axis first.
         sigma (float): Global noise sigma shared by every volume.
         device (jax.Device): Device on which denoising runs.
-        config_token (hashable or None): Configure the denoiser (sigma, regularization
-            constants, partition) only when this token changes -- once per recon. None
+        config_token (hashable or None): The denoiser is reconfigured only when this
+            token changes, which happens once per recon call.  A value of None
             reconfigures on every call.
 
     Returns:
