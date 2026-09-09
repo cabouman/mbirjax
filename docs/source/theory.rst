@@ -2,6 +2,8 @@
 Theory
 ======
 
+The following gives an overview of the theory behind MBIRJAX.
+For detailed documentation on the forward model and algorithms, download this `zip file <https://www.datadepot.rcac.purdue.edu/bouman/data/tomography_geometry.zip>`_.
 
 Model-Based Iterative Reconstruction
 ------------------------------------
@@ -23,10 +25,6 @@ The Multi-Granular Vectorized Coordinate Descent (VCD) algorithm is then used to
 
 
 **Forward Model:**
-
-*Note:* More details
-about the forward model for specific geometries is available by downloading the `associated
-zip file <https://www.datadepot.rcac.purdue.edu/bouman/data/tomography_geometry.zip>`_.
 
 The forward model term has the form,
 

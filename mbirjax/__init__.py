@@ -16,3 +16,4 @@ from .translation_model import *
 from .vcls import *
 from .hsnt import *
 from .multiaxis_parallel import *
+from .mace4d import *

@@ -116,7 +116,8 @@ def max_abs_neighbor_diff(arr):
 
 
 
-def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2=0.5, prev_selected_view_inds=np.array([], dtype=int), priority_order=False, verbose=0, seed=None):
+def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2=0.5,
+                  prev_selected_view_inds=np.array([], dtype=int), priority_order=False, verbose=0, seed=None, roi=None):
     """
     Compute the optimal view angles by minimizing the View Covariance Loss (VCL) using a stochastic greedy optimization algorithm.
     The VCL is defined in the following paper:
@@ -128,12 +129,15 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         ct_model (TomographyModel): A CT model instance (e.g., ParallelBeamModel or ConeBeamModel) containing the system geometry and angles.
         reference_object (ndarray): 3D array representing the reference volume (e.g., ground truth).
         num_selected_views (int): Number of view angles to select.
-        r_1 (float, optional): Voxel sampling rate in the reference object (default is 0.001).
-        r_2 (float, optional): View sampling rate for stochastic minimization (default is 0.01).
+        r_1 (float, optional): Voxel sampling rate in the reference object (default is 0.002).
+        r_2 (float, optional): View sampling rate for stochastic minimization (default is 0.5).
         prev_selected_view_inds (ndarray, optional): 1D array of previously selected view indices. Defaults to an empty NumPy array.
         priority_order (bool, optional): If True, reorders the selected view indices from most to least important. Defaults to False.
         verbose (int, optional): Verbosity level. If > 0, visualizations of the covariance matrix and gamma vector will be shown.
         seed (int, optional): Random seed for deterministic behavior. If set, results will be reproducible.
+        roi (ndarray, optional): 3D mask with the same shape as reference_object. Nonzero
+            voxels identify the region used to select views. If None, the whole
+            reference_object will be used to select views.
 
     Returns:
         Tuple[ndarray, float]: A tuple containing:
@@ -150,6 +154,16 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
         >>> print(selected_angles.shape)
         (10,)
     """
+    if roi is not None:
+        roi = np.asarray(roi)
+        if roi.shape != reference_object.shape:
+            raise ValueError(
+                "roi.shape and reference_object.shape must match.\n"
+                f" Got roi.shape = {roi.shape}, "
+                f"reference_object.shape = {reference_object.shape}."
+            )
+        roi = roi.astype(bool)
+
     num_views = ct_model.get_params('sinogram_shape')[0]
     # Geometry-general: look the view-parameter array up by the model's own name for it
     # ('angles' for parallel beam, 'view_params_array' for cone, ...); the candidate
@@ -171,7 +185,10 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
 
     with tempfile.TemporaryDirectory() as data_store_dir:
         # Compute recon bases
-        gamma = compute_view_basis_functions(ct_model, reference_object, r_1=r_1, data_store_dir=data_store_dir, seed=seed)
+        gamma = compute_view_basis_functions(
+            ct_model, reference_object, r_1=r_1,
+            data_store_dir=data_store_dir, seed=seed, roi=roi
+        )
 
         # Compute inner product between recon bases
         R = compute_cov_matrix(num_views, data_store_dir)
@@ -201,7 +218,7 @@ def get_opt_views(ct_model, reference_object, num_selected_views, r_1=0.002, r_2
 
 
 
-def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed=None):
+def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed=None, roi=None):
     """
     Compute the view basis functions and inner product vector (gamma) used in the VCLS algorithm.
 
@@ -211,6 +228,8 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
         r_1 (float): Voxel sampling rate in the reference object (fraction of total voxels).
         data_store_dir (str): Directory where the computed reconstructions will be stored as .npy files.
         seed (int, optional): Random seed for deterministic behavior. Default is None.
+        roi (ndarray, optional): Binary 3D mask selecting the reference voxels used in
+            the basis-function inner products. Default is None.
 
     Returns:
         ndarray: A 2D array of shape (num_views, 1) representing the gamma column vector.
@@ -226,11 +245,22 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
     print('Creating sinogram for reference object of shape {}'.format(ref_object.shape))
     ref_sino = ct_model.forward_project(ref_object)
 
-    # Create ROI mask and subsample the indices
-    mask = mj.get_2d_ror_mask(ref_object[:, :, 0].shape)
-    sparse_indices, row_col_indices = get_2d_subsampling_indices(mask, r_1, seed=seed)
-    ref_object_flat = ref_object.reshape(ref_object.shape[0] * ref_object.shape[1], ref_object.shape[2])
-    sparse_ref_object = _normalize_by_norm(jnp.asarray(ref_object_flat[sparse_indices, :]), eps)
+    if roi is None:
+        mask = mj.get_2d_ror_mask(ref_object[:, :, 0].shape)
+        sparse_indices, row_col_indices = get_2d_subsampling_indices(mask, r_1, seed=seed)
+        ref_object_flat = ref_object.reshape(ref_object.shape[0] * ref_object.shape[1], ref_object.shape[2])
+        sparse_ref_object = _normalize_by_norm(jnp.asarray(ref_object_flat[sparse_indices, :]), eps)
+    else:
+        # A row-column location is eligible when any slice contains an ROI voxel there.
+        mask = np.any(roi, axis=2)
+        sparse_indices, row_col_indices = get_2d_subsampling_indices(mask, r_1, seed=seed)
+        ref_object_flat = ref_object.reshape(ref_object.shape[0] * ref_object.shape[1], ref_object.shape[2])
+        sampled_ref_object = ref_object_flat[sparse_indices, :]
+        roi_flat = roi.reshape(roi.shape[0] * roi.shape[1], roi.shape[2])
+        sampled_roi_mask = roi_flat[sparse_indices, :]
+        sparse_ref_object = _normalize_by_norm(
+            jnp.asarray(sampled_ref_object[sampled_roi_mask]).reshape(-1, 1), eps
+        )
 
     # Get number of views and angles
     num_views = ct_model.get_params('sinogram_shape')[0]
@@ -254,6 +284,8 @@ def compute_view_basis_functions(ct_model, ref_object, r_1, data_store_dir, seed
         view_sino = filtered_sinogram[i:i + 1]
         single_view_model.set_view_parameters(jnp.asarray(full_view_params[i:i + 1]))
         recon_i = single_view_model.sparse_back_project(view_sino, sparse_indices)
+        if roi is not None:
+            recon_i = recon_i[sampled_roi_mask].reshape(-1, 1)
 
         # One fused normalize + contraction per view.  (This also collapses a historical double-eps:
         # the eager code added eps to the norm and again in the divide -- a ~1e-12 difference.)

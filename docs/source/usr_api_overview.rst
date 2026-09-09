@@ -57,6 +57,16 @@ The median filter is implemented in jax using a fixed 3x3x3 neighborhood with re
 
    median_filter3d
 
+4D Reconstruction
+-----------------
+
+See :ref:`MACE4DDocs` for reconstructing a time sequence of volumes from a single continuous scan
+of a moving object, where a static reconstruction would blur the motion.
+
+.. autosummary::
+
+   MACE4DModel.recon
+
 Parameter Handling
 ------------------
 
