@@ -125,6 +125,10 @@ html_theme = 'sphinx_book_theme'
 # further.  For a list of options available for each theme, see the
 # documentation.
 html_theme_options = {
+    'announcement': ('MBIRJAX is legacy software and has been replaced by '
+                     '<a href="https://mbirtorch.readthedocs.io">MBIRTorch</a>. '
+                     'See the <a href="https://mbirtorch.readthedocs.io/en/latest/usr_migration.html">'
+                     'migration guide</a>.'),
     'show_toc_level': 2,
     'repository_url': 'https://github.com/cabouman/mbirjax',
     'use_repository_button': True,     # add a "link to repository" button

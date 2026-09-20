@@ -17,3 +17,14 @@ from .vcls import *
 from .hsnt import *
 from .multiaxis_parallel import *
 from .mace4d import *
+
+# Shown once per process.  FutureWarning is displayed by default; DeprecationWarning is not.
+import warnings as _warnings
+
+_warnings.warn(
+    "MBIRJAX is legacy software and has been replaced by MBIRTorch "
+    "(https://github.com/cabouman/mbirtorch). See "
+    "https://mbirtorch.readthedocs.io/en/latest/usr_migration.html",
+    FutureWarning,
+    stacklevel=2,
+)
