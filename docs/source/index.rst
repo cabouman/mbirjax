@@ -6,6 +6,18 @@
 MBIRJAX: High-performance tomographic reconstruction
 ====================================================
 
+.. warning::
+
+   MBIRJAX is now legacy software.  It has been replaced by MBIRTorch, which has the same API,
+   runs on PyTorch, and is faster and more memory efficient.  MBIRJAX will not be updated further.
+   Users should migrate to MBIRTorch.
+
+   Repository: `github.com/cabouman/mbirtorch <https://github.com/cabouman/mbirtorch>`__
+
+   Documentation: `mbirtorch.readthedocs.io <https://mbirtorch.readthedocs.io>`__
+
+   Migration guide: `Migrating from MBIRJAX <https://mbirtorch.readthedocs.io/en/latest/usr_migration.html>`__
+
 **MBIRJAX** is a Python package for Model Based Iterative Reconstruction (MBIR) of images from tomographic data.
 
 **Key features:**

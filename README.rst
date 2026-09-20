@@ -3,6 +3,18 @@
 MBIRJAX
 =======
 
+.. warning::
+
+   MBIRJAX is now legacy software.  It has been replaced by MBIRTorch, which has the same API,
+   runs on PyTorch, and is faster and more memory efficient.  MBIRJAX will not be updated further.
+   Users should migrate to MBIRTorch.
+
+   Repository: https://github.com/cabouman/mbirtorch
+
+   Documentation: https://mbirtorch.readthedocs.io
+
+   Migration guide: https://mbirtorch.readthedocs.io/en/latest/usr_migration.html
+
 Model-Based Iterative Reconstruction (MBIR) for tomographic reconstruction that is based on the `JAX <https://github.com/google/jax>`__ library.
 Full documentation is available at https://mbirjax.readthedocs.io .
 

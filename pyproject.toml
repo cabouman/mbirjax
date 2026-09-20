@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mbirjax"
-version = "0.7.3"
+version = "0.7.4"
 description = "High-performance tomographic reconstruction"
 keywords = ["tomography", "tomographic reconstruction", "computed tomography"]
 readme = "README.rst"
@@ -13,6 +13,7 @@ authors = [
     { name = "MBIRJAX development team", email = "buzzard@purdue.edu" }
 ]
 classifiers = [
+    "Development Status :: 7 - Inactive",
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Information Analysis",
     "License :: OSI Approved :: BSD License",
