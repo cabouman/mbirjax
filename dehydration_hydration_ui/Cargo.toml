@@ -1,0 +1,21 @@
+[package]
+name = "dehydration_hydration"
+version = "0.1.0"
+edition = "2024"
+description = "Dehydration/hydration (NMF subspace) denoising of a TIFF image stack — GUI over the local mbirjax library (mbirjax.hsnt)"
+
+[dependencies]
+anyhow = "1.0"
+colorgrad = { version = "0.8", features = ["preset"] }
+eframe = "0.35"
+egui = "0.35"
+image = { version = "0.25", default-features = false, features = ["png"] }
+egui_plot = "0.36"
+ndarray = { version = "0.17", features = ["rayon"] }
+ndarray-npy = "0.10"
+rayon = "1.11"
+rfd = "0.17"
+tiff = "0.11"
+
+[profile.release]
+opt-level = 3

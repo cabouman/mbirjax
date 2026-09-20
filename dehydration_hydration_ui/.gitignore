@@ -1,0 +1,3 @@
+/target
+# the repository root ignores *.png; the app logos are sources
+!/logos/*.png
